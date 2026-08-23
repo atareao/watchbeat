@@ -13,6 +13,7 @@ use crate::models::{
 #[derive(Clone)]
 pub struct Database {
     pool: SqlitePool,
+    db_path: String,
 }
 
 impl Database {
@@ -72,7 +73,7 @@ impl Database {
         let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN failed_checks INTEGER NOT NULL DEFAULT 0")
             .execute(&pool).await;
 
-        Ok(Self { pool })
+        Ok(Self { pool, db_path: path.to_string_lossy().to_string() })
     }
 
     // ───── Monitors ─────
@@ -470,5 +471,27 @@ impl Database {
         } else {
             Ok(None)
         }
+    }
+
+    // ───── Backup ─────
+
+    pub async fn backup(&self, output_path: &std::path::Path) -> Result<()> {
+        let db_path = &self.db_path;
+
+        // Force WAL checkpoint
+        sqlx::raw_sql("PRAGMA wal_checkpoint(TRUNCATE);")
+            .execute(&self.pool).await.ok();
+
+        // Copy the database file (and WAL/SHM if present)
+        tokio::fs::copy(db_path, output_path).await
+            .context("Failed to copy database file")?;
+
+        let wal_path = format!("{}-wal", db_path);
+        if tokio::fs::try_exists(&wal_path).await.unwrap_or(false) {
+            let wal_out = format!("{}-wal", output_path.display());
+            let _ = tokio::fs::copy(&wal_path, &wal_out).await;
+        }
+
+        Ok(())
     }
 }

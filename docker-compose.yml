@@ -1,0 +1,21 @@
+services:
+  vigilatrs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3055:3055"
+    volumes:
+      - ./data:/app/data
+    environment:
+      HOST: "0.0.0.0"
+      PORT: 3055
+      DATA_DIR: /app/data
+      DATABASE_URL: "/app/data/vigilatrs.db"
+      TIMEZONE: Europe/Madrid
+      RUST_LOG: info
+      # ⚠️ Configura tus variables OIDC
+      OIDC_ISSUER_URL: "${OIDC_ISSUER_URL}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET}"
+    restart: unless-stopped

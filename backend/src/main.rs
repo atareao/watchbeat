@@ -266,8 +266,13 @@ async fn scheduler_loop(
             status.last_monitors_checked = checks_done;
         }
 
-        // Cleanup old checks (keep 30 days)
-        if let Err(e) = db.cleanup_old_checks(30).await {
+        // Cleanup old checks (configurable retention, default 30 days)
+        let retention_days = db.get_setting("retention_days").await
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(30);
+        if let Err(e) = db.cleanup_old_checks(retention_days).await {
             tracing::warn!("Scheduler: cleanup failed: {}", e);
         }
 

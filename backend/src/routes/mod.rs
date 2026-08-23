@@ -11,10 +11,13 @@ use tokio_stream::wrappers::BroadcastStream;
 use crate::auth::AppState;
 
 pub mod auth_routes;
+pub mod backup;
 pub mod checks;
+pub mod exports;
 pub mod heartbeats;
 pub mod monitors;
 pub mod notifiers;
+pub mod settings;
 pub mod status;
 pub mod status_pages;
 
@@ -75,6 +78,15 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             "/api/heartbeats/{id}",
             routing::put(heartbeats::update)
                 .delete(heartbeats::delete),
+        )
+        .route(
+            "/api/monitors/{id}/export/{format}",
+            routing::get(exports::export),
+        )
+        .route("/api/backup", routing::post(backup::create_backup))
+        .route(
+            "/api/settings",
+            routing::get(settings::get_setting_query).post(settings::set_setting),
         )
         .route("/api/status", routing::get(status::dashboard));
 
