@@ -6,8 +6,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
 use crate::models::{
-    CheckResult, DashboardStatus, Monitor, MonitorRow, MonitorSummary, Notifier, NotifierRow,
-    TimelinePoint, TimelinePointRow,
+    CheckResult, DashboardStatus, Heartbeat, HeartbeatRow, Monitor, MonitorRow, MonitorSummary,
+    Notifier, NotifierRow, StatusPage, StatusPageRow, TimelinePoint, TimelinePointRow,
 };
 
 #[derive(Clone)]
@@ -347,5 +347,128 @@ impl Database {
         sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
             .bind(key).bind(value).execute(&self.pool).await.context("Failed to set setting")?;
         Ok(())
+    }
+
+    // ───── Monitor-Notifier bindings ─────
+
+    pub async fn set_monitor_notifiers(&self, monitor_id: &str, notifier_ids: &[String]) -> Result<()> {
+        sqlx::query("DELETE FROM monitor_notifiers WHERE monitor_id=?")
+            .bind(monitor_id).execute(&self.pool).await
+            .context("Failed to clear monitor notifiers")?;
+        for nid in notifier_ids {
+            sqlx::query("INSERT OR IGNORE INTO monitor_notifiers (monitor_id, notifier_id) VALUES (?, ?)")
+                .bind(monitor_id).bind(nid).execute(&self.pool).await
+                .context("Failed to link monitor notifier")?;
+        }
+        Ok(())
+    }
+
+    pub async fn get_monitor_notifier_ids(&self, monitor_id: &str) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT notifier_id FROM monitor_notifiers WHERE monitor_id=?")
+            .bind(monitor_id).fetch_all(&self.pool).await
+            .context("Failed to get monitor notifiers")?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    // ───── Status Pages ─────
+
+    pub async fn list_status_pages(&self) -> Result<Vec<StatusPage>> {
+        let rows = sqlx::query_as::<_, StatusPageRow>(
+            "SELECT id, slug, title, description, monitors, public, created_at, updated_at FROM status_pages ORDER BY title",
+        ).fetch_all(&self.pool).await.context("Failed to list status pages")?;
+        Ok(rows.into_iter().map(StatusPage::from).collect())
+    }
+
+    pub async fn get_status_page(&self, id: &str) -> Result<Option<StatusPage>> {
+        let row = sqlx::query_as::<_, StatusPageRow>(
+            "SELECT id, slug, title, description, monitors, public, created_at, updated_at FROM status_pages WHERE id=?",
+        ).bind(id).fetch_optional(&self.pool).await.context("Failed to get status page")?;
+        Ok(row.map(StatusPage::from))
+    }
+
+    pub async fn get_status_page_by_slug(&self, slug: &str) -> Result<Option<StatusPage>> {
+        let row = sqlx::query_as::<_, StatusPageRow>(
+            "SELECT id, slug, title, description, monitors, public, created_at, updated_at FROM status_pages WHERE slug=?",
+        ).bind(slug).fetch_optional(&self.pool).await.context("Failed to get status page by slug")?;
+        Ok(row.map(StatusPage::from))
+    }
+
+    pub async fn upsert_status_page(&self, id: &str, page: &StatusPage) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let monitors = serde_json::to_string(&page.monitors).unwrap_or_else(|_| "[]".into());
+        sqlx::query(
+            "INSERT INTO status_pages (id, slug, title, description, monitors, public, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET slug=excluded.slug, title=excluded.title, \
+             description=excluded.description, monitors=excluded.monitors, public=excluded.public, updated_at=excluded.updated_at",
+        ).bind(id).bind(&page.slug).bind(&page.title).bind(&page.description).bind(&monitors)
+        .bind(page.public as i32).bind(&now).bind(&now)
+        .execute(&self.pool).await.context("Failed to upsert status page")?;
+        Ok(())
+    }
+
+    pub async fn delete_status_page(&self, id: &str) -> Result<bool> {
+        let rows = sqlx::query("DELETE FROM status_pages WHERE id=?")
+            .bind(id).execute(&self.pool).await.context("Failed to delete status page")?;
+        Ok(rows.rows_affected() > 0)
+    }
+
+    // ───── Heartbeats ─────
+
+    pub async fn list_heartbeats(&self) -> Result<Vec<Heartbeat>> {
+        let rows = sqlx::query_as::<_, HeartbeatRow>(
+            "SELECT id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at FROM heartbeats ORDER BY name",
+        ).fetch_all(&self.pool).await.context("Failed to list heartbeats")?;
+        Ok(rows.into_iter().map(Heartbeat::from).collect())
+    }
+
+    pub async fn get_heartbeat(&self, id: &str) -> Result<Option<Heartbeat>> {
+        let row = sqlx::query_as::<_, HeartbeatRow>(
+            "SELECT id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at FROM heartbeats WHERE id=?",
+        ).bind(id).fetch_optional(&self.pool).await.context("Failed to get heartbeat")?;
+        Ok(row.map(Heartbeat::from))
+    }
+
+    pub async fn get_heartbeat_by_token(&self, token: &str) -> Result<Option<Heartbeat>> {
+        let row = sqlx::query_as::<_, HeartbeatRow>(
+            "SELECT id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at FROM heartbeats WHERE token=?",
+        ).bind(token).fetch_optional(&self.pool).await.context("Failed to get heartbeat by token")?;
+        Ok(row.map(Heartbeat::from))
+    }
+
+    pub async fn upsert_heartbeat(&self, id: &str, hb: &Heartbeat) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO heartbeats (id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, token=excluded.token, \
+             grace_seconds=excluded.grace_seconds, last_seen_at=excluded.last_seen_at, \
+             status=excluded.status, notifier_id=excluded.notifier_id, updated_at=excluded.updated_at",
+        ).bind(id).bind(&hb.name).bind(&hb.token).bind(hb.grace_seconds).bind(&hb.last_seen_at)
+        .bind(&hb.status).bind(&hb.notifier_id).bind(&now).bind(&now)
+        .execute(&self.pool).await.context("Failed to upsert heartbeat")?;
+        Ok(())
+    }
+
+    pub async fn delete_heartbeat(&self, id: &str) -> Result<bool> {
+        let rows = sqlx::query("DELETE FROM heartbeats WHERE id=?")
+            .bind(id).execute(&self.pool).await.context("Failed to delete heartbeat")?;
+        Ok(rows.rows_affected() > 0)
+    }
+
+    pub async fn touch_heartbeat(&self, token: &str) -> Result<Option<Heartbeat>> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query_as::<_, HeartbeatRow>(
+            "SELECT id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at FROM heartbeats WHERE token=?",
+        ).bind(token).fetch_optional(&self.pool).await.context("Failed to find heartbeat")?;
+        if let Some(r) = row {
+            sqlx::query("UPDATE heartbeats SET last_seen_at=?, status='ok', updated_at=? WHERE token=?")
+                .bind(&now).bind(&now).bind(token).execute(&self.pool).await
+                .context("Failed to touch heartbeat")?;
+            let hb = Heartbeat::from(r);
+            Ok(Some(Heartbeat { last_seen_at: Some(now), status: "ok".into(), ..hb }))
+        } else {
+            Ok(None)
+        }
     }
 }

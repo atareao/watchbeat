@@ -110,6 +110,91 @@ pub struct TimelinePoint {
     pub response_time_ms: Option<u64>,
 }
 
+// ───── Status Page ─────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusPage {
+    pub id: String,
+    pub slug: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub monitors: Vec<String>,
+    pub public: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct StatusPageRow {
+    pub id: String,
+    pub slug: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub monitors: String,
+    pub public: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<StatusPageRow> for StatusPage {
+    fn from(row: StatusPageRow) -> Self {
+        StatusPage {
+            id: row.id,
+            slug: row.slug,
+            title: row.title,
+            description: row.description,
+            monitors: serde_json::from_str(&row.monitors).unwrap_or_default(),
+            public: row.public != 0,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+// ───── Heartbeat ─────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Heartbeat {
+    pub id: String,
+    pub name: String,
+    pub token: String,
+    pub grace_seconds: i64,
+    pub last_seen_at: Option<String>,
+    pub status: String,
+    pub notifier_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct HeartbeatRow {
+    pub id: String,
+    pub name: String,
+    pub token: String,
+    pub grace_seconds: i64,
+    pub last_seen_at: Option<String>,
+    pub status: String,
+    pub notifier_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<HeartbeatRow> for Heartbeat {
+    fn from(row: HeartbeatRow) -> Self {
+        Heartbeat {
+            id: row.id,
+            name: row.name,
+            token: row.token,
+            grace_seconds: row.grace_seconds,
+            last_seen_at: row.last_seen_at,
+            status: row.status,
+            notifier_id: row.notifier_id,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
 // ───── DB row types (SQLx FromRow) ─────
 
 #[derive(Debug, Clone, sqlx::FromRow)]

@@ -7,15 +7,25 @@ use crate::auth::AppState;
 
 pub mod auth_routes;
 pub mod checks;
+pub mod heartbeats;
 pub mod monitors;
 pub mod notifiers;
 pub mod status;
+pub mod status_pages;
 
 pub fn api_routes() -> Router<Arc<AppState>> {
     let public = Router::new()
         .route("/health", routing::get(health))
         .route("/auth/login", routing::get(auth_routes::login))
-        .route("/auth/callback", routing::get(auth_routes::callback));
+        .route("/auth/callback", routing::get(auth_routes::callback))
+        .route(
+            "/status/{slug}",
+            routing::get(status_pages::public_page),
+        )
+        .route(
+            "/api/heartbeat/{token}",
+            routing::post(heartbeats::ping),
+        );
 
     let protected = Router::new()
         .route("/api/me", routing::get(auth_routes::me))
@@ -39,6 +49,24 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/notifiers/{id}/test",
             routing::post(notifiers::test),
+        )
+        .route(
+            "/api/status-pages",
+            routing::get(status_pages::list).post(status_pages::create),
+        )
+        .route(
+            "/api/status-pages/{id}",
+            routing::put(status_pages::update)
+                .delete(status_pages::delete),
+        )
+        .route(
+            "/api/heartbeats",
+            routing::get(heartbeats::list).post(heartbeats::create),
+        )
+        .route(
+            "/api/heartbeats/{id}",
+            routing::put(heartbeats::update)
+                .delete(heartbeats::delete),
         )
         .route("/api/status", routing::get(status::dashboard));
 
