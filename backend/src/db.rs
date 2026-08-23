@@ -44,6 +44,7 @@ impl Database {
                 interval_seconds INTEGER NOT NULL DEFAULT 300, timeout_seconds INTEGER NOT NULL DEFAULT 30,
                 enabled INTEGER NOT NULL DEFAULT 1, notifier_id TEXT,
                 confirmations_required INTEGER NOT NULL DEFAULT 0, failed_checks INTEGER NOT NULL DEFAULT 0,
+                tags TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS checks (
@@ -72,6 +73,8 @@ impl Database {
             .execute(&pool).await;
         let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN failed_checks INTEGER NOT NULL DEFAULT 0")
             .execute(&pool).await;
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+            .execute(&pool).await;
 
         Ok(Self { pool, db_path: path.to_string_lossy().to_string() })
     }
@@ -81,7 +84,7 @@ impl Database {
     pub async fn list_monitors(&self) -> Result<Vec<Monitor>> {
         let rows = sqlx::query_as::<_, MonitorRow>(
             "SELECT id, name, monitor_type, target, config_json, interval_seconds, \
-             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, \
+             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
              created_at, updated_at FROM monitors ORDER BY name",
         )
         .fetch_all(&self.pool).await
@@ -92,7 +95,7 @@ impl Database {
     pub async fn get_monitor(&self, id: &str) -> Result<Option<Monitor>> {
         let row = sqlx::query_as::<_, MonitorRow>(
             "SELECT id, name, monitor_type, target, config_json, interval_seconds, \
-             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, \
+             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
              created_at, updated_at FROM monitors WHERE id = ?",
         )
         .bind(id).fetch_optional(&self.pool).await
@@ -106,14 +109,15 @@ impl Database {
             .context("Failed to serialize config_json")?;
         sqlx::query(
             "INSERT INTO monitors (id, name, monitor_type, target, config_json, interval_seconds, \
-             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&monitor.id).bind(&monitor.name).bind(&monitor.monitor_type)
         .bind(&monitor.target).bind(&config_json)
         .bind(monitor.interval_seconds).bind(monitor.timeout_seconds)
         .bind(monitor.enabled as i32).bind(&monitor.notifier_id)
         .bind(monitor.confirmations_required).bind(monitor.failed_checks)
+        .bind(serde_json::to_string(&monitor.tags).unwrap_or_else(|_| "[]".to_string()))
         .bind(&now).bind(&now)
         .execute(&self.pool).await
         .context("Failed to insert monitor")?;
@@ -127,12 +131,13 @@ impl Database {
         let rows = sqlx::query(
             "UPDATE monitors SET name=?, monitor_type=?, target=?, config_json=?, \
              interval_seconds=?, timeout_seconds=?, enabled=?, notifier_id=?, \
-             confirmations_required=?, failed_checks=?, updated_at=? WHERE id=?",
+             confirmations_required=?, failed_checks=?, tags=?, updated_at=? WHERE id=?",
         )
         .bind(&monitor.name).bind(&monitor.monitor_type).bind(&monitor.target)
         .bind(&config_json).bind(monitor.interval_seconds).bind(monitor.timeout_seconds)
         .bind(monitor.enabled as i32).bind(&monitor.notifier_id)
         .bind(monitor.confirmations_required).bind(monitor.failed_checks)
+        .bind(serde_json::to_string(&monitor.tags).unwrap_or_else(|_| "[]".to_string()))
         .bind(&now).bind(id)
         .execute(&self.pool).await
         .context("Failed to update monitor")?;

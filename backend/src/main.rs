@@ -12,6 +12,7 @@ use vigilatrs::embed::serve_embedded;
 use vigilatrs::models::CheckResult;
 use vigilatrs::notifier;
 use vigilatrs::routes;
+use vigilatrs::routes::metrics;
 
 #[tokio::main]
 async fn main() {
@@ -42,6 +43,22 @@ async fn main() {
     }
 
     tracing::info!("🚀 Vigilatrs starting...");
+
+    // ───── Connectivity verification ─────
+    tracing::info!("🔌 Checking connectivity...");
+    let check_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    match check_client.get("https://1.1.1.1").send().await {
+        Ok(_) => tracing::info!("✅ Internet connectivity OK"),
+        Err(e) => tracing::warn!("⚠️  Internet connectivity check failed: {} (non-fatal)", e),
+    }
+    match check_client.get(&format!("{}/.well-known/openid-configuration", config.oidc_issuer_url.trim_end_matches('/')))
+        .send().await {
+        Ok(_) => tracing::info!("✅ OIDC provider reachable"),
+        Err(e) => tracing::warn!("⚠️  OIDC provider not reachable: {} (will retry)", e),
+    }
 
     // ───── Data directory ─────
     if let Err(e) = tokio::fs::create_dir_all(&config.data_dir).await {
@@ -266,6 +283,13 @@ async fn scheduler_loop(
             status.last_monitors_checked = checks_done;
         }
 
+        // Update prometheus monitor counts
+        if let Ok(summaries) = db.get_monitor_summaries().await {
+            let up = summaries.iter().filter(|s| s.last_status.as_deref() == Some("up")).count() as u64;
+            let down = summaries.iter().filter(|s| s.last_status.as_deref() == Some("down")).count() as u64;
+            metrics::set_monitor_counts(up, down);
+        }
+
         // Cleanup old checks (configurable retention, default 30 days)
         let retention_days = db.get_setting("retention_days").await
             .ok()
@@ -345,6 +369,9 @@ async fn run_monitor_check(
         tracing::error!("Scheduler: failed to save check for {}: {}", monitor.name, e);
         return;
     }
+
+    // Update prometheus metrics
+    metrics::inc_checks();
 
     // Broadcast SSE event
     let event = serde_json::json!({
@@ -495,6 +522,7 @@ fn is_public_path(path: &str) -> bool {
         || path.starts_with("/auth/")
         || path.starts_with("/assets/")
         || path == "/api/events"
+        || path == "/metrics"
         || path.ends_with(".html")
         || path.ends_with(".js")
         || path.ends_with(".css")

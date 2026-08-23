@@ -19,6 +19,7 @@ pub struct Monitor {
     pub notifier_id: Option<String>,
     pub confirmations_required: i64,
     pub failed_checks: i64,
+    pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -210,6 +211,7 @@ pub struct MonitorRow {
     pub notifier_id: Option<String>,
     pub confirmations_required: i64,
     pub failed_checks: i64,
+    pub tags: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -228,6 +230,7 @@ impl From<MonitorRow> for Monitor {
             notifier_id: row.notifier_id,
             confirmations_required: row.confirmations_required,
             failed_checks: row.failed_checks,
+            tags: serde_json::from_str(&row.tags).unwrap_or_default(),
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -342,6 +345,7 @@ mod tests {
             notifier_id: Some("notif-1".into()),
             confirmations_required: 2,
             failed_checks: 1,
+            tags: "[\"web\",\"api\"]".into(),
             created_at: "2026-07-03T08:00:00+00:00".into(),
             updated_at: "2026-07-03T08:00:00+00:00".into(),
         };
@@ -357,6 +361,7 @@ mod tests {
         assert_eq!(monitor.timeout_seconds, 30);
         assert!(monitor.enabled);
         assert_eq!(monitor.notifier_id, Some("notif-1".into()));
+        assert_eq!(monitor.tags, vec!["web".to_string(), "api".to_string()]);
     }
 
     #[test]
@@ -373,6 +378,7 @@ mod tests {
             notifier_id: None,
             confirmations_required: 0,
             failed_checks: 0,
+            tags: "[]".into(),
             created_at: "2026-07-03T08:00:00+00:00".into(),
             updated_at: "2026-07-03T08:00:00+00:00".into(),
         };
@@ -396,6 +402,7 @@ mod tests {
             notifier_id: None,
             confirmations_required: 0,
             failed_checks: 0,
+            tags: "[]".into(),
             created_at: "2026-07-03T08:00:00+00:00".into(),
             updated_at: "2026-07-03T08:00:00+00:00".into(),
         };
@@ -490,6 +497,7 @@ mod tests {
             notifier_id: None,
             confirmations_required: 0,
             failed_checks: 0,
+            tags: vec![],
             created_at: "now".into(),
             updated_at: "now".into(),
         };

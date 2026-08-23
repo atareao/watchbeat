@@ -63,6 +63,7 @@ pub async fn create(
         notifier_id: req.notifier_id,
         confirmations_required: req.confirmations_required.unwrap_or(0),
         failed_checks: 0,
+        tags: vec![],
         created_at: now.clone(),
         updated_at: now,
     };
@@ -101,6 +102,7 @@ pub async fn update(
         notifier_id: req.notifier_id.or(existing.notifier_id),
         confirmations_required: req.confirmations_required.unwrap_or(existing.confirmations_required),
         failed_checks: existing.failed_checks,
+        tags: existing.tags,
         created_at: existing.created_at,
         updated_at: now,
     };

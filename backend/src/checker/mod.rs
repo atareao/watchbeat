@@ -286,6 +286,7 @@ mod tests {
             notifier_id: None,
             confirmations_required: 0,
             failed_checks: 0,
+            tags: vec![],
             created_at: String::new(),
             updated_at: String::new(),
         }
