@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use axum::response::Response;
 use include_dir::{include_dir, Dir};
 use std::path::Path;

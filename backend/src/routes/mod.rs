@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use axum::routing;
-use axum::{middleware, Router};
+use axum::Router;
 
-use crate::auth::{self, AppState};
+use crate::auth::AppState;
 
 pub mod auth_routes;
 pub mod checks;

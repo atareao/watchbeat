@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Request, State};
+use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -55,10 +55,10 @@ pub struct Claims {
 // ───── JWT Validator ─────
 
 pub struct JwtValidator {
-    issuer: String,
-    client_id: String,
+    pub issuer: String,
+    pub client_id: String,
     decoding_keys: Arc<Mutex<Vec<DecodingKey>>>,
-    algorithms: Vec<Algorithm>,
+    pub algorithms: Vec<Algorithm>,
 }
 
 impl JwtValidator {

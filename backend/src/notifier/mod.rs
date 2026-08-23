@@ -29,10 +29,10 @@ impl NotifierTrait for TelegramNotifier {
     async fn notify(
         &self,
         monitor: &Monitor,
-        check: &CheckResult,
-        was_up: bool,
+        _check: &CheckResult,
+        _was_up: bool,
     ) -> anyhow::Result<()> {
-        let bot_token = monitor
+        let _bot_token = monitor
             .config_json
             .get("bot_token")
             .and_then(|v| v.as_str())

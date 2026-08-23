@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use vigilatrs::auth::{self, AppState, JwtValidator, OidcState, SchedulerStatus};
+use vigilatrs::auth::{self, AppState, JwtValidator, SchedulerStatus};
 use vigilatrs::checker;
 use vigilatrs::config::Config;
 use vigilatrs::db::Database;
@@ -215,7 +215,7 @@ async fn scheduler_loop(
         {
             let mut status = sched_status.lock().await;
             status.last_run_at = Some(chrono::Utc::now().to_rfc3339());
-            status.last_monitors_checked = monitors.len() as u64;
+            status.last_monitors_checked = checks_done;
         }
 
         // Cleanup old checks (keep 30 days)

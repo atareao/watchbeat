@@ -4,8 +4,8 @@ use axum::extract::{Query, State};
 use axum::response::Redirect;
 use axum::Json;
 use base64::Engine;
-use serde::{Deserialize, Serialize};
-use sha1::{Sha1, Digest};
+use serde::Deserialize;
+use sha1::Digest;
 use uuid::Uuid;
 
 use crate::auth::{AppState, Claims, OidcState};
@@ -53,7 +53,7 @@ pub async fn login(
         code_challenge,
     );
 
-    let mut redirect = Redirect::to(&auth_url);
+    let redirect = Redirect::to(&auth_url);
 
     if !redirect_uri.is_empty() {
         // We store redirect in memory keyed by state — handled in callback
@@ -100,7 +100,7 @@ pub async fn callback(
     let (code_verifier, redirect_uri) = match states.remove(&query.state) {
         Some(s) => {
             let parts: Vec<&str> = s.state.splitn(2, ':').collect();
-            let orig_state = parts[0].to_string();
+            let _orig_state = parts[0].to_string();
             let stored_redirect = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
             (s.code_verifier, stored_redirect)
         }

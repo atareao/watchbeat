@@ -5,9 +5,8 @@ use axum::Json;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::auth::{AppState, Claims};
+use crate::auth::AppState;
 use crate::checker;
-use crate::db::Database;
 use crate::models::{CheckResult, Monitor};
 
 // ───── Request types ─────

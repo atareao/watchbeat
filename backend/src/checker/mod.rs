@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::models::{CheckResult, Monitor};
+use crate::models::Monitor;
 
 /// Result of a single check.
 #[derive(Debug, Clone)]
