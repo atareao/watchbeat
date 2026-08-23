@@ -1,20 +1,20 @@
 [package]
-name = "vigilatrs"
+name = "watchbeat"
 version = "0.1.0"
 edition = "2021"
 description = "Self-hosted uptime monitor"
 license = "MIT"
-repository = "https://github.com/atareao/vigilatrs"
-homepage = "https://github.com/atareao/vigilatrs"
+repository = "https://github.com/atareao/watchbeat"
+homepage = "https://github.com/atareao/watchbeat"
 keywords = ["uptime", "monitoring", "status"]
 categories = ["web-programming", "monitoring"]
 
 [[bin]]
-name = "vigilatrs"
+name = "watchbeat"
 path = "src/main.rs"
 
 [lib]
-name = "vigilatrs"
+name = "watchbeat"
 path = "src/lib.rs"
 
 [dependencies]
@@ -66,7 +66,7 @@ include_dir = "0.7"
 uuid = { version = "1.23", features = ["v4", "serde"] }
 anyhow = "1.0"
 regex = "1"
-prometheus = { version = "0.13", features = ["process"] }
+prometheus-client = "0.25"
 
 # Email/SMTP
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls"] }

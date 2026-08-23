@@ -1,6 +1,6 @@
-# Vigilatrs — Plan v2: Features de producción
+# WatchBeat — Plan v2: Features de producción
 
-Plan de expansión de vigilatrs para convertirlo de MVP a herramienta de producción.
+Plan de expansión de WatchBeat para convertirlo de MVP a herramienta de producción.
 
 ## Resumen de features
 

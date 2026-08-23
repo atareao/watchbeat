@@ -1,19 +1,25 @@
-use axum::response::Response;
 use axum::body::Body;
-use prometheus::{Encoder, TextEncoder, Counter, Gauge};
+use axum::response::Response;
+use prometheus_client::encoding::text::encode;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::gauge::Gauge;
+use prometheus_client::registry::Registry;
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
-fn registry() -> &'static prometheus::Registry {
-    static REG: OnceLock<prometheus::Registry> = OnceLock::new();
-    REG.get_or_init(prometheus::Registry::new)
+fn registry() -> &'static Mutex<Registry> {
+    static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(Registry::default()))
 }
 
 fn checks_total() -> &'static Counter {
     static M: OnceLock<Counter> = OnceLock::new();
     M.get_or_init(|| {
-        let c = Counter::new("vigilatrs_checks_total", "Total checks").unwrap();
-        registry().register(Box::new(c.clone())).unwrap();
+        let c = Counter::default();
+        registry()
+            .lock()
+            .unwrap()
+            .register("watchbeat_checks", "Total checks", c.clone());
         c
     })
 }
@@ -21,8 +27,11 @@ fn checks_total() -> &'static Counter {
 fn monitors_up() -> &'static Gauge {
     static M: OnceLock<Gauge> = OnceLock::new();
     M.get_or_init(|| {
-        let g = Gauge::new("vigilatrs_monitors_up", "Monitors up").unwrap();
-        registry().register(Box::new(g.clone())).unwrap();
+        let g = Gauge::default();
+        registry()
+            .lock()
+            .unwrap()
+            .register("watchbeat_monitors_up", "Monitors up", g.clone());
         g
     })
 }
@@ -30,28 +39,29 @@ fn monitors_up() -> &'static Gauge {
 fn monitors_down() -> &'static Gauge {
     static M: OnceLock<Gauge> = OnceLock::new();
     M.get_or_init(|| {
-        let g = Gauge::new("vigilatrs_monitors_down", "Monitors down").unwrap();
-        registry().register(Box::new(g.clone())).unwrap();
+        let g = Gauge::default();
+        registry()
+            .lock()
+            .unwrap()
+            .register("watchbeat_monitors_down", "Monitors down", g.clone());
         g
     })
 }
 
-/// Increment the checks counter. Called from scheduler after each check.
-pub fn inc_checks() { checks_total().inc(); }
+pub fn inc_checks() {
+    checks_total().inc();
+}
 
-/// Set monitor counts. Called from scheduler loop.
 pub fn set_monitor_counts(up: u64, down: u64) {
-    monitors_up().set(up as f64);
-    monitors_down().set(down as f64);
+    monitors_up().set(up as i64);
+    monitors_down().set(down as i64);
 }
 
 pub async fn metrics_handler() -> Response {
-    let encoder = TextEncoder::new();
-    let mut buffer = Vec::new();
-    let families = registry().gather();
-    encoder.encode(&families, &mut buffer).unwrap();
+    let mut buf = String::new();
+    encode(&mut buf, &registry().lock().unwrap()).unwrap();
     Response::builder()
         .header("Content-Type", "text/plain; charset=utf-8")
-        .body(Body::from(buffer))
+        .body(Body::from(buf))
         .unwrap()
 }

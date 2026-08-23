@@ -14,7 +14,7 @@ RUN npm install && npm run build
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates iputils-ping && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=backend-builder /app/target/release/vigilatrs /app/vigilatrs
+COPY --from=backend-builder /app/target/release/watchbeat /app/watchbeat
 COPY --from=frontend-builder /app/dist /app/frontend/dist
 EXPOSE 3055
-CMD ["/app/vigilatrs"]
+CMD ["/app/watchbeat"]
