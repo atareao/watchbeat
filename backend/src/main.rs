@@ -4,15 +4,15 @@ use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use vigilatrs::auth::{self, AppState, JwtValidator, SchedulerStatus};
-use vigilatrs::checker;
-use vigilatrs::config::Config;
-use vigilatrs::db::Database;
-use vigilatrs::embed::serve_embedded;
-use vigilatrs::models::CheckResult;
-use vigilatrs::notifier;
-use vigilatrs::routes;
-use vigilatrs::routes::metrics;
+use watchbeat::auth::{self, AppState, JwtValidator, SchedulerStatus};
+use watchbeat::checker;
+use watchbeat::config::Config;
+use watchbeat::db::Database;
+use watchbeat::embed::serve_embedded;
+use watchbeat::models::CheckResult;
+use watchbeat::notifier;
+use watchbeat::routes;
+use watchbeat::routes::metrics;
 
 #[tokio::main]
 async fn main() {
@@ -42,7 +42,7 @@ async fn main() {
             .init();
     }
 
-    tracing::info!("🚀 Vigilatrs starting...");
+    tracing::info!("🚀 WatchBeat starting...");
 
     // ───── Connectivity verification ─────
     tracing::info!("🔌 Checking connectivity...");
@@ -135,7 +135,7 @@ async fn main() {
                     if is_public_path(&path) {
                         return Ok(next.run(req).await);
                     }
-                    vigilatrs::auth::require_auth(req, next).await
+                    watchbeat::auth::require_auth(req, next).await
                 }
             },
         ))
@@ -151,7 +151,7 @@ async fn main() {
         format!("{}:{}", config.host, config.port)
     };
 
-    tracing::info!("🌐 Vigilatrs en http://{}", addr);
+    tracing::info!("🌐 WatchBeat en http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -268,7 +268,7 @@ async fn scheduler_loop(
                         }
                     }
                     // Mark as missing to avoid repeated alerts
-                    let _ = db.upsert_heartbeat(&hb.id, &vigilatrs::models::Heartbeat {
+                    let _ = db.upsert_heartbeat(&hb.id, &watchbeat::models::Heartbeat {
                         status: "missing".into(),
                         ..hb.clone()
                     }).await;
@@ -306,8 +306,8 @@ async fn scheduler_loop(
 
 async fn run_monitor_check(
     db: &Database,
-    monitor: &vigilatrs::models::Monitor,
-    notifiers: &std::collections::HashMap<String, vigilatrs::models::Notifier>,
+    monitor: &watchbeat::models::Monitor,
+    notifiers: &std::collections::HashMap<String, watchbeat::models::Notifier>,
     event_tx: &tokio::sync::broadcast::Sender<String>,
 ) {
     let was_up = match db.get_latest_check(&monitor.id).await {

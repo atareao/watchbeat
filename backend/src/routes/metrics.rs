@@ -12,7 +12,7 @@ fn registry() -> &'static prometheus::Registry {
 fn checks_total() -> &'static Counter {
     static M: OnceLock<Counter> = OnceLock::new();
     M.get_or_init(|| {
-        let c = Counter::new("vigilatrs_checks_total", "Total checks").unwrap();
+        let c = Counter::new("watchbeat_checks_total", "Total checks").unwrap();
         registry().register(Box::new(c.clone())).unwrap();
         c
     })
@@ -21,7 +21,7 @@ fn checks_total() -> &'static Counter {
 fn monitors_up() -> &'static Gauge {
     static M: OnceLock<Gauge> = OnceLock::new();
     M.get_or_init(|| {
-        let g = Gauge::new("vigilatrs_monitors_up", "Monitors up").unwrap();
+        let g = Gauge::new("watchbeat_monitors_up", "Monitors up").unwrap();
         registry().register(Box::new(g.clone())).unwrap();
         g
     })
@@ -30,7 +30,7 @@ fn monitors_up() -> &'static Gauge {
 fn monitors_down() -> &'static Gauge {
     static M: OnceLock<Gauge> = OnceLock::new();
     M.get_or_init(|| {
-        let g = Gauge::new("vigilatrs_monitors_down", "Monitors down").unwrap();
+        let g = Gauge::new("watchbeat_monitors_down", "Monitors down").unwrap();
         registry().register(Box::new(g.clone())).unwrap();
         g
     })

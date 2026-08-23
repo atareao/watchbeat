@@ -1,4 +1,4 @@
-# 🕵️ Vigilatrs
+# 🕵️ WatchBeat
 
 Monitor de uptime auto-hosteado con backend Rust + Axum y frontend React + Ant Design.
 
@@ -11,7 +11,7 @@ Monitor de uptime auto-hosteado con backend Rust + Axum y frontend React + Ant D
 ## Arquitectura
 
 ```
-vigilatrs/
+watchbeat/
 ├── backend/              # Rust + Axum + SQLite
 │   └── src/
 │       ├── main.rs             # Entrypoint + scheduler loop
@@ -69,7 +69,7 @@ vigilatrs/
 ```bash
 # Backend
 cd backend
-cp ../vigilatrs.env.example .env
+cp ../watchbeat.env.example .env
 # Rellena OIDC_* en .env
 cargo run
 
@@ -84,13 +84,13 @@ Frontend en `http://localhost:3050`, backend en `http://localhost:3055`.
 ## Docker
 
 ```bash
-docker build -t vigilatrs .
+docker build -t watchbeat .
 docker run -p 3055:3055 \
   -v ./data:/app/data \
   -e OIDC_ISSUER_URL=https://auth.tuservidor.com \
-  -e OIDC_CLIENT_ID=vigilatrs \
+  -e OIDC_CLIENT_ID=watchbeat \
   -e OIDC_CLIENT_SECRET=secreto \
-  vigilatrs
+  watchbeat
 ```
 
 ## Licencia

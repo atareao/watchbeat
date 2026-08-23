@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
-use vigilatrs::db::Database;
-use vigilatrs::models::{CheckResult, Monitor, Notifier};
+use watchbeat::db::Database;
+use watchbeat::models::{CheckResult, Monitor, Notifier};
 
 fn sample_monitor(id: &str) -> Monitor {
     Monitor {

@@ -8,7 +8,7 @@ use crate::auth::AppState;
 pub async fn create_backup(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, String> {
-    let output_path = state.config.data_dir.join("vigilatrs.backup.db");
+    let output_path = state.config.data_dir.join("watchbeat.backup.db");
 
     state
         .db

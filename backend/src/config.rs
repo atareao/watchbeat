@@ -21,7 +21,7 @@ impl Config {
             host: env_or("HOST", "0.0.0.0"),
             port: env_or_parsed("PORT", 3055),
             data_dir: PathBuf::from(env_or("DATA_DIR", "./data")),
-            database_url: PathBuf::from(env_or("DATABASE_URL", "./data/vigilatrs.db")),
+            database_url: PathBuf::from(env_or("DATABASE_URL", "./data/watchbeat.db")),
             timezone: env_or("TIMEZONE", "Europe/Madrid"),
             log_level: env_or("RUST_LOG", "info"),
             log_format: env_or("LOG_FORMAT", "pretty"),

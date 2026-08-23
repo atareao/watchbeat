@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 
-const THEME_KEY = 'vigilatrs-theme';
+const THEME_KEY = 'watchbeat-theme';
 
 export function useTheme() {
   const [isDark, setIsDark] = useState(() => {

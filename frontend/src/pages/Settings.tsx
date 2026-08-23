@@ -139,7 +139,7 @@ export default function Settings() {
       <Card title="Variables de entorno">
         <Paragraph>
           La configuración principal (OIDC, puerto, etc.) se define mediante
-          variables de entorno. Consulta <code>vigilatrs.env.example</code> para la lista completa.
+          variables de entorno. Consulta <code>watchbeat.env.example</code> para la lista completa.
         </Paragraph>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
