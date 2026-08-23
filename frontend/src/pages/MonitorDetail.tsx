@@ -116,6 +116,38 @@ export default function MonitorDetail() {
         </Card>
       )}
 
+      {timeline.filter(t => t.response_time_ms && t.response_time_ms > 0).length > 0 && (
+        <Card title="Latencia (ms)" style={{ marginTop: 16 }}>
+          <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'flex-end', height: 80 }}>
+            {(() => {
+              const withRt = timeline.filter(t => t.response_time_ms && t.response_time_ms > 0);
+              const maxRt = Math.max(...withRt.map(t => t.response_time_ms ?? 0), 1);
+              const last24h = withRt.slice(-48);
+              return last24h.length > 0 ? last24h.map((t, i) => {
+                const rt = t.response_time_ms ?? 0;
+                const pct = (rt / maxRt) * 100;
+                return (
+                  <div
+                    key={i}
+                    title={`${rt}ms · ${dayjs(t.checked_at).format('DD/MM HH:mm')}`}
+                    style={{
+                      width: '100%', flex: '1 1 auto', minWidth: 4,
+                      height: `${Math.max(pct, 5)}%`,
+                      background: '#1677ff',
+                      borderRadius: '2px 2px 0 0',
+                      opacity: t.status === 'up' ? 1 : 0.5,
+                    }}
+                  />
+                );
+              }) : null;
+            })()}
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            Últimas 48 muestras · barra más alta = {Math.max(...timeline.filter(t => t.response_time_ms && t.response_time_ms > 0).map(t => t.response_time_ms ?? 0), 1)}ms
+          </Typography.Text>
+        </Card>
+      )}
+
       <Card title="Histórico" style={{ marginTop: 16 }}>
         <Table dataSource={checks} columns={checksColumns} rowKey="id" pagination={{ pageSize: 20 }} size="small" />
       </Card>

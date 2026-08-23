@@ -1,7 +1,12 @@
 use std::sync::Arc;
+use std::convert::Infallible;
 
+use axum::extract::State;
+use axum::response::sse::{Sse, Event};
 use axum::routing;
 use axum::Router;
+use futures::stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth::AppState;
 
@@ -26,6 +31,9 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             "/api/heartbeat/{token}",
             routing::post(heartbeats::ping),
         );
+
+    let events_route = Router::new()
+        .route("/api/events", routing::get(sse_handler));
 
     let protected = Router::new()
         .route("/api/me", routing::get(auth_routes::me))
@@ -70,9 +78,68 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         )
         .route("/api/status", routing::get(status::dashboard));
 
-    public.merge(protected)
+    public.merge(events_route).merge(protected)
 }
 
 pub async fn health() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({"status": "ok"}))
+}
+
+/// SSE endpoint — streams check events in real-time.
+/// Validates token via query param or Authorization header.
+pub async fn sse_handler(
+    State(state): State<Arc<AppState>>,
+    req: axum::extract::Request,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, String> {
+    // Validate token from query param (EventSource API friendly) or cookie
+    let token = req.uri()
+        .query()
+        .and_then(|q| {
+            q.split('&').find_map(|p| {
+                let mut parts = p.splitn(2, '=');
+                if parts.next()? == "token" { parts.next() } else { None }
+            })
+        })
+        .or_else(|| {
+            req.headers()
+                .get("Cookie")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|c| {
+                    c.split(';')
+                        .find(|part| part.trim().starts_with("token="))
+                        .map(|part| part.trim().trim_start_matches("token="))
+                })
+        });
+
+    if let Some(t) = token {
+        // Validate the token
+        if state.jwt_validator.validate_token(t).await.is_err() {
+            return Err("Invalid token".into());
+        }
+    } else {
+        // Try Authorization header
+        let auth = req.headers()
+            .get("Authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+
+        match auth {
+            Some(t) => {
+                if state.jwt_validator.validate_token(t).await.is_err() {
+                    return Err("Invalid token".into());
+                }
+            }
+            None => return Err("Missing authentication".into()),
+        }
+    }
+
+    let rx = state.event_tx.subscribe();
+    let stream = BroadcastStream::new(rx).map(|msg| {
+        match msg {
+            Ok(data) => Ok(Event::default().data(data)),
+            Err(_) => Ok(Event::default().data("")),
+        }
+    });
+
+    Ok(Sse::new(stream))
 }

@@ -114,6 +114,9 @@ impl JwtValidator {
 
 // ───── AppState ─────
 
+/// SSE event broadcast channel capacity
+pub const SSE_CHANNEL_CAPACITY: usize = 256;
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
@@ -122,6 +125,7 @@ pub struct AppState {
     pub jwt_validator: Arc<JwtValidator>,
     pub oidc_states: Arc<Mutex<HashMap<String, OidcState>>>,
     pub scheduler_status: Arc<Mutex<SchedulerStatus>>,
+    pub event_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 #[derive(Debug, Clone)]

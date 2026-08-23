@@ -83,6 +83,7 @@ async fn main() {
     // ───── App State ─────
     let scheduler_status: Arc<Mutex<SchedulerStatus>> =
         Arc::new(Mutex::new(SchedulerStatus::default()));
+    let (event_tx, _) = tokio::sync::broadcast::channel(auth::SSE_CHANNEL_CAPACITY);
 
     let app_state = Arc::new(AppState {
         config: config.clone(),
@@ -93,13 +94,15 @@ async fn main() {
             std::collections::HashMap::new(),
         )),
         scheduler_status: scheduler_status.clone(),
+        event_tx: event_tx.clone(),
     });
 
     // ───── Scheduler ─────
     let db_for_scheduler = db.clone();
     let sched_status = scheduler_status.clone();
+    let event_tx_for_sched = event_tx.clone();
     tokio::spawn(async move {
-        scheduler_loop(db_for_scheduler, sched_status).await;
+        scheduler_loop(db_for_scheduler, sched_status, event_tx_for_sched).await;
     });
 
     // ───── Router ─────
@@ -148,6 +151,7 @@ async fn main() {
 async fn scheduler_loop(
     db: Database,
     sched_status: Arc<Mutex<SchedulerStatus>>,
+    event_tx: tokio::sync::broadcast::Sender<String>,
 ) {
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
@@ -181,7 +185,7 @@ async fn scheduler_loop(
                 Ok(Some(c)) => c,
                 Ok(None) => {
                     // Never checked — run now
-                    run_monitor_check(&db, monitor, &notifiers).await;
+                    run_monitor_check(&db, monitor, &notifiers, &event_tx).await;
                     checks_done += 1;
                     continue;
                 }
@@ -196,7 +200,7 @@ async fn scheduler_loop(
                 Ok(t) => t.with_timezone(&chrono::Utc),
                 Err(_) => {
                     // Invalid timestamp — run now
-                    run_monitor_check(&db, monitor, &notifiers).await;
+                    run_monitor_check(&db, monitor, &notifiers, &event_tx).await;
                     checks_done += 1;
                     continue;
                 }
@@ -206,7 +210,7 @@ async fn scheduler_loop(
             let interval = chrono::Duration::seconds(monitor.interval_seconds);
 
             if elapsed >= interval {
-                run_monitor_check(&db, monitor, &notifiers).await;
+                run_monitor_check(&db, monitor, &notifiers, &event_tx).await;
                 checks_done += 1;
             }
         }
@@ -275,6 +279,7 @@ async fn run_monitor_check(
     db: &Database,
     monitor: &vigilatrs::models::Monitor,
     notifiers: &std::collections::HashMap<String, vigilatrs::models::Notifier>,
+    event_tx: &tokio::sync::broadcast::Sender<String>,
 ) {
     let was_up = match db.get_latest_check(&monitor.id).await {
         Ok(Some(c)) => c.status == "up",
@@ -336,6 +341,18 @@ async fn run_monitor_check(
         return;
     }
 
+    // Broadcast SSE event
+    let event = serde_json::json!({
+        "type": "check",
+        "monitor_id": monitor.id,
+        "monitor_name": monitor.name,
+        "status": check.status,
+        "response_time_ms": check.response_time_ms,
+        "error_message": check.error_message,
+        "checked_at": check.checked_at,
+    }).to_string();
+    let _ = event_tx.send(event);
+
     // Detect status change and notify
     let is_up = check.status == "up" || check.status == "warning";
     if was_up != is_up {
@@ -396,6 +413,7 @@ fn is_public_path(path: &str) -> bool {
         || path == "/health"
         || path.starts_with("/auth/")
         || path.starts_with("/assets/")
+        || path == "/api/events"
         || path.ends_with(".html")
         || path.ends_with(".js")
         || path.ends_with(".css")

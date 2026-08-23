@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { Layout, Menu, Typography, Button } from 'antd';
 import {
   DashboardOutlined, MonitorOutlined, BellOutlined, SettingOutlined, LogoutOutlined,
-  ControlOutlined, HeartOutlined,
+  ControlOutlined, HeartOutlined, SunOutlined, MoonOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router';
 import { useAuth } from '../hooks/useAuth';
+import { useTheme } from '../hooks/useTheme';
 
 const { Header, Sider, Content } = Layout;
 
@@ -22,6 +23,7 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
+  const { isDark, toggle } = useTheme();
   const [collapsed, setCollapsed] = useState(false);
 
   const handleMenuClick = ({ key }: { key: string }) => {
@@ -44,6 +46,7 @@ export default function AppLayout() {
       <Layout>
         <Header style={{ background: '#fff', padding: '0 24px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', borderBottom: '1px solid #f0f0f0' }}>
           <Typography.Text style={{ marginRight: 16 }}>{user?.name ?? user?.email ?? ''}</Typography.Text>
+          <Button icon={isDark ? <SunOutlined /> : <MoonOutlined />} onClick={toggle} type="text" style={{ marginRight: 8 }} />
           <Button icon={<LogoutOutlined />} type="text">Salir</Button>
         </Header>
         <Content style={{ margin: 24 }}>
