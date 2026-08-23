@@ -1,0 +1,71 @@
+[package]
+name = "vigilatrs"
+version = "0.1.0"
+edition = "2021"
+description = "Self-hosted uptime monitor"
+license = "MIT"
+repository = "https://github.com/atareao/vigilatrs"
+homepage = "https://github.com/atareao/vigilatrs"
+keywords = ["uptime", "monitoring", "status"]
+categories = ["web-programming", "monitoring"]
+
+[[bin]]
+name = "vigilatrs"
+path = "src/main.rs"
+
+[lib]
+name = "vigilatrs"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.52", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures = "0.3"
+
+# Web framework
+axum = { version = "0.8", features = ["macros"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "fs"] }
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = [
+    "json", "rustls-tls",
+] }
+
+# OIDC / Auth
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+base64 = "0.22"
+cookie = "0.18"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+
+# Embed SPA
+include_dir = "0.7"
+
+# General
+uuid = { version = "1.23", features = ["v4", "serde"] }
+anyhow = "1.0"
+regex = "1.12"
+url = "2.5"
+
+# PKCE
+sha1 = "0.10"
+sha2 = "0.10"
+
+dotenvy = "0.15"
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
