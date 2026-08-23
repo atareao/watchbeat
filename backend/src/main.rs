@@ -361,31 +361,107 @@ async fn run_monitor_check(
     // Detect status change and notify
     let is_up = check.status == "up" || check.status == "warning";
     if was_up != is_up {
-        if let Some(notifier_id) = &monitor.notifier_id {
-            if let Some(notifier) = notifiers.get(notifier_id) {
-                if notifier.enabled && notifier.notifier_type == "telegram" {
-                    let bot_token = notifier
-                        .config_json
-                        .get("bot_token")
-                        .and_then(|v| v.as_str());
-                    let chat_id = notifier
-                        .config_json
-                        .get("chat_id")
-                        .and_then(|v| v.as_str());
-
-                    if let (Some(token), Some(chat)) = (bot_token, chat_id) {
-                        if let Err(e) = notifier::send_telegram_notification(
-                            token, chat, monitor, &check, was_up,
-                        )
-                        .await
-                        {
-                            tracing::warn!(
-                                "Scheduler: notification failed for {}: {}",
-                                monitor.name,
-                                e
-                            );
+        // Look up notifiers via monitor_notifiers table (N:M)
+        let notifier_ids = db.get_monitor_notifier_ids(&monitor.id).await.unwrap_or_default();
+        for nid in &notifier_ids {
+            if let Some(notifier) = notifiers.get(nid) {
+                if !notifier.enabled { continue; }
+                match notifier.notifier_type.as_str() {
+                    "telegram" => {
+                        let bot_token = notifier.config_json.get("bot_token").and_then(|v| v.as_str());
+                        let chat_id = notifier.config_json.get("chat_id").and_then(|v| v.as_str());
+                        if let (Some(token), Some(chat)) = (bot_token, chat_id) {
+                            if let Err(e) = notifier::telegram::send_telegram_notification(
+                                token, chat, monitor, &check, was_up,
+                            ).await {
+                                tracing::warn!("Scheduler: telegram notification failed: {}", e);
+                            }
                         }
                     }
+                    "matrix" => {
+                        let homeserver = notifier.config_json.get("homeserver_url").and_then(|v| v.as_str());
+                        let access_token = notifier.config_json.get("access_token").and_then(|v| v.as_str());
+                        let room_id = notifier.config_json.get("room_id").and_then(|v| v.as_str());
+                        if let (Some(hs), Some(tok), Some(rid)) = (homeserver, access_token, room_id) {
+                            if let Err(e) = notifier::matrix::send_matrix_notification(
+                                hs, tok, rid, monitor, &check, was_up,
+                            ).await {
+                                tracing::warn!("Scheduler: matrix notification failed: {}", e);
+                            }
+                        }
+                    }
+                    "ntfy" => {
+                        let topic = notifier.config_json.get("topic").and_then(|v| v.as_str());
+                        let server_url = notifier.config_json.get("server_url").and_then(|v| v.as_str()).unwrap_or("https://ntfy.sh");
+                        let token = notifier.config_json.get("token").and_then(|v| v.as_str());
+                        if let Some(t) = topic {
+                            if let Err(e) = notifier::ntfy::send_ntfy_notification(
+                                t, server_url, token, monitor, &check, was_up,
+                            ).await {
+                                tracing::warn!("Scheduler: ntfy notification failed: {}", e);
+                            }
+                        }
+                    }
+                    "webhook" => {
+                        let url = notifier.config_json.get("url").and_then(|v| v.as_str());
+                        let method = notifier.config_json.get("method").and_then(|v| v.as_str()).unwrap_or("POST");
+                        let headers_json = notifier.config_json.get("headers").map(|v| v.to_string()).unwrap_or_default();
+                        if let Some(u) = url {
+                            if let Err(e) = notifier::webhook::send_webhook_notification(
+                                u, method, &headers_json, monitor, &check, was_up,
+                            ).await {
+                                tracing::warn!("Scheduler: webhook notification failed: {}", e);
+                            }
+                        }
+                    }
+                    "slack" => {
+                        let webhook_url = notifier.config_json.get("webhook_url").and_then(|v| v.as_str());
+                        if let Some(u) = webhook_url {
+                            if let Err(e) = notifier::slack::send_slack_notification(
+                                u, monitor, &check, was_up,
+                            ).await {
+                                tracing::warn!("Scheduler: slack notification failed: {}", e);
+                            }
+                        }
+                    }
+                    "discord" => {
+                        let webhook_url = notifier.config_json.get("webhook_url").and_then(|v| v.as_str());
+                        if let Some(u) = webhook_url {
+                            if let Err(e) = notifier::discord::send_discord_notification(
+                                u, monitor, &check, was_up,
+                            ).await {
+                                tracing::warn!("Scheduler: discord notification failed: {}", e);
+                            }
+                        }
+                    }
+                    "email" => {
+                        let smtp_host = notifier.config_json.get("smtp_host").and_then(|v| v.as_str());
+                        let smtp_port = notifier.config_json.get("smtp_port").and_then(|v| v.as_u64()).unwrap_or(587) as u16;
+                        let username = notifier.config_json.get("username").and_then(|v| v.as_str());
+                        let password = notifier.config_json.get("password").and_then(|v| v.as_str());
+                        let from = notifier.config_json.get("from").and_then(|v| v.as_str());
+                        let to = notifier.config_json.get("to").and_then(|v| v.as_str());
+                        if let (Some(host), Some(user), Some(pass), Some(f), Some(t)) = (smtp_host, username, password, from, to) {
+                            if let Err(e) = notifier::email::send_email_notification(
+                                host, smtp_port, user, pass, f, t, monitor, &check, was_up,
+                            ).await {
+                                tracing::warn!("Scheduler: email notification failed: {}", e);
+                            }
+                        }
+                    }
+                    "gotify" => {
+                        let server_url = notifier.config_json.get("server_url").and_then(|v| v.as_str()).unwrap_or("http://localhost:8080");
+                        let app_token = notifier.config_json.get("app_token").and_then(|v| v.as_str());
+                        let priority = notifier.config_json.get("priority").and_then(|v| v.as_i64()).unwrap_or(5);
+                        if let Some(t) = app_token {
+                            if let Err(e) = notifier::gotify::send_gotify_notification(
+                                server_url, t, priority, monitor, &check, was_up,
+                            ).await {
+                                tracing::warn!("Scheduler: gotify notification failed: {}", e);
+                            }
+                        }
+                    }
+                    _ => tracing::warn!("Scheduler: unknown notifier type '{}'", notifier.notifier_type),
                 }
             }
         }

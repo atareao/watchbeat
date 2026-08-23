@@ -134,7 +134,7 @@ pub async fn test(
         .and_then(|v| v.as_str())
         .ok_or("Missing chat_id in notifier config")?;
 
-    crate::notifier::send_telegram_notification(
+    crate::notifier::telegram::send_telegram_notification(
         bot_token,
         chat_id,
         &crate::models::Monitor {
