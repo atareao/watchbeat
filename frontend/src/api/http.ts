@@ -151,3 +151,62 @@ export async function deleteNotifier(id: string): Promise<void> {
 export async function testNotifier(id: string): Promise<{ sent: boolean }> {
   return fetcher(`/api/notifiers/${id}/test`, { method: 'POST' });
 }
+
+// ───── Status Pages ─────
+
+export interface StatusPage {
+  id: string;
+  slug: string;
+  title: string;
+  description: string | null;
+  monitors: string[];
+  public: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchStatusPages(): Promise<{ status_pages: StatusPage[] }> {
+  return fetcher('/api/status-pages');
+}
+
+export async function createStatusPage(data: Partial<StatusPage>): Promise<StatusPage> {
+  return fetcher<StatusPage>('/api/status-pages', { method: 'POST', body: data });
+}
+
+export async function updateStatusPage(id: string, data: Partial<StatusPage>): Promise<StatusPage> {
+  return fetcher<StatusPage>(`/api/status-pages/${id}`, { method: 'PUT', body: data });
+}
+
+export async function deleteStatusPage(id: string): Promise<void> {
+  return fetcher(`/api/status-pages/${id}`, { method: 'DELETE' });
+}
+
+// ───── Heartbeats ─────
+
+export interface Heartbeat {
+  id: string;
+  name: string;
+  token: string;
+  grace_seconds: number;
+  last_seen_at: string | null;
+  status: string;
+  notifier_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchHeartbeats(): Promise<{ heartbeats: Heartbeat[] }> {
+  return fetcher('/api/heartbeats');
+}
+
+export async function createHeartbeat(data: Partial<Heartbeat>): Promise<Heartbeat> {
+  return fetcher<Heartbeat>('/api/heartbeats', { method: 'POST', body: data });
+}
+
+export async function updateHeartbeat(id: string, data: Partial<Heartbeat>): Promise<Heartbeat> {
+  return fetcher<Heartbeat>(`/api/heartbeats/${id}`, { method: 'PUT', body: data });
+}
+
+export async function deleteHeartbeat(id: string): Promise<void> {
+  return fetcher(`/api/heartbeats/${id}`, { method: 'DELETE' });
+}

@@ -8,6 +8,8 @@ import LoginPage from './pages/LoginPage';
 import Monitors from './pages/Monitors';
 import MonitorDetail from './pages/MonitorDetail';
 import Notifiers from './pages/Notifiers';
+import StatusPages from './pages/StatusPages';
+import Heartbeats from './pages/Heartbeats';
 import Settings from './pages/Settings';
 import { useAuth } from './hooks/useAuth';
 import './global.css';
@@ -51,6 +53,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="monitors" element={<Monitors />} />
             <Route path="monitors/:id" element={<MonitorDetail />} />
             <Route path="notifiers" element={<Notifiers />} />
+            <Route path="status-pages" element={<StatusPages />} />
+            <Route path="heartbeats" element={<Heartbeats />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Layout, Menu, Typography, Button } from 'antd';
 import {
   DashboardOutlined, MonitorOutlined, BellOutlined, SettingOutlined, LogoutOutlined,
+  ControlOutlined, HeartOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router';
 import { useAuth } from '../hooks/useAuth';
-import { logout } from '../store/auth';
 
 const { Header, Sider, Content } = Layout;
 
@@ -13,6 +13,8 @@ const menuItems = [
   { key: '/dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
   { key: '/monitors', icon: <MonitorOutlined />, label: 'Monitores' },
   { key: '/notifiers', icon: <BellOutlined />, label: 'Notificadores' },
+  { key: '/status-pages', icon: <ControlOutlined />, label: 'Status Pages' },
+  { key: '/heartbeats', icon: <HeartOutlined />, label: 'Heartbeats' },
   { key: '/settings', icon: <SettingOutlined />, label: 'Ajustes' },
 ];
 
@@ -42,7 +44,7 @@ export default function AppLayout() {
       <Layout>
         <Header style={{ background: '#fff', padding: '0 24px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', borderBottom: '1px solid #f0f0f0' }}>
           <Typography.Text style={{ marginRight: 16 }}>{user?.name ?? user?.email ?? ''}</Typography.Text>
-          <Button icon={<LogoutOutlined />} onClick={logout} type="text">Salir</Button>
+          <Button icon={<LogoutOutlined />} type="text">Salir</Button>
         </Header>
         <Content style={{ margin: 24 }}>
           <Outlet />

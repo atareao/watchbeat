@@ -5,7 +5,7 @@ import {
 import { PlusOutlined, ReloadOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import {
   fetchMonitors, createMonitor, updateMonitor, deleteMonitor, toggleMonitor, runCheck,
-  type Monitor,
+  fetchNotifiers, type Monitor,
 } from '../api/http';
 
 const { Title } = Typography;
@@ -14,16 +14,12 @@ const MONITOR_TYPES = [
   { value: 'http', label: 'HTTP(S)' },
   { value: 'tcp', label: 'TCP' },
   { value: 'ping', label: 'Ping' },
+  { value: 'tls', label: 'TLS/SSL' },
 ];
-
-const STATUS_COLORS: Record<string, string> = {
-  up: '#22c55e',
-  down: '#ef4444',
-  error: '#f59e0b',
-};
 
 export default function Monitors() {
   const [monitors, setMonitors] = useState<Monitor[]>([]);
+  const [notifiers, setNotifiers] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -31,8 +27,11 @@ export default function Monitors() {
 
   const load = () => {
     setLoading(true);
-    fetchMonitors()
-      .then(data => setMonitors(data.monitors))
+    Promise.all([fetchMonitors(), fetchNotifiers()])
+      .then(([mData, nData]) => {
+        setMonitors(mData.monitors);
+        setNotifiers(nData.notifiers.map(n => ({ id: n.id, name: n.name })));
+      })
       .catch(err => message.error(err.message))
       .finally(() => setLoading(false));
   };
@@ -42,7 +41,7 @@ export default function Monitors() {
   const handleCreate = () => {
     setEditingId(null);
     form.resetFields();
-    form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true });
+    form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true, confirmations_required: 0 });
     setModalOpen(true);
   };
 
@@ -55,6 +54,8 @@ export default function Monitors() {
       interval_seconds: m.interval_seconds,
       timeout_seconds: m.timeout_seconds,
       enabled: m.enabled,
+      notifier_id: m.notifier_id ?? null,
+      confirmations_required: (m as any).confirmations_required ?? 0,
     });
     setModalOpen(true);
   };
@@ -62,17 +63,27 @@ export default function Monitors() {
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
+      const payload = {
+        name: values.name,
+        type: values.type,
+        target: values.target,
+        interval_seconds: values.interval_seconds,
+        timeout_seconds: values.timeout_seconds,
+        enabled: values.enabled,
+        notifier_id: values.notifier_id || null,
+        confirmations_required: values.confirmations_required ?? 0,
+      };
       if (editingId) {
-        await updateMonitor(editingId, values);
+        await updateMonitor(editingId, payload);
         message.success('Monitor actualizado');
       } else {
-        await createMonitor(values);
+        await createMonitor(payload);
         message.success('Monitor creado');
       }
       setModalOpen(false);
       load();
     } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'errorFields' in err) return; // validation error
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
       message.error('Error al guardar');
     }
   };
@@ -101,16 +112,15 @@ export default function Monitors() {
   };
 
   const columns = [
-    { title: 'Nombre', dataIndex: 'name', key: 'name',
+    {
+      title: 'Nombre', dataIndex: 'name', key: 'name',
       render: (name: string, record: Monitor) => (
         <a href={`#/monitors/${record.id}`}>{name}</a>
       ),
     },
     { title: 'Tipo', dataIndex: 'type', key: 'type', width: 80 },
     { title: 'Target', dataIndex: 'target', key: 'target', ellipsis: true },
-    { title: 'Intervalo', dataIndex: 'interval_seconds', key: 'interval',
-      render: (v: number) => `${v}s`,
-    },
+    { title: 'Intervalo', dataIndex: 'interval_seconds', key: 'interval', render: (v: number) => `${v}s` },
     {
       title: 'Activo', dataIndex: 'enabled', key: 'enabled', width: 80,
       render: (enabled: boolean, record: Monitor) => (
@@ -148,6 +158,7 @@ export default function Monitors() {
         open={modalOpen}
         onOk={handleSave}
         onCancel={() => setModalOpen(false)}
+        width={600}
       >
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="Nombre" rules={[{ required: true }]}>
@@ -161,15 +172,25 @@ export default function Monitors() {
           >
             <Input placeholder="https://ejemplo.com" />
           </Form.Item>
-          <Form.Item name="interval_seconds" label="Intervalo (segundos)">
-            <InputNumber min={10} max={86400} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="timeout_seconds" label="Timeout (segundos)">
-            <InputNumber min={1} max={120} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="enabled" label="Habilitado" valuePropName="checked">
-            <Switch />
-          </Form.Item>
+          <Space style={{ width: '100%' }} size="large">
+            <Form.Item name="interval_seconds" label="Intervalo (s)">
+              <InputNumber min={10} max={86400} />
+            </Form.Item>
+            <Form.Item name="timeout_seconds" label="Timeout (s)">
+              <InputNumber min={1} max={120} />
+            </Form.Item>
+            <Form.Item name="confirmations_required" label="Confirmaciones">
+              <InputNumber min={0} max={10} />
+            </Form.Item>
+          </Space>
+          <Space style={{ width: '100%' }} size="large">
+            <Form.Item name="enabled" label="Habilitado" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item name="notifier_id" label="Notificador" style={{ minWidth: 200 }}>
+              <Select allowClear placeholder="Ninguno" options={notifiers.map(n => ({ value: n.id, label: n.name }))} />
+            </Form.Item>
+          </Space>
         </Form>
       </Modal>
     </div>
