@@ -1,5 +1,0 @@
-axum::middleware::FromFn<fn(State<Arc<AppState>>, axum::http::Request<axum::body::Body>, Next) -> impl futures::Future<Output = Result<axum::http::Response<axum::body::Body>, AuthError>> {require_auth}, (), Route, _>
-axum::middleware::FromFn<fn(State<Arc<AppState>>, axum::http::Request<axum::body::Body>, Next) -> impl futures::Future<Output = Result<axum::http::Response<axum::body::Body>, AuthError>> {require_auth}, (), Route, _>: tower_service::Service<axum::http::Request<axum::body::Body>>
-axum::middleware::FromFn<F, S, I, (T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14)>
-axum::middleware::FromFn<F, S, I, (T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15)>
-axum::middleware::FromFn<F, S, I, (T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T16)>
