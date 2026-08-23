@@ -253,7 +253,7 @@ async fn run_monitor_check(
         monitor_id: monitor.id.clone(),
         status: outcome.status,
         status_code: outcome.status_code,
-        response_time_ms: outcome.response_time_ms,
+        response_time_ms: outcome.response_time_ms as i64,
         error_message: outcome.error_message,
         checked_at: now_str,
     };
@@ -333,4 +333,52 @@ fn is_public_path(path: &str) -> bool {
         || path.ends_with(".woff2")
         || path.ends_with(".woff")
         || path.ends_with(".ttf")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_public_root() {
+        assert!(is_public_path("/"));
+    }
+
+    #[test]
+    fn test_is_public_health() {
+        assert!(is_public_path("/health"));
+    }
+
+    #[test]
+    fn test_is_public_auth() {
+        assert!(is_public_path("/auth/login"));
+        assert!(is_public_path("/auth/callback?code=x"));
+    }
+
+    #[test]
+    fn test_is_public_assets() {
+        assert!(is_public_path("/assets/main.js"));
+        assert!(is_public_path("/assets/style.css"));
+    }
+
+    #[test]
+    fn test_is_public_file_extensions() {
+        assert!(is_public_path("/index.html"));
+        assert!(is_public_path("/app.js"));
+        assert!(is_public_path("/style.css"));
+        assert!(is_public_path("/icon.png"));
+        assert!(is_public_path("/favicon.ico"));
+        assert!(is_public_path("/logo.svg"));
+        assert!(is_public_path("/data.json"));
+        assert!(is_public_path("/font.woff2"));
+        assert!(is_public_path("/font.woff"));
+        assert!(is_public_path("/font.ttf"));
+    }
+
+    #[test]
+    fn test_is_not_public_api() {
+        assert!(!is_public_path("/api/status"));
+        assert!(!is_public_path("/api/monitors"));
+        assert!(!is_public_path("/api/me"));
+    }
 }

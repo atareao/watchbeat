@@ -212,3 +212,84 @@ impl Checker for PingChecker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Monitor;
+
+    fn make_monitor(monitor_type: &str, target: &str) -> Monitor {
+        Monitor {
+            id: "t".into(),
+            name: "test".into(),
+            monitor_type: monitor_type.into(),
+            target: target.into(),
+            config_json: serde_json::json!({}),
+            interval_seconds: 300,
+            timeout_seconds: 5,
+            enabled: true,
+            notifier_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_checker_for_http() {
+        assert!(checker_for(&make_monitor("http", "https://ex.com")).is_some());
+    }
+
+    #[test]
+    fn test_checker_for_tcp() {
+        assert!(checker_for(&make_monitor("tcp", "localhost:8080")).is_some());
+    }
+
+    #[test]
+    fn test_checker_for_ping() {
+        assert!(checker_for(&make_monitor("ping", "8.8.8.8")).is_some());
+    }
+
+    #[test]
+    fn test_checker_for_unknown() {
+        assert!(checker_for(&make_monitor("unknown", "x")).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_http_check_up() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let m = make_monitor("http", &format!("http://{}/test", addr));
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await.unwrap();
+        });
+
+        let outcome = HttpChecker.check(&m).await;
+        assert_eq!(outcome.status, "up");
+        assert!(outcome.response_time_ms < 5000);
+        assert!(outcome.error_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_http_check_down() {
+        let m = make_monitor("http", "http://203.0.113.1:1");
+        let outcome = HttpChecker.check(&m).await;
+        assert!(outcome.status == "down" || outcome.status == "error");
+    }
+
+    #[tokio::test]
+    async fn test_tcp_check_up() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let m = make_monitor("tcp", &addr.to_string());
+
+        tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+        });
+
+        let outcome = TcpChecker.check(&m).await;
+        assert_eq!(outcome.status, "up");
+    }
+}

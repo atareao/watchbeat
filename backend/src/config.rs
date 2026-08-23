@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-/// Application configuration — loaded from env vars.
-/// OIDC is **mandatory**: the application will not start without it.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub host: String,
@@ -18,8 +16,6 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load configuration from environment variables.
-    /// Panics if required OIDC variables are missing.
     pub fn load() -> Self {
         Self {
             host: env_or("HOST", "0.0.0.0"),
@@ -32,31 +28,22 @@ impl Config {
             oidc_issuer_url: env_required("OIDC_ISSUER_URL"),
             oidc_client_id: env_required("OIDC_CLIENT_ID"),
             oidc_client_secret: env_required("OIDC_CLIENT_SECRET"),
-            oidc_redirect_url: env_or(
-                "OIDC_REDIRECT_URL",
-                "http://localhost:3055/auth/callback",
-            ),
+            oidc_redirect_url: env_or("OIDC_REDIRECT_URL", "http://localhost:3055/auth/callback"),
         }
     }
 }
 
-fn env_or(key: &str, default: &str) -> String {
+pub fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-fn env_or_parsed<T: std::str::FromStr>(key: &str, default: T) -> T {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+pub fn env_or_parsed<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
-fn env_required(key: &str) -> String {
+pub fn env_required(key: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| {
-        panic!(
-            "🚨 OIDC es obligatorio. Define la variable de entorno {} en el .env",
-            key
-        )
+        panic!("OIDC env var {} is required", key)
     })
 }
 
@@ -65,8 +52,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_defaults() {
-        // This will panic if OIDC env vars aren't set — that's expected
-        // in test unless we set them. Just verifying it compiles.
+    fn test_env_or_default() {
+        assert_eq!(env_or("UNSET_VAR", "def"), "def");
+    }
+
+    #[test]
+    fn test_env_or_value() {
+        std::env::set_var("TST_ENV", "custom");
+        assert_eq!(env_or("TST_ENV", "def"), "custom");
+        std::env::remove_var("TST_ENV");
+    }
+
+    #[test]
+    fn test_env_or_parsed_default() {
+        assert_eq!(env_or_parsed::<u16>("UNSET_PORT_X", 3055), 3055);
+    }
+
+    #[test]
+    fn test_env_or_parsed_value() {
+        std::env::set_var("TEST_PORT", "8080");
+        assert_eq!(env_or_parsed::<u16>("TEST_PORT", 3055), 8080);
+        std::env::remove_var("TEST_PORT");
+    }
+
+    #[test]
+    fn test_env_or_parsed_invalid() {
+        std::env::set_var("TEST_BAD", "abc");
+        assert_eq!(env_or_parsed::<u16>("TEST_BAD", 3055), 3055);
+        std::env::remove_var("TEST_BAD");
+    }
+
+    #[test]
+    fn test_env_required_value() {
+        std::env::set_var("OIDC_REQ_TEST", "v");
+        assert_eq!(env_required("OIDC_REQ_TEST"), "v");
+        std::env::remove_var("OIDC_REQ_TEST");
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_env_required_panics() {
+        env_required("OIDC_UNSET_XYZ");
     }
 }

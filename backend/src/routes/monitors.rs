@@ -158,7 +158,7 @@ pub async fn run_check(
         monitor_id: id.clone(),
         status: outcome.status,
         status_code: outcome.status_code,
-        response_time_ms: outcome.response_time_ms,
+        response_time_ms: outcome.response_time_ms as i64,
         error_message: outcome.error_message,
         checked_at: now,
     };
@@ -170,12 +170,12 @@ pub async fn run_check(
         .map_err(|e| e.to_string())?;
 
     Ok(Json(serde_json::json!({
-        "id": check_id,
-        "monitor_id": monitor.id,
-        "status": check.status,
-        "status_code": check.status_code,
-        "response_time_ms": check.response_time_ms,
-        "error_message": check.error_message,
-        "checked_at": check.checked_at,
+                    "id": check_id,
+                    "monitor_id": monitor.id,
+                    "status": check.status,
+                    "status_code": check.status_code,
+                    "response_time_ms": check.response_time_ms,
+                    "error_message": check.error_message,
+                    "checked_at": check.checked_at,
     })))
 }
