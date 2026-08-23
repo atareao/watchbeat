@@ -248,10 +248,39 @@ async fn run_monitor_check(
     let outcome = checker.check(monitor).await;
 
     let now_str = chrono::Utc::now().to_rfc3339();
+
+    // ── Confirmation logic: if check failed but confirmations_required > 0,
+    //    increment failed_checks and only mark DOWN once threshold reached.
+    let is_up_raw = outcome.status == "up" || outcome.status == "warning";
+    let mut effective_status = outcome.status.clone();
+
+    if !is_up_raw && monitor.confirmations_required > 0 {
+        let new_failed = monitor.failed_checks + 1;
+        let _ = db.set_failed_checks(&monitor.id, new_failed).await;
+
+        if new_failed < monitor.confirmations_required {
+            // Not yet confirmed — record as 'error' (intermediate), don't alert DOWN
+            tracing::info!(
+                "Scheduler: {} failed check {}/{} (pending confirmation)",
+                monitor.name,
+                new_failed,
+                monitor.confirmations_required
+            );
+            effective_status = "error".into();
+        } else {
+            effective_status = "down".into();
+        }
+    } else if is_up_raw {
+        // Reset counter on success
+        if monitor.failed_checks > 0 {
+            let _ = db.reset_failed_checks(&monitor.id).await;
+        }
+    }
+
     let check = CheckResult {
         id: 0,
         monitor_id: monitor.id.clone(),
-        status: outcome.status,
+        status: effective_status,
         status_code: outcome.status_code,
         response_time_ms: outcome.response_time_ms as i64,
         error_message: outcome.error_message,
@@ -264,7 +293,7 @@ async fn run_monitor_check(
     }
 
     // Detect status change and notify
-    let is_up = check.status == "up";
+    let is_up = check.status == "up" || check.status == "warning";
     if was_up != is_up {
         if let Some(notifier_id) = &monitor.notifier_id {
             if let Some(notifier) = notifiers.get(notifier_id) {

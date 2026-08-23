@@ -22,6 +22,7 @@ pub struct CreateMonitorRequest {
     pub timeout_seconds: Option<i64>,
     pub enabled: Option<bool>,
     pub notifier_id: Option<String>,
+    pub confirmations_required: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -33,6 +34,7 @@ pub struct UpdateMonitorRequest {
     pub timeout_seconds: Option<i64>,
     pub enabled: Option<bool>,
     pub notifier_id: Option<String>,
+    pub confirmations_required: Option<i64>,
 }
 
 // ───── Handlers ─────
@@ -59,6 +61,8 @@ pub async fn create(
         timeout_seconds: req.timeout_seconds.unwrap_or(30),
         enabled: req.enabled.unwrap_or(true),
         notifier_id: req.notifier_id,
+        confirmations_required: req.confirmations_required.unwrap_or(0),
+        failed_checks: 0,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -95,6 +99,8 @@ pub async fn update(
         timeout_seconds: req.timeout_seconds.unwrap_or(existing.timeout_seconds),
         enabled: req.enabled.unwrap_or(existing.enabled),
         notifier_id: req.notifier_id.or(existing.notifier_id),
+        confirmations_required: req.confirmations_required.unwrap_or(existing.confirmations_required),
+        failed_checks: existing.failed_checks,
         created_at: existing.created_at,
         updated_at: now,
     };

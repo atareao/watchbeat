@@ -147,6 +147,8 @@ pub async fn test(
             timeout_seconds: 30,
             enabled: true,
             notifier_id: None,
+            confirmations_required: 0,
+            failed_checks: 0,
             created_at: String::new(),
             updated_at: String::new(),
         },

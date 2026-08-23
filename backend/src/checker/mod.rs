@@ -3,13 +3,16 @@ use async_trait::async_trait;
 use crate::models::Monitor;
 
 /// Result of a single check.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CheckOutcome {
-    pub status: String, // "up" | "down" | "error"
+    pub status: String,
     pub status_code: Option<u16>,
     pub response_time_ms: u64,
     pub error_message: Option<String>,
+    pub tls: Option<crate::checker::tls::TlsInfo>,
 }
+
+pub mod tls;
 
 /// A checker knows how to verify a specific type of endpoint.
 #[async_trait]
@@ -23,6 +26,7 @@ pub fn checker_for(monitor: &Monitor) -> Option<Box<dyn Checker>> {
         "http" => Some(Box::new(HttpChecker)),
         "tcp" => Some(Box::new(TcpChecker)),
         "ping" => Some(Box::new(PingChecker)),
+        "tls" => Some(Box::new(tls::TlsChecker)),
         _ => None,
     }
 }
@@ -51,6 +55,7 @@ impl Checker for HttpChecker {
                     status_code: None,
                     response_time_ms: start.elapsed().as_millis() as u64,
                     error_message: Some(format!("Client build error: {}", e)),
+                    tls: None,
                 };
             }
         };
@@ -81,12 +86,53 @@ impl Checker for HttpChecker {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(200) as u16;
 
-                if (200..400).contains(&status) || status == expected {
-                    CheckOutcome {
-                        status: "up".into(),
-                        status_code: Some(status),
-                        response_time_ms: elapsed,
-                        error_message: None,
+                let status_ok = (200..400).contains(&status) || status == expected;
+
+                if status_ok {
+                    // Content validation: expected_body with optional regex
+                    let expected_body = monitor
+                        .config_json
+                        .get("expected_body")
+                        .and_then(|v| v.as_str());
+
+                    let body_ok = if let Some(pattern) = expected_body {
+                        let body_is_regex = monitor
+                            .config_json
+                            .get("body_is_regex")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                        // Read body (limited to 64KB)
+                        let body = resp.text().await.unwrap_or_default();
+                        let limited = body.chars().take(64 * 1024).collect::<String>();
+
+                        if body_is_regex {
+                            regex::Regex::new(pattern)
+                                .map(|re| re.is_match(&limited))
+                                .unwrap_or(false)
+                        } else {
+                            limited.contains(pattern)
+                        }
+                    } else {
+                        true
+                    };
+
+                    if body_ok {
+                        CheckOutcome {
+                            status: "up".into(),
+                            status_code: Some(status),
+                            response_time_ms: elapsed,
+                            error_message: None,
+                            tls: None,
+                        }
+                    } else {
+                        CheckOutcome {
+                            status: "down".into(),
+                            status_code: Some(status),
+                            response_time_ms: elapsed,
+                            error_message: Some("Body content did not match expected".into()),
+                            tls: None,
+                        }
                     }
                 } else {
                     CheckOutcome {
@@ -94,6 +140,7 @@ impl Checker for HttpChecker {
                         status_code: Some(status),
                         response_time_ms: elapsed,
                         error_message: Some(format!("Unexpected HTTP status: {}", status)),
+                        tls: None,
                     }
                 }
             }
@@ -102,6 +149,7 @@ impl Checker for HttpChecker {
                 status_code: None,
                 response_time_ms: elapsed,
                 error_message: Some(format!("Request failed: {}", e)),
+                tls: None,
             },
         }
     }
@@ -125,18 +173,21 @@ impl Checker for TcpChecker {
                 status_code: None,
                 response_time_ms: start.elapsed().as_millis() as u64,
                 error_message: None,
+                    tls: None,
             },
             Ok(Err(e)) => CheckOutcome {
                 status: "down".into(),
                 status_code: None,
                 response_time_ms: start.elapsed().as_millis() as u64,
                 error_message: Some(format!("TCP connection failed: {}", e)),
+                    tls: None,
             },
             Err(_) => CheckOutcome {
                 status: "down".into(),
                 status_code: None,
                 response_time_ms: timeout.as_millis() as u64,
                 error_message: Some("TCP connection timed out".into()),
+                    tls: None,
             },
         }
     }
@@ -189,6 +240,7 @@ impl Checker for PingChecker {
                     status_code: None,
                     response_time_ms: time_ms,
                     error_message: None,
+                    tls: None,
                 }
             }
             Ok(Ok(_out)) => CheckOutcome {
@@ -196,18 +248,21 @@ impl Checker for PingChecker {
                 status_code: None,
                 response_time_ms: elapsed,
                 error_message: Some("Ping failed (no response)".into()),
+                    tls: None,
             },
             Ok(Err(e)) => CheckOutcome {
                 status: "error".into(),
                 status_code: None,
                 response_time_ms: elapsed,
                 error_message: Some(format!("Ping command error: {}", e)),
+                    tls: None,
             },
             Err(_) => CheckOutcome {
                 status: "down".into(),
                 status_code: None,
                 response_time_ms: timeout * 1000,
                 error_message: Some("Ping timed out".into()),
+                    tls: None,
             },
         }
     }
@@ -229,6 +284,8 @@ mod tests {
             timeout_seconds: 5,
             enabled: true,
             notifier_id: None,
+            confirmations_required: 0,
+            failed_checks: 0,
             created_at: String::new(),
             updated_at: String::new(),
         }
@@ -252,6 +309,11 @@ mod tests {
     #[test]
     fn test_checker_for_unknown() {
         assert!(checker_for(&make_monitor("unknown", "x")).is_none());
+    }
+
+    #[test]
+    fn test_checker_for_tls() {
+        assert!(checker_for(&make_monitor("tls", "example.com")).is_some());
     }
 
     #[tokio::test]

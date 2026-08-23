@@ -35,60 +35,55 @@ impl Database {
             .await
             .context("Failed to open SQLite database")?;
 
+        // Tables
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS monitors (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                monitor_type TEXT NOT NULL,
-                target TEXT NOT NULL,
-                config_json TEXT NOT NULL DEFAULT '{}',
-                interval_seconds INTEGER NOT NULL DEFAULT 300,
-                timeout_seconds INTEGER NOT NULL DEFAULT 30,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                notifier_id TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, monitor_type TEXT NOT NULL,
+                target TEXT NOT NULL, config_json TEXT NOT NULL DEFAULT '{}',
+                interval_seconds INTEGER NOT NULL DEFAULT 300, timeout_seconds INTEGER NOT NULL DEFAULT 30,
+                enabled INTEGER NOT NULL DEFAULT 1, notifier_id TEXT,
+                confirmations_required INTEGER NOT NULL DEFAULT 0, failed_checks INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS checks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
-                status TEXT NOT NULL,
-                status_code INTEGER,
-                response_time_ms INTEGER NOT NULL DEFAULT 0,
-                error_message TEXT,
-                checked_at TEXT NOT NULL
+                status TEXT NOT NULL, status_code INTEGER,
+                response_time_ms INTEGER NOT NULL DEFAULT 0, error_message TEXT, checked_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_checks_monitor ON checks(monitor_id, checked_at DESC);
             CREATE INDEX IF NOT EXISTS idx_checks_checked_at ON checks(checked_at);
             CREATE TABLE IF NOT EXISTS notifiers (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                notifier_type TEXT NOT NULL,
-                config_json TEXT NOT NULL DEFAULT '{}',
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, notifier_type TEXT NOT NULL,
+                config_json TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
             );",
         )
         .execute(&pool)
         .await
         .context("Failed to run migrations")?;
 
+        // ALTER TABLE for existing DBs (ignore errors if columns already exist)
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN confirmations_required INTEGER NOT NULL DEFAULT 0")
+            .execute(&pool).await;
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN failed_checks INTEGER NOT NULL DEFAULT 0")
+            .execute(&pool).await;
+
         Ok(Self { pool })
     }
+
+    // ───── Monitors ─────
 
     pub async fn list_monitors(&self) -> Result<Vec<Monitor>> {
         let rows = sqlx::query_as::<_, MonitorRow>(
             "SELECT id, name, monitor_type, target, config_json, interval_seconds, \
-             timeout_seconds, enabled, notifier_id, created_at, updated_at \
-             FROM monitors ORDER BY name",
+             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, \
+             created_at, updated_at FROM monitors ORDER BY name",
         )
-        .fetch_all(&self.pool)
-        .await
+        .fetch_all(&self.pool).await
         .context("Failed to list monitors")?;
         Ok(rows.into_iter().map(Monitor::from).collect())
     }
@@ -96,12 +91,10 @@ impl Database {
     pub async fn get_monitor(&self, id: &str) -> Result<Option<Monitor>> {
         let row = sqlx::query_as::<_, MonitorRow>(
             "SELECT id, name, monitor_type, target, config_json, interval_seconds, \
-             timeout_seconds, enabled, notifier_id, created_at, updated_at \
-             FROM monitors WHERE id = ?",
+             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, \
+             created_at, updated_at FROM monitors WHERE id = ?",
         )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
+        .bind(id).fetch_optional(&self.pool).await
         .context("Failed to get monitor")?;
         Ok(row.map(Monitor::from))
     }
@@ -112,13 +105,14 @@ impl Database {
             .context("Failed to serialize config_json")?;
         sqlx::query(
             "INSERT INTO monitors (id, name, monitor_type, target, config_json, interval_seconds, \
-             timeout_seconds, enabled, notifier_id, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&monitor.id).bind(&monitor.name).bind(&monitor.monitor_type)
         .bind(&monitor.target).bind(&config_json)
         .bind(monitor.interval_seconds).bind(monitor.timeout_seconds)
         .bind(monitor.enabled as i32).bind(&monitor.notifier_id)
+        .bind(monitor.confirmations_required).bind(monitor.failed_checks)
         .bind(&now).bind(&now)
         .execute(&self.pool).await
         .context("Failed to insert monitor")?;
@@ -131,11 +125,14 @@ impl Database {
             .context("Failed to serialize config_json")?;
         let rows = sqlx::query(
             "UPDATE monitors SET name=?, monitor_type=?, target=?, config_json=?, \
-             interval_seconds=?, timeout_seconds=?, enabled=?, notifier_id=?, updated_at=? WHERE id=?",
+             interval_seconds=?, timeout_seconds=?, enabled=?, notifier_id=?, \
+             confirmations_required=?, failed_checks=?, updated_at=? WHERE id=?",
         )
         .bind(&monitor.name).bind(&monitor.monitor_type).bind(&monitor.target)
         .bind(&config_json).bind(monitor.interval_seconds).bind(monitor.timeout_seconds)
-        .bind(monitor.enabled as i32).bind(&monitor.notifier_id).bind(&now).bind(id)
+        .bind(monitor.enabled as i32).bind(&monitor.notifier_id)
+        .bind(monitor.confirmations_required).bind(monitor.failed_checks)
+        .bind(&now).bind(id)
         .execute(&self.pool).await
         .context("Failed to update monitor")?;
         Ok(rows.rows_affected() > 0)
@@ -164,6 +161,26 @@ impl Database {
             .context("Failed to toggle monitor")?;
         Ok(Some(new_enabled != 0))
     }
+
+    pub async fn set_failed_checks(&self, id: &str, count: i64) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE monitors SET failed_checks=?, updated_at=? WHERE id=?")
+            .bind(count).bind(&now).bind(id)
+            .execute(&self.pool).await
+            .context("Failed to set failed_checks")?;
+        Ok(())
+    }
+
+    pub async fn reset_failed_checks(&self, id: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE monitors SET failed_checks=0, updated_at=? WHERE id=?")
+            .bind(&now).bind(id)
+            .execute(&self.pool).await
+            .context("Failed to reset failed_checks")?;
+        Ok(())
+    }
+
+    // ───── Checks ─────
 
     pub async fn insert_check(&self, check: &CheckResult) -> Result<i64> {
         let result = sqlx::query(
@@ -249,10 +266,7 @@ impl Database {
         .bind(monitor_id).bind(&cutoff)
         .fetch_optional(&self.pool).await
         .context("Failed to calculate uptime")?;
-        match result {
-            Some((total, up)) if total > 0 => Ok(Some(up as f64 / total as f64 * 100.0)),
-            _ => Ok(None),
-        }
+        match result { Some((total, up)) if total > 0 => Ok(Some(up as f64 / total as f64 * 100.0)), _ => Ok(None) }
     }
 
     pub async fn get_dashboard_status(&self) -> Result<DashboardStatus> {
@@ -285,21 +299,19 @@ impl Database {
         Ok(())
     }
 
+    // ───── Notifiers ─────
+
     pub async fn list_notifiers(&self) -> Result<Vec<Notifier>> {
         let rows = sqlx::query_as::<_, NotifierRow>(
             "SELECT id, name, notifier_type, config_json, enabled, created_at, updated_at FROM notifiers ORDER BY name",
-        )
-        .fetch_all(&self.pool).await
-        .context("Failed to list notifiers")?;
+        ).fetch_all(&self.pool).await.context("Failed to list notifiers")?;
         Ok(rows.into_iter().map(Notifier::from).collect())
     }
 
     pub async fn get_notifier(&self, id: &str) -> Result<Option<Notifier>> {
         let row = sqlx::query_as::<_, NotifierRow>(
             "SELECT id, name, notifier_type, config_json, enabled, created_at, updated_at FROM notifiers WHERE id=?",
-        )
-        .bind(id).fetch_optional(&self.pool).await
-        .context("Failed to get notifier")?;
+        ).bind(id).fetch_optional(&self.pool).await.context("Failed to get notifier")?;
         Ok(row.map(Notifier::from))
     }
 
@@ -310,34 +322,30 @@ impl Database {
         sqlx::query(
             "INSERT INTO notifiers (id, name, notifier_type, config_json, enabled, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET \
-             name=excluded.name, notifier_type=excluded.notifier_type, config_json=excluded.config_json, \
-             enabled=excluded.enabled, updated_at=excluded.updated_at",
-        )
-        .bind(id).bind(&notifier.name).bind(&notifier.notifier_type).bind(&config_json)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, notifier_type=excluded.notifier_type, \
+             config_json=excluded.config_json, enabled=excluded.enabled, updated_at=excluded.updated_at",
+        ).bind(id).bind(&notifier.name).bind(&notifier.notifier_type).bind(&config_json)
         .bind(notifier.enabled as i32).bind(&now).bind(&now)
-        .execute(&self.pool).await
-        .context("Failed to upsert notifier")?;
+        .execute(&self.pool).await.context("Failed to upsert notifier")?;
         Ok(())
     }
 
     pub async fn delete_notifier(&self, id: &str) -> Result<bool> {
         let rows = sqlx::query("DELETE FROM notifiers WHERE id=?")
-            .bind(id).execute(&self.pool).await
-            .context("Failed to delete notifier")?;
+            .bind(id).execute(&self.pool).await.context("Failed to delete notifier")?;
         Ok(rows.rows_affected() > 0)
     }
 
+    // ───── Settings ─────
+
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
         sqlx::query_scalar("SELECT value FROM settings WHERE key=?")
-            .bind(key).fetch_optional(&self.pool).await
-            .context("Failed to get setting")
+            .bind(key).fetch_optional(&self.pool).await.context("Failed to get setting")
     }
 
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-            .bind(key).bind(value).execute(&self.pool).await
-            .context("Failed to set setting")?;
+            .bind(key).bind(value).execute(&self.pool).await.context("Failed to set setting")?;
         Ok(())
     }
 }

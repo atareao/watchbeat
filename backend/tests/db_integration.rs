@@ -14,6 +14,8 @@ fn sample_monitor(id: &str) -> Monitor {
         timeout_seconds: 30,
         enabled: true,
         notifier_id: None,
+        confirmations_required: 0,
+        failed_checks: 0,
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -198,4 +200,23 @@ async fn test_calculate_uptime() {
     let summaries = db.get_monitor_summaries().await.unwrap();
     let uptime = summaries[0].uptime_7d.unwrap();
     assert!((uptime - 80.0).abs() < 0.01);
+}
+
+#[tokio::test]
+async fn test_set_failed_checks() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-fc")).await.unwrap();
+    db.set_failed_checks("m-fc", 3).await.unwrap();
+    let m = db.get_monitor("m-fc").await.unwrap().unwrap();
+    assert_eq!(m.failed_checks, 3);
+}
+
+#[tokio::test]
+async fn test_reset_failed_checks() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-rc")).await.unwrap();
+    db.set_failed_checks("m-rc", 5).await.unwrap();
+    db.reset_failed_checks("m-rc").await.unwrap();
+    let m = db.get_monitor("m-rc").await.unwrap().unwrap();
+    assert_eq!(m.failed_checks, 0);
 }

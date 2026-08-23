@@ -17,6 +17,8 @@ pub struct Monitor {
     pub timeout_seconds: i64,
     pub enabled: bool,
     pub notifier_id: Option<String>,
+    pub confirmations_required: i64,
+    pub failed_checks: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -121,6 +123,8 @@ pub struct MonitorRow {
     pub timeout_seconds: i64,
     pub enabled: i32,
     pub notifier_id: Option<String>,
+    pub confirmations_required: i64,
+    pub failed_checks: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -137,6 +141,8 @@ impl From<MonitorRow> for Monitor {
             timeout_seconds: row.timeout_seconds,
             enabled: row.enabled != 0,
             notifier_id: row.notifier_id,
+            confirmations_required: row.confirmations_required,
+            failed_checks: row.failed_checks,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -249,6 +255,8 @@ mod tests {
             timeout_seconds: 30,
             enabled: 1,
             notifier_id: Some("notif-1".into()),
+            confirmations_required: 2,
+            failed_checks: 1,
             created_at: "2026-07-03T08:00:00+00:00".into(),
             updated_at: "2026-07-03T08:00:00+00:00".into(),
         };
@@ -278,6 +286,8 @@ mod tests {
             timeout_seconds: 10,
             enabled: 0,
             notifier_id: None,
+            confirmations_required: 0,
+            failed_checks: 0,
             created_at: "2026-07-03T08:00:00+00:00".into(),
             updated_at: "2026-07-03T08:00:00+00:00".into(),
         };
@@ -299,6 +309,8 @@ mod tests {
             timeout_seconds: 5,
             enabled: 1,
             notifier_id: None,
+            confirmations_required: 0,
+            failed_checks: 0,
             created_at: "2026-07-03T08:00:00+00:00".into(),
             updated_at: "2026-07-03T08:00:00+00:00".into(),
         };
@@ -391,6 +403,8 @@ mod tests {
             timeout_seconds: 30,
             enabled: true,
             notifier_id: None,
+            confirmations_required: 0,
+            failed_checks: 0,
             created_at: "now".into(),
             updated_at: "now".into(),
         };
