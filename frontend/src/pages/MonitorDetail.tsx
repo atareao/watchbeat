@@ -18,49 +18,43 @@ const STATUS_TAG: Record<string, { color: string; text: string }> = {
   error: { color: 'orange', text: 'ERROR' },
 };
 
-const STATUS_COLOR: Record<string, string> = {
-  up: '#22c55e',
-  down: '#ef4444',
-  error: '#f59e0b',
-};
-
 // ── Range options with bucket sizes ──
 interface RangeOption {
   label: string;
   labelLong: string;
   hours?: number;
   days?: number;
-  bucketSeconds: number;  // adaptive bucket size for this range
+  bucketSeconds: number;
 }
 
 const RANGE_OPTIONS: RangeOption[] = [
-  { label: '1h', labelLong: 'Última hora', hours: 1, bucketSeconds: 60 },           // 60 blocks
-  { label: '6h', labelLong: 'Últimas 6 horas', hours: 6, bucketSeconds: 300 },       // 72 blocks (5min)
-  { label: '12h', labelLong: 'Últimas 12 horas', hours: 12, bucketSeconds: 600 },    // 72 blocks (10min)
-  { label: '24h', labelLong: 'Último día', hours: 24, bucketSeconds: 900 },          // 96 blocks (15min)
-  { label: '7d', labelLong: 'Últimos 7 días', days: 7, bucketSeconds: 7200 },        // 84 blocks (2h)
-  { label: '15d', labelLong: 'Últimos 15 días', days: 15, bucketSeconds: 14400 },    // 90 blocks (4h)
-  { label: '30d', labelLong: 'Último mes', days: 30, bucketSeconds: 28800 },         // 90 blocks (8h)
-  { label: '3m', labelLong: 'Últimos 3 meses', days: 90, bucketSeconds: 86400 },     // 90 blocks (1d)
-  { label: '6m', labelLong: 'Últimos 6 meses', days: 180, bucketSeconds: 172800 },   // 90 blocks (2d)
+  { label: '1h', labelLong: 'Última hora', hours: 1, bucketSeconds: 60 },
+  { label: '6h', labelLong: 'Últimas 6 horas', hours: 6, bucketSeconds: 300 },
+  { label: '12h', labelLong: 'Últimas 12 horas', hours: 12, bucketSeconds: 600 },
+  { label: '24h', labelLong: 'Último día', hours: 24, bucketSeconds: 900 },
+  { label: '7d', labelLong: 'Últimos 7 días', days: 7, bucketSeconds: 7200 },
+  { label: '15d', labelLong: 'Últimos 15 días', days: 15, bucketSeconds: 14400 },
+  { label: '30d', labelLong: 'Último mes', days: 30, bucketSeconds: 28800 },
+  { label: '3m', labelLong: 'Últimos 3 meses', days: 90, bucketSeconds: 86400 },
+  { label: '6m', labelLong: 'Últimos 6 meses', days: 180, bucketSeconds: 172800 },
 ];
 
 // ── Helper: get health color for a bucket ──
 function healthColor(upPct: number): string {
-  if (upPct >= 99) return '#22c55e';       // verde intenso
-  if (upPct >= 95) return '#4ade80';       // verde
-  if (upPct >= 90) return '#86efac';       // verde claro
-  if (upPct >= 75) return '#facc15';       // amarillo
-  if (upPct >= 50) return '#fb923c';       // naranja
-  return '#ef4444';                          // rojo
+  if (upPct >= 99) return '#22c55e';
+  if (upPct >= 95) return '#4ade80';
+  if (upPct >= 90) return '#86efac';
+  if (upPct >= 75) return '#facc15';
+  if (upPct >= 50) return '#fb923c';
+  return '#ef4444';
 }
 
 // ── Helper: format bucket time label ──
 function formatBucketTime(bucketStart: string, bucketSeconds: number): string {
   const d = dayjs(bucketStart);
-  if (bucketSeconds >= 86400) return d.format('DD/MM');       // días
-  if (bucketSeconds >= 3600) return d.format('DD/MM HH:mm');   // horas
-  return d.format('HH:mm');                                     // minutos
+  if (bucketSeconds >= 86400) return d.format('DD/MM');
+  if (bucketSeconds >= 3600) return d.format('DD/MM HH:mm');
+  return d.format('HH:mm');
 }
 
 export default function MonitorDetail() {
@@ -135,16 +129,16 @@ export default function MonitorDetail() {
     },
   ];
 
-  // ── Health chart (like latency chart, but with adaptive buckets) ──
-  const renderHealthChart = () => {
+  // ── Health & Latency chart (unified) ──
+  //   - Bar height = latency (como el chart de latencia)
+  //   - Bar color  = % UP (verde = bien, rojo = mal)
+  //   Así un solo gráfico muestra ambas dimensiones
+  const renderHealthLatencyChart = () => {
     if (buckets.length === 0) return <Text type="secondary">Sin datos en {range.labelLong.toLowerCase()}</Text>;
 
     const maxRt = Math.max(...buckets.map(b => b.avg_response_time_ms), 1);
-    // If too many buckets, take the last N
     const MAX_BARS = 150;
     const bars = buckets.length > MAX_BARS ? buckets.slice(-MAX_BARS) : buckets;
-
-    // Build labels: show a few time markers along the axis
     const labelInterval = Math.max(1, Math.floor(bars.length / 6));
 
     return (
@@ -197,9 +191,10 @@ export default function MonitorDetail() {
             </>
           )}
         </div>
+        {/* Stats row */}
         <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: '#888' }}>
           <span><BarChartOutlined /> {bars.length} bloques · pico: {maxRt.toFixed(0)}ms</span>
-          <span><ClockCircleOutlined /> rango: {range.labelLong.toLowerCase()}</span>
+          <span><ClockCircleOutlined /> {range.labelLong.toLowerCase()}</span>
           {uptime !== null && (
             <span
               style={{
@@ -211,56 +206,17 @@ export default function MonitorDetail() {
             </span>
           )}
         </div>
-        {/* Color legend */}
-        <div style={{ marginTop: 6, display: 'flex', gap: 12, fontSize: 11, color: '#888', alignItems: 'center' }}>
-          <span>Referencia de color:</span>
+        {/* Dual legend: health (color) + latency (height) */}
+        <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, color: '#888', alignItems: 'center' }}>
+          <span style={{ fontWeight: 500, color: '#555' }}>Salud (color):</span>
           <span style={{ color: '#22c55e' }}>■ ≥99%</span>
           <span style={{ color: '#86efac' }}>■ ≥90%</span>
           <span style={{ color: '#facc15' }}>■ ≥75%</span>
           <span style={{ color: '#fb923c' }}>■ ≥50%</span>
           <span style={{ color: '#ef4444' }}>■ {"<50%"}</span>
+          <span style={{ marginLeft: 8, fontWeight: 500, color: '#555' }}>Latencia (altura):</span>
+          <span>▮ más alto = más lento</span>
         </div>
-      </div>
-    );
-  };
-
-  // ── Latency chart (keep existing, but use bucketed data) ──
-  const renderLatencyChart = () => {
-    const withRt = buckets.filter(b => b.avg_response_time_ms > 0);
-    if (withRt.length === 0) return <Text type="secondary">Sin datos de latencia en este rango</Text>;
-
-    const maxRt = Math.max(...withRt.map(b => b.avg_response_time_ms), 1);
-    const MAX_BARS = 150;
-    const bars = withRt.length > MAX_BARS ? withRt.slice(-MAX_BARS) : withRt;
-
-    return (
-      <div>
-        <div style={{ display: 'flex', gap: 1, alignItems: 'flex-end', height: 100 }}>
-          {bars.map((b, i) => {
-            const pct = (b.avg_response_time_ms / maxRt) * 100;
-            const color = b.dominant_status === 'up' ? '#1677ff' : b.dominant_status === 'down' ? '#ef4444' : '#f59e0b';
-            return (
-              <Tooltip key={i} title={`${b.avg_response_time_ms.toFixed(0)}ms · ${b.up_pct.toFixed(0)}% UP · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`}>
-                <div
-                  style={{
-                    flex: '1 1 0',
-                    minWidth: 2,
-                    height: `${Math.max(pct, 4)}%`,
-                    background: color,
-                    borderRadius: '2px 2px 0 0',
-                    cursor: 'pointer',
-                    transition: 'opacity 0.15s',
-                  }}
-                  onMouseEnter={e => (e.currentTarget.style.opacity = '0.7')}
-                  onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
-                />
-              </Tooltip>
-            );
-          })}
-        </div>
-        <Text type="secondary" style={{ fontSize: 11, marginTop: 4, display: 'block' }}>
-          {bars.length} bloques · pico: {maxRt.toFixed(0)}ms · rango: {range.labelLong.toLowerCase()}
-        </Text>
       </div>
     );
   };
@@ -295,10 +251,10 @@ export default function MonitorDetail() {
         )}
       </Descriptions>
 
-      {/* ── Range selector ── */}
+      {/* ── Unified Health & Latency Chart ── */}
       <Card style={{ marginTop: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <Text strong><BarChartOutlined /> Health Chart</Text>
+          <Text strong><BarChartOutlined /> Health & Latency</Text>
           <Space size={4} wrap>
             {RANGE_OPTIONS.map((opt, i) => (
               <Tooltip key={opt.label} title={opt.labelLong}>
@@ -313,12 +269,7 @@ export default function MonitorDetail() {
             ))}
           </Space>
         </div>
-        {renderHealthChart()}
-      </Card>
-
-      {/* ── Latency chart ── */}
-      <Card title={<span><BarChartOutlined /> Latencia — {range.labelLong}</span>} style={{ marginTop: 16 }}>
-        {renderLatencyChart()}
+        {renderHealthLatencyChart()}
       </Card>
 
       {/* ── History table ── */}
