@@ -358,4 +358,199 @@ mod tests {
         let outcome = TcpChecker.check(&m).await;
         assert_eq!(outcome.status, "up");
     }
+
+    // ───── HTTP expected_status tests ─────
+
+    #[tokio::test]
+    async fn test_http_check_with_expected_status() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut m = make_monitor("http", &format!("http://{}/test", addr));
+        m.config_json = serde_json::json!({ "expected_status": 201 });
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            stream
+                .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let outcome = HttpChecker.check(&m).await;
+        assert_eq!(outcome.status, "up");
+        assert_eq!(outcome.status_code, Some(201));
+    }
+
+    #[tokio::test]
+    async fn test_http_check_with_wrong_expected_status() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut m = make_monitor("http", &format!("http://{}/test", addr));
+        m.config_json = serde_json::json!({ "expected_status": 200 });
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            stream
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let outcome = HttpChecker.check(&m).await;
+        assert_eq!(outcome.status, "down");
+        assert!(outcome.error_message.is_some());
+    }
+
+    // ───── HTTP expected_body tests ─────
+
+    #[tokio::test]
+    async fn test_http_check_with_expected_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut m = make_monitor("http", &format!("http://{}/test", addr));
+        m.config_json = serde_json::json!({ "expected_body": "world" });
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let body = "hello world";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        let outcome = HttpChecker.check(&m).await;
+        assert_eq!(outcome.status, "up");
+    }
+
+    #[tokio::test]
+    async fn test_http_check_with_wrong_expected_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut m = make_monitor("http", &format!("http://{}/test", addr));
+        m.config_json = serde_json::json!({ "expected_body": "world" });
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let body = "hello";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        let outcome = HttpChecker.check(&m).await;
+        assert_eq!(outcome.status, "down");
+        assert!(outcome.error_message.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_http_check_with_regex_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut m = make_monitor("http", &format!("http://{}/test", addr));
+        m.config_json = serde_json::json!({
+            "expected_body": "error.*timeout",
+            "body_is_regex": true
+        });
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let body = "error: timeout";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        let outcome = HttpChecker.check(&m).await;
+        assert_eq!(outcome.status, "up");
+    }
+
+    // ───── HTTP HEAD method test ─────
+
+    #[tokio::test]
+    async fn test_http_check_head_method() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut m = make_monitor("http", &format!("http://{}/test", addr));
+        m.config_json = serde_json::json!({ "method": "HEAD" });
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let outcome = HttpChecker.check(&m).await;
+        assert_eq!(outcome.status, "up");
+    }
+
+    // ───── HTTP timeout test ─────
+
+    #[tokio::test]
+    async fn test_http_check_timeout() {
+        // Listener accepts but never writes — client will timeout
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut m = make_monitor("http", &format!("http://{}/test", addr));
+        m.timeout_seconds = 1;
+
+        tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            // Never write — client will timeout waiting for HTTP response
+            let () = std::future::pending().await;
+        });
+
+        let outcome = HttpChecker.check(&m).await;
+        assert_eq!(outcome.status, "down");
+        assert!(outcome.response_time_ms < 5000);
+    }
+
+    // ───── TCP connection refused test ─────
+
+    #[tokio::test]
+    async fn test_tcp_check_connection_refused() {
+        let m = make_monitor("tcp", "127.0.0.1:1");
+        let outcome = TcpChecker.check(&m).await;
+        assert_eq!(outcome.status, "down");
+        assert!(outcome.error_message.is_some());
+    }
+
+    // ───── TCP timeout test ─────
+
+    #[tokio::test]
+    async fn test_tcp_check_timeout() {
+        // Connect to a non-responsive address with short timeout
+        let mut m = make_monitor("tcp", "203.0.113.1:80");
+        m.timeout_seconds = 1;
+        let outcome = TcpChecker.check(&m).await;
+        assert_eq!(outcome.status, "down");
+    }
 }
