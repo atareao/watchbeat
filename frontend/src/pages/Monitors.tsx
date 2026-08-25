@@ -17,6 +17,18 @@ const MONITOR_TYPES = [
   { value: 'tls', label: 'TLS/SSL' },
 ];
 
+const CONFIG_FIELDS: Record<string, { name: string; label: string; type: string; defaultValue?: unknown }[]> = {
+  http: [
+    { name: 'method', label: 'Método HTTP', type: 'select', defaultValue: 'GET' },
+    { name: 'expected_status', label: 'Status esperado', type: 'number', defaultValue: 200 },
+    { name: 'expected_body', label: 'Body esperado', type: 'text' },
+    { name: 'body_is_regex', label: 'Body es regex', type: 'boolean', defaultValue: false },
+  ],
+  tls: [
+    { name: 'expiry_days', label: 'Días para expiry', type: 'number', defaultValue: 14 },
+  ],
+};
+
 export default function Monitors() {
   const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [notifiers, setNotifiers] = useState<{ id: string; name: string }[]>([]);
@@ -41,7 +53,7 @@ export default function Monitors() {
   const handleCreate = () => {
     setEditingId(null);
     form.resetFields();
-    form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true, confirmations_required: 0 });
+    form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true, confirmations_required: 0, config: {} });
     setModalOpen(true);
   };
 
@@ -56,6 +68,7 @@ export default function Monitors() {
       enabled: m.enabled,
       notifier_id: m.notifier_id ?? null,
       confirmations_required: (m as any).confirmations_required ?? 0,
+      config: m.config_json ?? {},
     });
     setModalOpen(true);
   };
@@ -72,6 +85,7 @@ export default function Monitors() {
         enabled: values.enabled,
         notifier_id: values.notifier_id || null,
         confirmations_required: values.confirmations_required ?? 0,
+        config_json: values.config ?? {},
       };
       if (editingId) {
         await updateMonitor(editingId, payload);
@@ -191,6 +205,19 @@ export default function Monitors() {
               <Select allowClear placeholder="Ninguno" options={notifiers.map(n => ({ value: n.id, label: n.name }))} />
             </Form.Item>
           </Space>
+          {CONFIG_FIELDS[form.getFieldValue('type')]?.map(field => (
+            <Form.Item key={field.name} name={['config', field.name]} label={field.label} valuePropName={field.type === 'boolean' ? 'checked' : undefined}>
+              {field.type === 'select' ? (
+                <Select options={['GET', 'HEAD', 'POST'].map(v => ({ value: v, label: v }))} />
+              ) : field.type === 'number' ? (
+                <InputNumber style={{ width: '100%' }} />
+              ) : field.type === 'boolean' ? (
+                <Switch />
+              ) : (
+                <Input />
+              )}
+            </Form.Item>
+          ))}
         </Form>
       </Modal>
     </div>

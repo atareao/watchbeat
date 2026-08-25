@@ -167,4 +167,59 @@ mod tests {
     fn test_parse_target_port_brackets() {
         assert_eq!(parse_target("[::1]:8443"), Some(("[::1]".into(), 8443)));
     }
+
+    #[test]
+    fn test_parse_target_without_port() {
+        assert_eq!(parse_target("example.com"), Some(("example.com".into(), 443)));
+    }
+
+    #[test]
+    fn test_parse_target_ip_with_port() {
+        assert_eq!(parse_target("1.1.1.1:8443"), Some(("1.1.1.1".into(), 8443)));
+    }
+
+    #[tokio::test]
+    async fn test_tls_check_connection_refused() {
+        let m = Monitor {
+            id: "tls_test".into(),
+            name: "tls test".into(),
+            monitor_type: "tls".into(),
+            target: "127.0.0.1:1".into(),
+            config_json: serde_json::json!({}),
+            interval_seconds: 300,
+            timeout_seconds: 5,
+            enabled: true,
+            notifier_id: None,
+            confirmations_required: 0,
+            failed_checks: 0,
+            tags: vec![],
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let outcome = TlsChecker.check(&m).await;
+        assert_eq!(outcome.status, "down");
+        assert!(outcome.error_message.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_tls_check_timeout() {
+        let m = Monitor {
+            id: "tls_timeout".into(),
+            name: "tls timeout".into(),
+            monitor_type: "tls".into(),
+            target: "203.0.113.1:443".into(),
+            config_json: serde_json::json!({}),
+            interval_seconds: 300,
+            timeout_seconds: 1,
+            enabled: true,
+            notifier_id: None,
+            confirmations_required: 0,
+            failed_checks: 0,
+            tags: vec![],
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let outcome = TlsChecker.check(&m).await;
+        assert_eq!(outcome.status, "down");
+    }
 }

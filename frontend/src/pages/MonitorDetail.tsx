@@ -95,6 +95,11 @@ export default function MonitorDetail() {
         <Descriptions.Item label="Intervalo">{monitor.interval_seconds}s</Descriptions.Item>
         <Descriptions.Item label="Timeout">{monitor.timeout_seconds}s</Descriptions.Item>
         <Descriptions.Item label="Uptime 7d">{uptime7d !== null ? `${uptime7d}%` : '—'}</Descriptions.Item>
+        {monitor.config_json && Object.keys(monitor.config_json).length > 0 && (
+          <Descriptions.Item label="Config">
+            <Typography.Text code>{JSON.stringify(monitor.config_json)}</Typography.Text>
+          </Descriptions.Item>
+        )}
       </Descriptions>
 
       {timeline.length > 0 && (

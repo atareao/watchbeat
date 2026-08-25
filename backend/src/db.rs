@@ -75,6 +75,11 @@ impl Database {
                 last_seen_at TEXT, status TEXT NOT NULL DEFAULT 'pending',
                 notifier_id TEXT,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS monitor_notifiers (
+                monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+                notifier_id TEXT NOT NULL REFERENCES notifiers(id) ON DELETE CASCADE,
+                PRIMARY KEY (monitor_id, notifier_id)
             );",
         )
         .execute(&pool)
