@@ -33,6 +33,7 @@ pub async fn list(
 pub struct TimelineQuery {
     pub days: Option<i64>,
     pub hours: Option<i64>,
+    pub bucket_seconds: Option<i64>,
 }
 
 pub async fn timeline(
@@ -47,6 +48,16 @@ pub async fn timeline(
         let days = query.days.unwrap_or(1).clamp(1, 180);
         (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339()
     };
+
+    if let Some(bucket_seconds) = query.bucket_seconds {
+        let bucket_seconds = bucket_seconds.clamp(60, 86400 * 7); // 1 min to 7 days
+        let buckets = state
+            .db
+            .get_timeline_buckets(&id, &since, bucket_seconds)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(Json(serde_json::json!({ "buckets": buckets })));
+    }
 
     let timeline = state
         .db
@@ -87,6 +98,7 @@ mod tests {
         let query = TimelineQuery {
             days: None,
             hours: None,
+            bucket_seconds: None,
         };
         let days = query.days.unwrap_or(1).clamp(1, 180);
         assert_eq!(days, 1);
@@ -101,6 +113,7 @@ mod tests {
         let query = TimelineQuery {
             days: Some(200),
             hours: None,
+            bucket_seconds: None,
         };
         let days = query.days.unwrap_or(1).clamp(1, 180);
         assert_eq!(days, 180);
@@ -111,6 +124,7 @@ mod tests {
         let query = TimelineQuery {
             days: None,
             hours: Some(6),
+            bucket_seconds: None,
         };
         let h = query.hours.unwrap().clamp(1, 24 * 180);
         assert_eq!(h, 6);
@@ -121,6 +135,7 @@ mod tests {
         let query = TimelineQuery {
             days: None,
             hours: Some(5000),
+            bucket_seconds: None,
         };
         let h = query.hours.unwrap().clamp(1, 24 * 180);
         assert_eq!(h, 24 * 180);

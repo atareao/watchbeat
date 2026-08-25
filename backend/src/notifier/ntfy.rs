@@ -197,7 +197,9 @@ mod tests {
 
             // Verify Authorization header is present with Bearer token (lowercased by reqwest)
             assert!(
-                request.to_lowercase().contains("authorization: bearer my_secret_token"),
+                request
+                    .to_lowercase()
+                    .contains("authorization: bearer my_secret_token"),
                 "Missing Bearer auth:\n{}",
                 request
             );

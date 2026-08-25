@@ -336,7 +336,8 @@ mod tests {
         let check = make_test_check("down", 500, 100, Some("timeout"));
 
         let result =
-            send_gotify_notification("http://127.0.0.1:1", "token", 5, &monitor, &check, true).await;
+            send_gotify_notification("http://127.0.0.1:1", "token", 5, &monitor, &check, true)
+                .await;
         assert!(result.is_err());
     }
 }

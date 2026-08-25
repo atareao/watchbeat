@@ -274,8 +274,7 @@ mod tests {
         let check = make_test_check("up", 200, 42, None);
 
         let headers = r#"{"X-Custom":"myvalue","Authorization":"Bearer abc123"}"#;
-        let result =
-            send_webhook_notification(&url, "POST", headers, &monitor, &check, true).await;
+        let result = send_webhook_notification(&url, "POST", headers, &monitor, &check, true).await;
         assert!(result.is_ok());
         handle.await.unwrap();
     }
