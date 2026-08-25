@@ -129,7 +129,11 @@ export async function fetchChecks(id: string, limit = 50, offset = 0): Promise<{
   return fetcher(`/api/monitors/${id}/checks?limit=${limit}&offset=${offset}`);
 }
 
-export async function fetchTimeline(id: string, days = 1): Promise<{ timeline: TimelinePoint[] }> {
+export async function fetchTimeline(id: string, opts?: { days?: number; hours?: number }): Promise<{ timeline: TimelinePoint[] }> {
+  if (opts?.hours != null) {
+    return fetcher(`/api/monitors/${id}/timeline?hours=${opts.hours}`);
+  }
+  const days = opts?.days ?? 1;
   return fetcher(`/api/monitors/${id}/timeline?days=${days}`);
 }
 
