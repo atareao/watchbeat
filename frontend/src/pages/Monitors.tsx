@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import {
   Table, Button, Modal, Form, Input, InputNumber, Select, Switch, Typography, Space, Tag, message, Popconfirm,
 } from 'antd';
@@ -129,7 +130,7 @@ export default function Monitors() {
     {
       title: 'Nombre', dataIndex: 'name', key: 'name',
       render: (name: string, record: Monitor) => (
-        <a href={`#/monitors/${record.id}`}>{name}</a>
+        <Link to={`/monitors/${record.id}`}>{name}</Link>
       ),
     },
     { title: 'Tipo', dataIndex: 'type', key: 'type', width: 80 },
