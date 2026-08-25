@@ -179,20 +179,6 @@ export default function Notifiers() {
     { title: 'Nombre', dataIndex: 'name', key: 'name' },
     { title: 'Tipo', dataIndex: 'type', key: 'type', width: 100 },
     {
-      title: 'Config', key: 'config', ellipsis: true,
-      render: (_: unknown, r: Notifier) => {
-        const cfg = r.config_json;
-        if (r.type === 'telegram') return cfg?.chat_id ?? '—';
-        if (r.type === 'matrix') return cfg?.room_id ?? '—';
-        if (r.type === 'ntfy') return cfg?.topic ?? '—';
-        if (r.type === 'slack' || r.type === 'discord') return (cfg?.webhook_url?.substring(0, 40) ?? '') + '…';
-        if (r.type === 'email') return cfg?.to ?? '—';
-        if (r.type === 'gotify') return cfg?.server_url ?? '—';
-        if (r.type === 'webhook') return (cfg?.url?.substring(0, 40) ?? '') + '…';
-        return '—';
-      },
-    },
-    {
       title: 'Activo', dataIndex: 'enabled', key: 'enabled', width: 80,
       render: (enabled: boolean) => <Switch checked={enabled} disabled size="small" />,
     },
