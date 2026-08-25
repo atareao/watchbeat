@@ -182,9 +182,22 @@ export default function Monitors() {
             <Select options={MONITOR_TYPES} />
           </Form.Item>
           <Form.Item name="target" label="Target" rules={[{ required: true }]}
-            extra="URL, host:puerto, o IP para ping"
+            extra={(() => {
+              const type = form.getFieldValue('type');
+              if (type === 'http') return 'URL completa, ej: https://ejemplo.com';
+              if (type === 'tls') return 'host o host:puerto (sin https://), ej: atareao.es';
+              if (type === 'tcp') return 'host:puerto, ej: ejemplo.com:443';
+              if (type === 'ping') return 'IP o dominio, ej: 8.8.8.8';
+              return 'URL, host:puerto, o IP';
+            })()}
           >
-            <Input placeholder="https://ejemplo.com" />
+            <Input placeholder={(() => {
+              const type = form.getFieldValue('type');
+              if (type === 'tls') return 'atareao.es';
+              if (type === 'tcp') return 'ejemplo.com:443';
+              if (type === 'ping') return '8.8.8.8';
+              return 'https://ejemplo.com';
+            })()} />
           </Form.Item>
           <Space style={{ width: '100%' }} size="large">
             <Form.Item name="interval_seconds" label="Intervalo (s)">

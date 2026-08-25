@@ -99,15 +99,14 @@ pub async fn update(
 
     // Check name uniqueness if name is being changed
     if let Some(ref name) = req.name {
-        if name != &existing.name {
-            if !state
+        if name != &existing.name
+            && !state
                 .db
                 .check_name_unique("monitors", "name", name, Some(&id))
                 .await
                 .map_err(|e| e.to_string())?
-            {
-                return Err(format!("Ya existe un monitor con el nombre '{}'", name));
-            }
+        {
+            return Err(format!("Ya existe un monitor con el nombre '{}'", name));
         }
     }
 

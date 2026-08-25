@@ -27,7 +27,10 @@ impl Checker for TlsChecker {
         let addr = format!("{}:{}", host, port);
 
         let result = tokio::time::timeout(timeout, async {
-            let tcp = tokio::net::TcpStream::connect(&addr).await?;
+            let tcp = tokio::net::TcpStream::connect(&addr).await.map_err(|e| {
+                tracing::warn!(target = %addr, error = %e, "TLS: TCP connect failed");
+                e
+            })?;
 
             let mut roots = rustls::RootCertStore::empty();
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -37,12 +40,19 @@ impl Checker for TlsChecker {
                 .with_no_client_auth();
 
             let server_name =
-                rustls::pki_types::ServerName::try_from(host.clone()).map_err(|_| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid host")
+                rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| {
+                    tracing::warn!(host = %host, "TLS: invalid server name");
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("invalid host: {}", e),
+                    )
                 })?;
 
             let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-            let tls = connector.connect(server_name, tcp).await?;
+            let tls = connector.connect(server_name, tcp).await.map_err(|e| {
+                tracing::warn!(target = %addr, error = %e, "TLS: handshake failed");
+                e
+            })?;
 
             // Extract peer certificates after handshake
             let (_, session) = tls.get_ref();
@@ -88,20 +98,26 @@ impl Checker for TlsChecker {
 
                 outcome
             }
-            Ok(Err(e)) => CheckOutcome {
-                status: "down".into(),
-                status_code: None,
-                response_time_ms: elapsed,
-                error_message: Some(format!("TLS handshake failed: {}", e)),
-                ..Default::default()
-            },
-            Err(_) => CheckOutcome {
-                status: "down".into(),
-                status_code: None,
-                response_time_ms: elapsed,
-                error_message: Some("TLS connection timed out".into()),
-                ..Default::default()
-            },
+            Ok(Err(e)) => {
+                tracing::warn!(target = %addr, host = %host, error = %e, "TLS check failed");
+                CheckOutcome {
+                    status: "down".into(),
+                    status_code: None,
+                    response_time_ms: elapsed,
+                    error_message: Some(format!("TLS handshake failed: {}", e)),
+                    ..Default::default()
+                }
+            }
+            Err(_) => {
+                tracing::warn!(target = %addr, host = %host, "TLS check timed out");
+                CheckOutcome {
+                    status: "down".into(),
+                    status_code: None,
+                    response_time_ms: elapsed,
+                    error_message: Some("TLS connection timed out".into()),
+                    ..Default::default()
+                }
+            }
         }
     }
 }
@@ -132,15 +148,22 @@ fn parse_cert_not_after(cert: &rustls_pki_types::CertificateDer) -> TlsInfo {
     }
 }
 
-/// Parse "host" or "host:port" into (host, port).
+/// Parse "host", "host:port", "https://host", or "https://host:port/path" into (host, port).
 pub fn parse_target(target: &str) -> Option<(String, u16)> {
     let trimmed = target.trim();
-    if let Some((host, port)) = trimmed.rsplit_once(':') {
+    // Strip URL scheme prefix if present
+    let stripped = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(trimmed);
+    // Strip path after first slash
+    let host_port = stripped.split('/').next().unwrap_or(stripped);
+    if let Some((host, port)) = host_port.rsplit_once(':') {
         if let Ok(port) = port.parse::<u16>() {
             return Some((host.to_string(), port));
         }
     }
-    Some((trimmed.to_string(), 443))
+    Some((host_port.to_string(), 443))
 }
 
 #[cfg(test)]
@@ -170,12 +193,47 @@ mod tests {
 
     #[test]
     fn test_parse_target_without_port() {
-        assert_eq!(parse_target("example.com"), Some(("example.com".into(), 443)));
+        assert_eq!(
+            parse_target("example.com"),
+            Some(("example.com".into(), 443))
+        );
     }
 
     #[test]
     fn test_parse_target_ip_with_port() {
         assert_eq!(parse_target("1.1.1.1:8443"), Some(("1.1.1.1".into(), 8443)));
+    }
+
+    #[test]
+    fn test_parse_target_https_url() {
+        assert_eq!(
+            parse_target("https://atareao.es"),
+            Some(("atareao.es".into(), 443))
+        );
+    }
+
+    #[test]
+    fn test_parse_target_https_url_with_port() {
+        assert_eq!(
+            parse_target("https://atareao.es:8443"),
+            Some(("atareao.es".into(), 8443))
+        );
+    }
+
+    #[test]
+    fn test_parse_target_https_url_with_path() {
+        assert_eq!(
+            parse_target("https://atareao.es/some/path"),
+            Some(("atareao.es".into(), 443))
+        );
+    }
+
+    #[test]
+    fn test_parse_target_http_url() {
+        assert_eq!(
+            parse_target("http://example.com:8080"),
+            Some(("example.com".into(), 8080))
+        );
     }
 
     #[tokio::test]

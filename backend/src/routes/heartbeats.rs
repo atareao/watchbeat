@@ -35,7 +35,10 @@ pub async fn create(
         .await
         .map_err(|e| e.to_string())?
     {
-        return Err(format!("Ya existe un heartbeat con el nombre '{}'", req.name));
+        return Err(format!(
+            "Ya existe un heartbeat con el nombre '{}'",
+            req.name
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -74,15 +77,17 @@ pub async fn update(
         .ok_or("Heartbeat not found")?;
 
     // Check name uniqueness if name is being changed
-    if req.name != existing.name {
-        if !state
+    if req.name != existing.name
+        && !state
             .db
             .check_name_unique("heartbeats", "name", &req.name, Some(&id))
             .await
             .map_err(|e| e.to_string())?
-        {
-            return Err(format!("Ya existe un heartbeat con el nombre '{}'", req.name));
-        }
+    {
+        return Err(format!(
+            "Ya existe un heartbeat con el nombre '{}'",
+            req.name
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();

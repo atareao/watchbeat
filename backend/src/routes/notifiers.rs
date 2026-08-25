@@ -40,7 +40,10 @@ pub async fn create(
         .await
         .map_err(|e| e.to_string())?
     {
-        return Err(format!("Ya existe un notificador con el nombre '{}'", req.name));
+        return Err(format!(
+            "Ya existe un notificador con el nombre '{}'",
+            req.name
+        ));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -77,15 +80,14 @@ pub async fn update(
 
     // Check name uniqueness if name is being changed
     if let Some(ref name) = req.name {
-        if name != &existing.name {
-            if !state
+        if name != &existing.name
+            && !state
                 .db
                 .check_name_unique("notifiers", "name", name, Some(&id))
                 .await
                 .map_err(|e| e.to_string())?
-            {
-                return Err(format!("Ya existe un notificador con el nombre '{}'", name));
-            }
+        {
+            return Err(format!("Ya existe un notificador con el nombre '{}'", name));
         }
     }
 
@@ -176,7 +178,11 @@ pub async fn test(
                 .and_then(|v| v.as_str())
                 .ok_or("Missing chat_id in notifier config")?;
             crate::notifier::telegram::send_telegram_notification(
-                bot_token, chat_id, &fake_monitor, &fake_check, false,
+                bot_token,
+                chat_id,
+                &fake_monitor,
+                &fake_check,
+                false,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -198,7 +204,12 @@ pub async fn test(
                 .and_then(|v| v.as_str())
                 .ok_or("Missing room_id in notifier config")?;
             crate::notifier::matrix::send_matrix_notification(
-                homeserver_url, access_token, room_id, &fake_monitor, &fake_check, false,
+                homeserver_url,
+                access_token,
+                room_id,
+                &fake_monitor,
+                &fake_check,
+                false,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -216,7 +227,12 @@ pub async fn test(
                 .unwrap_or("https://ntfy.sh");
             let token = notifier.config_json.get("token").and_then(|v| v.as_str());
             crate::notifier::ntfy::send_ntfy_notification(
-                topic, server_url, token, &fake_monitor, &fake_check, false,
+                topic,
+                server_url,
+                token,
+                &fake_monitor,
+                &fake_check,
+                false,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -238,7 +254,12 @@ pub async fn test(
                 .map(|v| v.to_string())
                 .unwrap_or_default();
             crate::notifier::webhook::send_webhook_notification(
-                url, method, &headers_json, &fake_monitor, &fake_check, false,
+                url,
+                method,
+                &headers_json,
+                &fake_monitor,
+                &fake_check,
+                false,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -249,9 +270,14 @@ pub async fn test(
                 .get("webhook_url")
                 .and_then(|v| v.as_str())
                 .ok_or("Missing webhook_url in notifier config")?;
-            crate::notifier::slack::send_slack_notification(webhook_url, &fake_monitor, &fake_check, false)
-                .await
-                .map_err(|e| e.to_string())?;
+            crate::notifier::slack::send_slack_notification(
+                webhook_url,
+                &fake_monitor,
+                &fake_check,
+                false,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
         }
         "discord" => {
             let webhook_url = notifier
@@ -259,9 +285,14 @@ pub async fn test(
                 .get("webhook_url")
                 .and_then(|v| v.as_str())
                 .ok_or("Missing webhook_url in notifier config")?;
-            crate::notifier::discord::send_discord_notification(webhook_url, &fake_monitor, &fake_check, false)
-                .await
-                .map_err(|e| e.to_string())?;
+            crate::notifier::discord::send_discord_notification(
+                webhook_url,
+                &fake_monitor,
+                &fake_check,
+                false,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
         }
         "email" => {
             let smtp_host = notifier
@@ -295,7 +326,15 @@ pub async fn test(
                 .and_then(|v| v.as_str())
                 .ok_or("Missing to in notifier config")?;
             crate::notifier::email::send_email_notification(
-                smtp_host, smtp_port, username, password, from, to, &fake_monitor, &fake_check, false,
+                smtp_host,
+                smtp_port,
+                username,
+                password,
+                from,
+                to,
+                &fake_monitor,
+                &fake_check,
+                false,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -317,12 +356,22 @@ pub async fn test(
                 .and_then(|v| v.as_i64())
                 .unwrap_or(5);
             crate::notifier::gotify::send_gotify_notification(
-                server_url, app_token, priority, &fake_monitor, &fake_check, false,
+                server_url,
+                app_token,
+                priority,
+                &fake_monitor,
+                &fake_check,
+                false,
             )
             .await
             .map_err(|e| e.to_string())?;
         }
-        _ => return Err(format!("Unsupported notifier type: {}", notifier.notifier_type)),
+        _ => {
+            return Err(format!(
+                "Unsupported notifier type: {}",
+                notifier.notifier_type
+            ))
+        }
     }
 
     Ok(Json(serde_json::json!({"sent": true})))
