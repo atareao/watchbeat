@@ -24,7 +24,9 @@ pub async fn send_gotify_notification(
         ""
     };
 
-    let title = format!("{} {} — {}", emoji, direction, monitor.name).trim().to_string();
+    let title = format!("{} {} — {}", emoji, direction, monitor.name)
+        .trim()
+        .to_string();
     let message = format!(
         "Target: {}\nStatus: {}\nResponse: {}ms\n{}",
         monitor.target,
@@ -33,7 +35,11 @@ pub async fn send_gotify_notification(
         check.error_message.as_deref().unwrap_or("")
     );
 
-    let url = format!("{}/message?token={}", server_url.trim_end_matches('/'), app_token);
+    let url = format!(
+        "{}/message?token={}",
+        server_url.trim_end_matches('/'),
+        app_token
+    );
 
     let payload = json!({
         "title": title,

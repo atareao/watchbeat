@@ -15,9 +15,7 @@ pub struct HeartbeatRequest {
     pub notifier_id: Option<String>,
 }
 
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, String> {
+pub async fn list(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, String> {
     let hbs = state
         .db
         .list_heartbeats()

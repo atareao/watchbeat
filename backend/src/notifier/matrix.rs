@@ -25,18 +25,10 @@ pub async fn send_matrix_notification(
 
     let text = format!(
         "{} {} — {}\nTarget: {}\nStatus: {}\nResponse: {}ms",
-        emoji,
-        direction,
-        monitor.name,
-        monitor.target,
-        check.status,
-        check.response_time_ms,
+        emoji, direction, monitor.name, monitor.target, check.status, check.response_time_ms,
     );
 
-    let details = check
-        .error_message
-        .as_deref()
-        .unwrap_or("");
+    let details = check.error_message.as_deref().unwrap_or("");
 
     let message = if details.is_empty() {
         text

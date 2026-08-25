@@ -45,7 +45,7 @@ impl NotifierTrait for TelegramNotifier {
             .config_json
             .get("bot_token")
             .and_then(|v| v.as_str())
-            .or_else(|| {
+            .or({
                 // Also check notifier config if stored there
                 None
             });

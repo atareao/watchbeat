@@ -5,4 +5,5 @@ target/
 *.db-wal
 *.db-shm
 data/
-.env
+.env.codegraph/
+tsconfig.tsbuildinfo

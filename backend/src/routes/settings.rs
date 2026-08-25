@@ -35,11 +35,7 @@ pub async fn get_setting_query(
     axum::extract::Query(query): axum::extract::Query<GetSettingQuery>,
 ) -> Result<Json<serde_json::Value>, String> {
     if let Some(key) = &query.key {
-        let value = state
-            .db
-            .get_setting(key)
-            .await
-            .map_err(|e| e.to_string())?;
+        let value = state.db.get_setting(key).await.map_err(|e| e.to_string())?;
         Ok(Json(serde_json::json!({ "key": key, "value": value })))
     } else {
         Ok(Json(serde_json::json!({ "error": "key required" })))

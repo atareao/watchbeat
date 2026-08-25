@@ -7,6 +7,7 @@ import {
 import { Outlet, useNavigate, useLocation } from 'react-router';
 import { useAuth } from '../hooks/useAuth';
 import { useTheme } from '../hooks/useTheme';
+import { clearToken } from '../store/auth';
 
 const { Header, Sider, Content } = Layout;
 
@@ -32,9 +33,9 @@ export default function AppLayout() {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="light" style={{ borderRight: '1px solid #f0f0f0' }}>
+      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme={isDark ? 'dark' : 'light'} style={{ borderRight: isDark ? '1px solid #303030' : '1px solid #f0f0f0' }}>
         <div style={{ padding: 16, textAlign: 'center', fontWeight: 'bold', fontSize: collapsed ? 14 : 18 }}>
-          {collapsed ? '🕵️' : '🕵️ Vigilatrs'}
+          {collapsed ? '💓' : '💓 WatchBeat'}
         </div>
         <Menu
           mode="inline"
@@ -44,10 +45,10 @@ export default function AppLayout() {
         />
       </Sider>
       <Layout>
-        <Header style={{ background: '#fff', padding: '0 24px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', borderBottom: '1px solid #f0f0f0' }}>
+        <Header style={{ background: isDark ? '#141414' : '#fff', padding: '0 24px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', borderBottom: isDark ? '1px solid #303030' : '1px solid #f0f0f0' }}>
           <Typography.Text style={{ marginRight: 16 }}>{user?.name ?? user?.email ?? ''}</Typography.Text>
           <Button icon={isDark ? <SunOutlined /> : <MoonOutlined />} onClick={toggle} type="text" style={{ marginRight: 8 }} />
-          <Button icon={<LogoutOutlined />} type="text">Salir</Button>
+          <Button icon={<LogoutOutlined />} type="text" onClick={() => { clearToken(); window.location.href = '/auth/logout'; }}>Salir</Button>
         </Header>
         <Content style={{ margin: 24 }}>
           <Outlet />
