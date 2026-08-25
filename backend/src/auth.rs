@@ -152,7 +152,11 @@ pub async fn require_auth(mut req: Request, next: Next) -> Result<Response, Stat
     let path = req.uri().path();
 
     // Public endpoints
-    if path.starts_with("/auth/") || path == "/health" || path == "/" {
+    if path.starts_with("/auth/")
+        || path == "/health"
+        || path == "/"
+        || path.starts_with("/api/heartbeat/")
+    {
         tracing::trace!(path = %path, "public endpoint — skipping auth");
         return Ok(next.run(req).await);
     }
