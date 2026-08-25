@@ -395,17 +395,20 @@ impl Database {
         bucket_seconds: i64,
     ) -> Result<Vec<TimelineBucket>> {
         // Bucket by integer division of unix timestamp
+        // Note: each ? is a separate positional parameter in sqlx SQLite
+        // We pass bucket_seconds twice (once for division, once for multiplication)
         let rows: Vec<(i64, i64, i64, f64)> = sqlx::query_as(
             "SELECT \
-             (strftime('%s', checked_at) / ?1) * ?1 AS bucket_unix, \
+             (strftime('%s', checked_at) / ?) * ? AS bucket_unix, \
              COUNT(*) AS total, \
              SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS up_count, \
              AVG(response_time_ms) AS avg_rt \
              FROM checks \
-             WHERE monitor_id=?2 AND checked_at>=?3 \
+             WHERE monitor_id=? AND checked_at>=? \
              GROUP BY bucket_unix \
              ORDER BY bucket_unix ASC",
         )
+        .bind(bucket_seconds)
         .bind(bucket_seconds)
         .bind(monitor_id)
         .bind(since)
