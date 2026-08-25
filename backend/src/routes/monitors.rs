@@ -39,9 +39,7 @@ pub struct UpdateMonitorRequest {
 
 // ───── Handlers ─────
 
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, String> {
+pub async fn list(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, String> {
     let monitors = state.db.list_monitors().await.map_err(|e| e.to_string())?;
     Ok(Json(serde_json::json!({ "monitors": monitors })))
 }
@@ -100,7 +98,9 @@ pub async fn update(
         timeout_seconds: req.timeout_seconds.unwrap_or(existing.timeout_seconds),
         enabled: req.enabled.unwrap_or(existing.enabled),
         notifier_id: req.notifier_id.or(existing.notifier_id),
-        confirmations_required: req.confirmations_required.unwrap_or(existing.confirmations_required),
+        confirmations_required: req
+            .confirmations_required
+            .unwrap_or(existing.confirmations_required),
         failed_checks: existing.failed_checks,
         tags: existing.tags,
         created_at: existing.created_at,

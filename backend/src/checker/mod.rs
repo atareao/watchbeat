@@ -173,21 +173,21 @@ impl Checker for TcpChecker {
                 status_code: None,
                 response_time_ms: start.elapsed().as_millis() as u64,
                 error_message: None,
-                    tls: None,
+                tls: None,
             },
             Ok(Err(e)) => CheckOutcome {
                 status: "down".into(),
                 status_code: None,
                 response_time_ms: start.elapsed().as_millis() as u64,
                 error_message: Some(format!("TCP connection failed: {}", e)),
-                    tls: None,
+                tls: None,
             },
             Err(_) => CheckOutcome {
                 status: "down".into(),
                 status_code: None,
                 response_time_ms: timeout.as_millis() as u64,
                 error_message: Some("TCP connection timed out".into()),
-                    tls: None,
+                tls: None,
             },
         }
     }
@@ -211,7 +211,7 @@ impl Checker for PingChecker {
                 .arg("-c")
                 .arg("1")
                 .arg("-W")
-                .arg(&timeout.to_string())
+                .arg(timeout.to_string())
                 .arg(&target)
                 .output(),
         )
@@ -248,21 +248,21 @@ impl Checker for PingChecker {
                 status_code: None,
                 response_time_ms: elapsed,
                 error_message: Some("Ping failed (no response)".into()),
-                    tls: None,
+                tls: None,
             },
             Ok(Err(e)) => CheckOutcome {
                 status: "error".into(),
                 status_code: None,
                 response_time_ms: elapsed,
                 error_message: Some(format!("Ping command error: {}", e)),
-                    tls: None,
+                tls: None,
             },
             Err(_) => CheckOutcome {
                 status: "down".into(),
                 status_code: None,
                 response_time_ms: timeout * 1000,
                 error_message: Some("Ping timed out".into()),
-                    tls: None,
+                tls: None,
             },
         }
     }
@@ -326,7 +326,10 @@ mod tests {
 
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
         });
 
         let outcome = HttpChecker.check(&m).await;

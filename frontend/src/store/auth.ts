@@ -1,19 +1,22 @@
-let token: string | null = null;
-
-export function setToken(t: string | null) {
-  token = t;
-}
-
 export function getToken(): string | null {
-  if (token) return token;
-  // Try cookie
-  const match = document.cookie.match(/(?:^|;\s*)token=([^;]*)/);
-  token = match?.[1] ?? null;
-  return token;
+  try {
+    return sessionStorage.getItem('watchbeat_token') || localStorage.getItem('watchbeat_token');
+  } catch {
+    return null;
+  }
 }
 
-export function logout() {
-  token = null;
-  document.cookie = 'token=; Path=/; Max-Age=0';
-  window.location.href = '/login';
+export function setToken(token: string): void {
+  try {
+    sessionStorage.setItem('watchbeat_token', token);
+    localStorage.setItem('watchbeat_token', token);
+  } catch { /* noop */ }
+}
+
+export function clearToken(): void {
+  try {
+    sessionStorage.removeItem('watchbeat_token');
+    localStorage.removeItem('watchbeat_token');
+    sessionStorage.removeItem('watchbeat_user');
+  } catch { /* noop */ }
 }

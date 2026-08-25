@@ -24,8 +24,8 @@ export default function LoginPage() {
       background: '#f0f2f5',
     }}>
       <Result
-        icon={<span style={{ fontSize: 48 }}>🕵️</span>}
-        title="Vigilatrs"
+        icon={<span style={{ fontSize: 48 }}>💓</span>}
+        title="WatchBeat"
         subTitle="Monitor de uptime auto-hosteado"
         extra={
           error ? (
@@ -36,7 +36,7 @@ export default function LoginPage() {
               </Button>
             </div>
           ) : (
-            <Button type="primary" size="large" loading onClick={handleLogin}>
+            <Button type="primary" size="large" onClick={handleLogin}>
               Iniciar sesión
             </Button>
           )

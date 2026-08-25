@@ -1,23 +1,36 @@
-import { useEffect, useState } from 'react';
-import { fetchMe, type User } from '../api/http';
+import { useState, useEffect } from "react";
+import { fetchMe, type User } from "../api/http";
+import { clearToken } from "../store/auth";
+
+function getToken(): string | null {
+  try {
+    return sessionStorage.getItem("watchbeat_token") || localStorage.getItem("watchbeat_token");
+  } catch {
+    return null;
+  }
+}
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const me = await fetchMe();
-        setUser(me);
-      } catch {
+    const token = getToken();
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+
+    fetchMe()
+      .then(setUser)
+      .catch(() => {
+        clearToken();
         setUser(null);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   return { user, loading };
 }
+
+export { getToken };

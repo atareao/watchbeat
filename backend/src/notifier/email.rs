@@ -1,9 +1,10 @@
+use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
-use lettre::message::header::ContentType;
 
 use crate::models::{CheckResult, Monitor};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn send_email_notification(
     smtp_host: &str,
     smtp_port: u16,

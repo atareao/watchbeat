@@ -1,6 +1,5 @@
 use reqwest::header::HeaderMap;
 use reqwest::Client;
-use serde_json::json;
 
 use crate::models::{CheckResult, Monitor};
 
@@ -25,7 +24,9 @@ pub async fn send_ntfy_notification(
         ""
     };
 
-    let title = format!("{} {} — {}", emoji, direction, monitor.name).trim().to_string();
+    let title = format!("{} {} — {}", emoji, direction, monitor.name)
+        .trim()
+        .to_string();
     let message = format!(
         "Target: {}\nStatus: {}\nResponse: {}ms\n{}",
         monitor.target,

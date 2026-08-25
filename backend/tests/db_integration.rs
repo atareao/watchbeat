@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use tempfile::TempDir;
 use watchbeat::db::Database;
 use watchbeat::models::{CheckResult, Monitor, Notifier};

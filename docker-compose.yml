@@ -1,21 +1,49 @@
+# ═══════════════════════════════════════════════════════════════
+# WatchBeat — Docker Compose (legacy alias)
+# ═══════════════════════════════════════════════════════════════
+#
+# ⚠️  Este fichero se mantiene por compatibilidad.
+#    El fichero canónico es compose.yml.
+#
+#    Migra a:
+#      docker compose -f compose.yml up -d
+#
+# ═══════════════════════════════════════════════════════════════
+
 services:
   watchbeat:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "3055:3055"
+      - "${WATCHBEAT_PORT:-3055}:3055"
     volumes:
-      - ./data:/app/data
+      - watchbeat_data:/app/data
     environment:
       HOST: "0.0.0.0"
       PORT: 3055
       DATA_DIR: /app/data
-      DATABASE_URL: "/app/data/watchbeat.db"
-      TIMEZONE: Europe/Madrid
-      RUST_LOG: info
-      # ⚠️ Configura tus variables OIDC
-      OIDC_ISSUER_URL: "${OIDC_ISSUER_URL}"
-      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID}"
-      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET}"
+      DATABASE_URL: /app/data/watchbeat.db
+      TIMEZONE: ${TIMEZONE:-Europe/Madrid}
+      RUST_LOG: ${RUST_LOG:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-pretty}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?required}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?required}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:?OIDC_REDIRECT_URL obligatoria (ej: http://localhost:3055/auth/callback)}
+    env_file:
+      - path: .env
+        required: false
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3055/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      app: watchbeat
+      description: "Self-hosted uptime monitor"
+
+volumes:
+  watchbeat_data:
