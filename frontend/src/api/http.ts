@@ -68,6 +68,14 @@ export interface TimelinePoint {
   response_time_ms: number | null;
 }
 
+export interface TimelineBucket {
+  bucket_start: string;
+  up_pct: number;
+  avg_response_time_ms: number;
+  count: number;
+  dominant_status: string;
+}
+
 async function fetcher<T>(path: string, opts?: { method?: string; body?: unknown }): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -135,6 +143,20 @@ export async function fetchTimeline(id: string, opts?: { days?: number; hours?: 
   }
   const days = opts?.days ?? 1;
   return fetcher(`/api/monitors/${id}/timeline?days=${days}`);
+}
+
+export async function fetchTimelineBuckets(
+  id: string,
+  opts: { bucket_seconds: number } & ({ days?: number } | { hours?: number }),
+): Promise<{ buckets: TimelineBucket[] }> {
+  let query: string;
+  if ('hours' in opts && opts.hours != null) {
+    query = `hours=${opts.hours}&bucket_seconds=${opts.bucket_seconds}`;
+  } else {
+    const days = (opts as { days?: number }).days ?? 1;
+    query = `days=${days}&bucket_seconds=${opts.bucket_seconds}`;
+  }
+  return fetcher(`/api/monitors/${id}/timeline?${query}`);
 }
 
 export async function fetchStatus(): Promise<{

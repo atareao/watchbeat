@@ -24,7 +24,9 @@ pub trait NotifierTrait: Send + Sync {
 /// Build a notifier for the given notifier config.
 pub fn notifier_for(notifier: &Notifier) -> Option<Box<dyn NotifierTrait>> {
     match notifier.notifier_type.as_str() {
-        "telegram" => Some(Box::new(TelegramNotifier::new(notifier.config_json.clone()))),
+        "telegram" => Some(Box::new(TelegramNotifier::new(
+            notifier.config_json.clone(),
+        ))),
         "matrix" => Some(Box::new(MatrixNotifier::new(notifier.config_json.clone()))),
         "ntfy" => Some(Box::new(NtfyNotifier::new(notifier.config_json.clone()))),
         "webhook" => Some(Box::new(WebhookNotifier::new(notifier.config_json.clone()))),
@@ -66,7 +68,10 @@ impl NotifierTrait for TelegramNotifier {
             .get("chat_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing chat_id in telegram notifier config"))?;
-        crate::notifier::telegram::send_telegram_notification(bot_token, chat_id, monitor, check, was_up).await
+        crate::notifier::telegram::send_telegram_notification(
+            bot_token, chat_id, monitor, check, was_up,
+        )
+        .await
     }
 }
 
@@ -148,7 +153,10 @@ impl NotifierTrait for NtfyNotifier {
             .and_then(|v| v.as_str())
             .unwrap_or("https://ntfy.sh");
         let token = self.config.get("token").and_then(|v| v.as_str());
-        crate::notifier::ntfy::send_ntfy_notification(topic, server_url, token, monitor, check, was_up).await
+        crate::notifier::ntfy::send_ntfy_notification(
+            topic, server_url, token, monitor, check, was_up,
+        )
+        .await
     }
 }
 
@@ -187,7 +195,15 @@ impl NotifierTrait for WebhookNotifier {
             .get("headers")
             .map(|v| v.to_string())
             .unwrap_or_default();
-        crate::notifier::webhook::send_webhook_notification(url, method, &headers_json, monitor, check, was_up).await
+        crate::notifier::webhook::send_webhook_notification(
+            url,
+            method,
+            &headers_json,
+            monitor,
+            check,
+            was_up,
+        )
+        .await
     }
 }
 
@@ -245,7 +261,8 @@ impl NotifierTrait for DiscordNotifier {
             .get("webhook_url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing webhook_url in discord notifier config"))?;
-        crate::notifier::discord::send_discord_notification(webhook_url, monitor, check, was_up).await
+        crate::notifier::discord::send_discord_notification(webhook_url, monitor, check, was_up)
+            .await
     }
 }
 
@@ -300,15 +317,7 @@ impl NotifierTrait for EmailNotifier {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing to in email notifier config"))?;
         crate::notifier::email::send_email_notification(
-            smtp_host,
-            smtp_port,
-            username,
-            password,
-            from,
-            to,
-            monitor,
-            check,
-            was_up,
+            smtp_host, smtp_port, username, password, from, to, monitor, check, was_up,
         )
         .await
     }
@@ -349,6 +358,9 @@ impl NotifierTrait for GotifyNotifier {
             .get("priority")
             .and_then(|v| v.as_i64())
             .unwrap_or(5);
-        crate::notifier::gotify::send_gotify_notification(server_url, app_token, priority, monitor, check, was_up).await
+        crate::notifier::gotify::send_gotify_notification(
+            server_url, app_token, priority, monitor, check, was_up,
+        )
+        .await
     }
 }

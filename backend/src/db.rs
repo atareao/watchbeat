@@ -7,7 +7,8 @@ use sqlx::SqlitePool;
 
 use crate::models::{
     CheckResult, DashboardStatus, Heartbeat, HeartbeatRow, Monitor, MonitorRow, MonitorSummary,
-    Notifier, NotifierRow, StatusPage, StatusPageRow, TimelinePoint, TimelinePointRow,
+    Notifier, NotifierRow, StatusPage, StatusPageRow, TimelineBucket, TimelinePoint,
+    TimelinePointRow,
 };
 
 #[derive(Clone)]
@@ -102,11 +103,10 @@ impl Database {
             .await;
 
         // Unique indexes for name uniqueness (enforced at DB level)
-        let _ = sqlx::raw_sql(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_monitors_name ON monitors(name)",
-        )
-        .execute(&pool)
-        .await;
+        let _ =
+            sqlx::raw_sql("CREATE UNIQUE INDEX IF NOT EXISTS idx_monitors_name ON monitors(name)")
+                .execute(&pool)
+                .await;
         let _ = sqlx::raw_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_notifiers_name ON notifiers(name)",
         )
@@ -124,11 +124,10 @@ impl Database {
         .await;
 
         // Index for ORDER BY on heartbeats and status_pages
-        let _ = sqlx::raw_sql(
-            "CREATE INDEX IF NOT EXISTS idx_heartbeats_status ON heartbeats(status)",
-        )
-        .execute(&pool)
-        .await;
+        let _ =
+            sqlx::raw_sql("CREATE INDEX IF NOT EXISTS idx_heartbeats_status ON heartbeats(status)")
+                .execute(&pool)
+                .await;
 
         Ok(Self {
             pool,
@@ -163,41 +162,73 @@ impl Database {
         Ok(row.map(Monitor::from))
     }
 
-    pub async fn check_name_unique(&self, table: &str, column: &str, value: &str, exclude_id: Option<&str>) -> Result<bool> {
+    pub async fn check_name_unique(
+        &self,
+        table: &str,
+        column: &str,
+        value: &str,
+        exclude_id: Option<&str>,
+    ) -> Result<bool> {
         let count: i64 = match (table, column, exclude_id) {
             ("monitors", "name", None) => {
                 sqlx::query_scalar("SELECT COUNT(*) FROM monitors WHERE name=?")
-                    .bind(value).fetch_one(&self.pool).await?
+                    .bind(value)
+                    .fetch_one(&self.pool)
+                    .await?
             }
             ("monitors", "name", Some(_)) => {
                 sqlx::query_scalar("SELECT COUNT(*) FROM monitors WHERE name=? AND id!=?")
-                    .bind(value).bind(exclude_id.unwrap()).fetch_one(&self.pool).await?
+                    .bind(value)
+                    .bind(exclude_id.unwrap())
+                    .fetch_one(&self.pool)
+                    .await?
             }
             ("notifiers", "name", None) => {
                 sqlx::query_scalar("SELECT COUNT(*) FROM notifiers WHERE name=?")
-                    .bind(value).fetch_one(&self.pool).await?
+                    .bind(value)
+                    .fetch_one(&self.pool)
+                    .await?
             }
             ("notifiers", "name", Some(_)) => {
                 sqlx::query_scalar("SELECT COUNT(*) FROM notifiers WHERE name=? AND id!=?")
-                    .bind(value).bind(exclude_id.unwrap()).fetch_one(&self.pool).await?
+                    .bind(value)
+                    .bind(exclude_id.unwrap())
+                    .fetch_one(&self.pool)
+                    .await?
             }
             ("heartbeats", "name", None) => {
                 sqlx::query_scalar("SELECT COUNT(*) FROM heartbeats WHERE name=?")
-                    .bind(value).fetch_one(&self.pool).await?
+                    .bind(value)
+                    .fetch_one(&self.pool)
+                    .await?
             }
             ("heartbeats", "name", Some(_)) => {
                 sqlx::query_scalar("SELECT COUNT(*) FROM heartbeats WHERE name=? AND id!=?")
-                    .bind(value).bind(exclude_id.unwrap()).fetch_one(&self.pool).await?
+                    .bind(value)
+                    .bind(exclude_id.unwrap())
+                    .fetch_one(&self.pool)
+                    .await?
             }
             ("status_pages", "title", None) => {
                 sqlx::query_scalar("SELECT COUNT(*) FROM status_pages WHERE title=?")
-                    .bind(value).fetch_one(&self.pool).await?
+                    .bind(value)
+                    .fetch_one(&self.pool)
+                    .await?
             }
             ("status_pages", "title", Some(_)) => {
                 sqlx::query_scalar("SELECT COUNT(*) FROM status_pages WHERE title=? AND id!=?")
-                    .bind(value).bind(exclude_id.unwrap()).fetch_one(&self.pool).await?
+                    .bind(value)
+                    .bind(exclude_id.unwrap())
+                    .fetch_one(&self.pool)
+                    .await?
             }
-            _ => return Err(anyhow::anyhow!("Unknown table/column: {}/{}", table, column)),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Unknown table/column: {}/{}",
+                    table,
+                    column
+                ))
+            }
         };
         Ok(count == 0)
     }
@@ -355,6 +386,61 @@ impl Database {
         .await
         .context("Failed to get timeline")?;
         Ok(rows.into_iter().map(TimelinePoint::from).collect())
+    }
+
+    pub async fn get_timeline_buckets(
+        &self,
+        monitor_id: &str,
+        since: &str,
+        bucket_seconds: i64,
+    ) -> Result<Vec<TimelineBucket>> {
+        // Bucket by integer division of unix timestamp
+        let rows: Vec<(i64, i64, i64, f64)> = sqlx::query_as(
+            "SELECT \
+             (strftime('%s', checked_at) / ?1) * ?1 AS bucket_unix, \
+             COUNT(*) AS total, \
+             SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS up_count, \
+             AVG(response_time_ms) AS avg_rt \
+             FROM checks \
+             WHERE monitor_id=?2 AND checked_at>=?3 \
+             GROUP BY bucket_unix \
+             ORDER BY bucket_unix ASC",
+        )
+        .bind(bucket_seconds)
+        .bind(monitor_id)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to get timeline buckets")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(bucket_unix, total, up_count, avg_rt)| {
+                let up_pct = if total > 0 {
+                    (up_count as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                let dominant_status = if up_pct >= 50.0 {
+                    "up"
+                } else if up_count < total {
+                    "down"
+                } else {
+                    "error"
+                };
+                // Convert unix timestamp to RFC 3339
+                let bucket_start = chrono::DateTime::from_timestamp(bucket_unix, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_else(|| "unknown".to_string());
+                TimelineBucket {
+                    bucket_start,
+                    up_pct: (up_pct * 100.0).round() / 100.0, // 2 decimal places
+                    avg_response_time_ms: (avg_rt * 100.0).round() / 100.0,
+                    count: total,
+                    dominant_status: dominant_status.to_string(),
+                }
+            })
+            .collect())
     }
 
     pub async fn get_recent_checks_global(&self, limit: i64) -> Result<Vec<CheckResult>> {

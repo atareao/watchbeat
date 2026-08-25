@@ -155,7 +155,11 @@ mod tests {
             let request = String::from_utf8_lossy(&raw);
 
             // Verify method and path
-            assert!(request.contains("PUT"), "Expected PUT method, got:\n{}", request);
+            assert!(
+                request.contains("PUT"),
+                "Expected PUT method, got:\n{}",
+                request
+            );
             assert!(
                 request.contains("/_matrix/client/v3/rooms/!room:id/send/m.room.message/"),
                 "Missing Matrix room path:\n{}",
@@ -164,7 +168,9 @@ mod tests {
 
             // Verify auth header (reqwest lowercases header names)
             assert!(
-                request.to_lowercase().contains("authorization: bearer test_token"),
+                request
+                    .to_lowercase()
+                    .contains("authorization: bearer test_token"),
                 "Missing Authorization header:\n{}",
                 request
             );
@@ -184,9 +190,15 @@ mod tests {
         let monitor = make_test_monitor("http", "https://example.com");
         let check = make_test_check("up", 200, 42, None);
 
-        let result =
-            send_matrix_notification(&server_url, "test_token", "!room:id", &monitor, &check, false)
-                .await;
+        let result = send_matrix_notification(
+            &server_url,
+            "test_token",
+            "!room:id",
+            &monitor,
+            &check,
+            false,
+        )
+        .await;
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
 
         handle.await.unwrap();

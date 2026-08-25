@@ -20,7 +20,7 @@ watchbeat/
 │       ├── auth.rs             # OIDC discovery + JWKS + JWT validation
 │       ├── embed.rs            # SPA embebida (include_dir!)
 │       ├── models.rs           # Monitor, CheckResult, Notifier, Timeline
-│       ├── checker/            # HTTP, TCP, Ping checkers
+│       ├── checker/            # HTTP, TCP, Ping, TLS checkers
 │       ├── notifier/           # Telegram notifier
 │       └── routes/             # API endpoints
 ├── frontend/             # React 19 + Vite + Ant Design
@@ -32,13 +32,14 @@ watchbeat/
 └── Dockerfile            # Multi-stage build (Rust + Node)
 ```
 
-## Checkers
+## Checkers — ¿Qué monitoriza cada tipo?
 
-| Tipo | Cómo funciona |
-|------|--------------|
-| **HTTP(S)** | reqwest GET/HEAD con timeout. Status 2xx/3xx = UP. Opción expected_status. |
-| **TCP** | tokio TcpStream connect con timeout. |
-| **Ping** | ping -c 1 con timeout. Parsea latencia de la salida. |
+| Tipo | ¿Qué comprueba? | Target típico | Ejemplo |
+|------|-----------------|---------------|--------|
+| **HTTP(S)** | Hace una petición HTTP a la URL y verifica código de estado (200, 301, etc.) y contenido del body. Soporta GET, HEAD, POST, expected_status, expected_body y regex. | URL completa | `https://atareao.es` |
+| **TLS/SSL** | Conecta por TCP, hace handshake TLS y comprueba la fecha de expiración del certificado. Marca `warning` si quedan pocos días (configurable, default 14). | host (sin `https://`) | `atareao.es` |
+| **TCP** | Intenta abrir una conexión TCP al puerto — verifica que el servicio está escuchando. | host:puerto | `atareao.es:443` |
+| **Ping** | Ejecuta `ping -c 1` — verifica si el host responde a ICMP. | IP o dominio | `8.8.8.8` |
 
 ## API
 

@@ -111,6 +111,17 @@ pub struct TimelinePoint {
     pub response_time_ms: Option<u64>,
 }
 
+// ───── Timeline Bucket (aggregated) ─────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineBucket {
+    pub bucket_start: String, // ISO timestamp of bucket start
+    pub up_pct: f64,          // % of checks that were up (0.0 - 100.0)
+    pub avg_response_time_ms: f64,
+    pub count: i64,
+    pub dominant_status: String, // "up", "down", or "error"
+}
+
 // ───── Status Page ─────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
