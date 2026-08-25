@@ -394,48 +394,25 @@ impl Database {
         since: &str,
         bucket_seconds: i64,
     ) -> Result<Vec<TimelineBucket>> {
-        // First, find the actual data range for this monitor within the time window
-        let actual_span: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT MIN(checked_at), MAX(checked_at) FROM checks \
-             WHERE monitor_id=? AND checked_at>=?",
-        )
-        .bind(monitor_id)
-        .bind(since)
-        .fetch_optional(&self.pool)
-        .await
-        .context("Failed to get actual data range")?;
-
-        // If no data, return empty
-        let (min_checked, max_checked) = match actual_span {
-            Some((Some(min), Some(max))) => (min, max),
-            _ => return Ok(Vec::new()),
+        // Calculate span from Rust — SQLite date functions are unreliable with RFC 3339
+        let since_dt = match chrono::DateTime::parse_from_rfc3339(since) {
+            Ok(dt) => dt.with_timezone(&chrono::Utc),
+            Err(_) => return Ok(Vec::new()),
         };
+        let now = chrono::Utc::now();
+        let span_seconds = (now - since_dt).num_seconds().max(1);
 
-        // Calculate actual span in seconds using julianday
-        let span_seconds: f64 = sqlx::query_scalar(
-            "SELECT (julianday(?) - julianday(?)) * 86400",
-        )
-        .bind(&max_checked)
-        .bind(&min_checked)
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(0.0);
-
-        // Target ~80 blocks based on actual data span
-        // If data span is smaller than the requested range, we use smaller buckets
-        // If data span is larger, we use larger buckets
-        // Clamped between 60s (min) and the requested bucket_seconds (max)
+        // Target ~80 blocks, clamp between 60s and bucket_seconds
         let target_blocks: i64 = 80;
-        let ideal_bucket = (span_seconds as i64).max(1) / target_blocks;
+        let ideal_bucket = span_seconds / target_blocks;
         let effective_bucket = ideal_bucket.clamp(60, bucket_seconds);
 
         // Bucket by integer division of unix timestamp
-        // Using julianday instead of strftime because strftime doesn't handle
-        // timezone offsets (+00:00) in RFC 3339 dates reliably.
-        // Formula: (julianday - 2440587.5) * 86400 = unix timestamp
+        // substr strips timezone offset (+00:00) which SQLite date functions
+        // don't handle reliably. Takes first 19 chars: 2026-08-25T20:34:41
         let rows: Vec<(i64, i64, i64, f64)> = sqlx::query_as(
             "SELECT \
-             (CAST((julianday(checked_at) - 2440587.5) * 86400 AS INTEGER) / ?) * ? AS bucket_unix, \
+             (CAST(strftime('%s', substr(checked_at, 1, 19)) AS INTEGER) / ?) * ? AS bucket_unix, \
              COUNT(*) AS total, \
              SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS up_count, \
              AVG(response_time_ms) AS avg_rt \
