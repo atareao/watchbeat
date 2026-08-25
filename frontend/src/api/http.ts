@@ -1,3 +1,5 @@
+import { getToken, clearToken } from "../store/auth";
+
 export interface User {
   sub: string;
   email?: string;
@@ -66,8 +68,6 @@ export interface TimelinePoint {
   response_time_ms: number | null;
 }
 
-import { getToken } from '../store/auth';
-
 async function fetcher<T>(path: string, opts?: { method?: string; body?: unknown }): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -79,6 +79,13 @@ async function fetcher<T>(path: string, opts?: { method?: string; body?: unknown
     body: opts?.body ? JSON.stringify(opts.body) : undefined,
   });
 
+  // If unauthorized, clear token and redirect to login
+  if (res.status === 401) {
+    clearToken();
+    window.location.href = '/login';
+    throw new Error('Not authenticated');
+  }
+
   if (!res.ok) {
     const text = await res.text().catch(() => 'unknown error');
     throw new Error(`HTTP ${res.status}: ${text}`);
@@ -89,7 +96,9 @@ async function fetcher<T>(path: string, opts?: { method?: string; body?: unknown
 }
 
 export async function fetchMe(): Promise<User> {
-  return fetcher<User>('/api/me');
+  const data = await fetcher<{ authenticated: boolean; user: User }>('/api/me');
+  if (!data.authenticated || !data.user) throw new Error('Not authenticated');
+  return data.user;
 }
 
 export async function fetchMonitors(): Promise<{ monitors: Monitor[] }> {

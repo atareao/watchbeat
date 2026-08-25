@@ -38,13 +38,14 @@ pub fn env_or(key: &str, default: &str) -> String {
 }
 
 pub fn env_or_parsed<T: std::str::FromStr>(key: &str, default: T) -> T {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 pub fn env_required(key: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| {
-        panic!("OIDC env var {} is required", key)
-    })
+    std::env::var(key).unwrap_or_else(|_| panic!("OIDC env var {} is required", key))
 }
 
 #[cfg(test)]

@@ -17,9 +17,7 @@ pub struct StatusPageRequest {
     pub public: bool,
 }
 
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, String> {
+pub async fn list(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, String> {
     let pages = state
         .db
         .list_status_pages()
@@ -130,9 +128,15 @@ pub async fn public_page(
         .filter(|s| page.monitors.contains(&s.id))
         .collect();
 
-    let overall = if page_monitors.iter().any(|m| m.last_status.as_deref() == Some("down")) {
+    let overall = if page_monitors
+        .iter()
+        .any(|m| m.last_status.as_deref() == Some("down"))
+    {
         "down"
-    } else if page_monitors.iter().all(|m| m.last_status.as_deref() == Some("up")) {
+    } else if page_monitors
+        .iter()
+        .all(|m| m.last_status.as_deref() == Some("up"))
+    {
         "up"
     } else {
         "unknown"
@@ -169,7 +173,10 @@ fn render_status_page(
             Some("down") => ("#ef4444", "Caído"),
             _ => ("#f59e0b", "Sin datos"),
         };
-        let uptime = m.uptime_30d.map(|u| format!("{:.2}%", u)).unwrap_or_else(|| "—".into());
+        let uptime = m
+            .uptime_30d
+            .map(|u| format!("{:.2}%", u))
+            .unwrap_or_else(|| "—".into());
         rows.push_str(&format!(
             r#"<tr><td><span class="dot" style="background:{dot}"></span>{}</td>
                <td>{status_text}</td><td>{uptime}</td></tr>"#,

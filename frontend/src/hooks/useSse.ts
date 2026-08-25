@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { getToken } from '../store/auth';
 
 type SseEvent = {
   type: string;
@@ -10,20 +11,14 @@ type Listener = (event: SseEvent) => void;
 const listeners = new Set<Listener>();
 
 let eventSource: EventSource | null = null;
-let token: string | null = null;
-
-function getCookie(name: string): string | null {
-  const match = document.cookie.match(`(?:^|; )${name}=([^;]*)`);
-  return match ? decodeURIComponent(match[1]) : null;
-}
 
 function connect() {
   if (eventSource?.readyState === EventSource.OPEN || eventSource?.readyState === EventSource.CONNECTING) return;
 
-  const t = token || getCookie('token');
+  const t = getToken();
   if (!t) return;
 
-  const url = t ? `/api/events?token=${encodeURIComponent(t)}` : '/api/events';
+  const url = `/api/events?token=${encodeURIComponent(t)}`;
   eventSource = new EventSource(url);
 
   eventSource.onmessage = (e) => {
@@ -43,12 +38,6 @@ function connect() {
 function disconnect() {
   eventSource?.close();
   eventSource = null;
-}
-
-export function setSseToken(t: string | null) {
-  token = t;
-  if (t) connect();
-  else disconnect();
 }
 
 export function useSse(): { lastEvent: SseEvent | null; subscribe: (fn: Listener) => () => void } {

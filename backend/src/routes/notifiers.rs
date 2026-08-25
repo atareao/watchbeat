@@ -24,14 +24,8 @@ pub struct UpdateNotifierRequest {
     pub enabled: Option<bool>,
 }
 
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, String> {
-    let notifiers = state
-        .db
-        .list_notifiers()
-        .await
-        .map_err(|e| e.to_string())?;
+pub async fn list(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, String> {
+    let notifiers = state.db.list_notifiers().await.map_err(|e| e.to_string())?;
     Ok(Json(serde_json::json!({ "notifiers": notifiers })))
 }
 

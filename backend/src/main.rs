@@ -54,8 +54,14 @@ async fn main() {
         Ok(_) => tracing::info!("✅ Internet connectivity OK"),
         Err(e) => tracing::warn!("⚠️  Internet connectivity check failed: {} (non-fatal)", e),
     }
-    match check_client.get(&format!("{}/.well-known/openid-configuration", config.oidc_issuer_url.trim_end_matches('/')))
-        .send().await {
+    match check_client
+        .get(format!(
+            "{}/.well-known/openid-configuration",
+            config.oidc_issuer_url.trim_end_matches('/')
+        ))
+        .send()
+        .await
+    {
         Ok(_) => tracing::info!("✅ OIDC provider reachable"),
         Err(e) => tracing::warn!("⚠️  OIDC provider not reachable: {} (will retry)", e),
     }
@@ -89,10 +95,10 @@ async fn main() {
         }
     };
 
-    // ───── JWKS ─────
+    // ───── JWKS (como populates) ─────
     let jwt_validator = JwtValidator::new(&config.oidc_issuer_url, &config.oidc_client_id);
-    if let Err(e) = jwt_validator.fetch_jwks(&oidc_metadata.jwks_uri).await {
-        tracing::error!("❌ JWKS fetch failed: {}", e);
+    if let Err(e) = jwt_validator.fetch_jwks(&config.oidc_issuer_url).await {
+        tracing::error!("❌ JWKS fetch failed: {}. OIDC will not work.", e);
         std::process::exit(1);
     }
     let jwt_validator = Arc::new(jwt_validator);
@@ -107,9 +113,7 @@ async fn main() {
         db: db.clone(),
         oidc_metadata: Some(oidc_metadata),
         jwt_validator: jwt_validator.clone(),
-        oidc_states: Arc::new(tokio::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        )),
+        oidc_states: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         scheduler_status: scheduler_status.clone(),
         event_tx: event_tx.clone(),
     });
@@ -122,7 +126,7 @@ async fn main() {
         scheduler_loop(db_for_scheduler, sched_status, event_tx_for_sched).await;
     });
 
-    // ───── Router ─────
+    // ───── Router (como populates) ─────
     let state_for_middleware = app_state.clone();
     let app = routes::api_routes()
         .layer(CorsLayer::permissive())
@@ -130,11 +134,7 @@ async fn main() {
             move |mut req: axum::extract::Request, next: axum::middleware::Next| {
                 let state = state_for_middleware.clone();
                 async move {
-                    let path = req.uri().path().to_string();
                     req.extensions_mut().insert(state);
-                    if is_public_path(&path) {
-                        return Ok(next.run(req).await);
-                    }
                     watchbeat::auth::require_auth(req, next).await
                 }
             },
@@ -183,7 +183,10 @@ async fn scheduler_loop(
         };
 
         let notifiers = match db.list_notifiers().await {
-            Ok(n) => n.into_iter().map(|n| (n.id.clone(), n)).collect::<std::collections::HashMap<_, _>>(),
+            Ok(n) => n
+                .into_iter()
+                .map(|n| (n.id.clone(), n))
+                .collect::<std::collections::HashMap<_, _>>(),
             Err(e) => {
                 tracing::warn!("Scheduler: failed to load notifiers: {}", e);
                 std::collections::HashMap::new()
@@ -207,7 +210,11 @@ async fn scheduler_loop(
                     continue;
                 }
                 Err(e) => {
-                    tracing::warn!("Scheduler: failed to get last check for {}: {}", monitor.name, e);
+                    tracing::warn!(
+                        "Scheduler: failed to get last check for {}: {}",
+                        monitor.name,
+                        e
+                    );
                     continue;
                 }
             };
@@ -239,11 +246,12 @@ async fn scheduler_loop(
                 // Skip if no notifier configured (nothing to alert)
                 let hb_status_ok = hb.status == "ok" || hb.status == "pending";
                 let grace_expired = match &hb.last_seen_at {
-                    Some(ts) => {
-                        chrono::DateTime::parse_from_rfc3339(ts)
-                            .map(|t| now - t.with_timezone(&chrono::Utc) > chrono::Duration::seconds(hb.grace_seconds))
-                            .unwrap_or(false)
-                    }
+                    Some(ts) => chrono::DateTime::parse_from_rfc3339(ts)
+                        .map(|t| {
+                            now - t.with_timezone(&chrono::Utc)
+                                > chrono::Duration::seconds(hb.grace_seconds)
+                        })
+                        .unwrap_or(false),
                     None => true, // Never seen — consider missing if pending too long
                 };
 
@@ -252,26 +260,40 @@ async fn scheduler_loop(
                     if let Some(nid) = &hb.notifier_id {
                         if let Some(notifier) = notifiers.get(nid) {
                             if notifier.enabled && notifier.notifier_type == "telegram" {
-                                let bot_token = notifier.config_json.get("bot_token").and_then(|v| v.as_str());
-                                let chat_id = notifier.config_json.get("chat_id").and_then(|v| v.as_str());
+                                let bot_token = notifier
+                                    .config_json
+                                    .get("bot_token")
+                                    .and_then(|v| v.as_str());
+                                let chat_id =
+                                    notifier.config_json.get("chat_id").and_then(|v| v.as_str());
                                 if let (Some(token), Some(chat)) = (bot_token, chat_id) {
                                     let msg = format!(
                                         "🔴 Heartbeat '{}' no ha latido en {}s — posible fallo de cron/backup",
                                         hb.name, hb.grace_seconds
                                     );
-                                    let url = format!("https://api.telegram.org/bot{}/sendMessage", token);
-                                    let _ = reqwest::Client::new().post(&url)
+                                    let url = format!(
+                                        "https://api.telegram.org/bot{}/sendMessage",
+                                        token
+                                    );
+                                    let _ = reqwest::Client::new()
+                                        .post(&url)
                                         .json(&serde_json::json!({"chat_id": chat, "text": msg}))
-                                        .send().await;
+                                        .send()
+                                        .await;
                                 }
                             }
                         }
                     }
                     // Mark as missing to avoid repeated alerts
-                    let _ = db.upsert_heartbeat(&hb.id, &watchbeat::models::Heartbeat {
-                        status: "missing".into(),
-                        ..hb.clone()
-                    }).await;
+                    let _ = db
+                        .upsert_heartbeat(
+                            &hb.id,
+                            &watchbeat::models::Heartbeat {
+                                status: "missing".into(),
+                                ..hb.clone()
+                            },
+                        )
+                        .await;
                 }
             }
         }
@@ -285,13 +307,21 @@ async fn scheduler_loop(
 
         // Update prometheus monitor counts
         if let Ok(summaries) = db.get_monitor_summaries().await {
-            let up = summaries.iter().filter(|s| s.last_status.as_deref() == Some("up")).count() as u64;
-            let down = summaries.iter().filter(|s| s.last_status.as_deref() == Some("down")).count() as u64;
+            let up = summaries
+                .iter()
+                .filter(|s| s.last_status.as_deref() == Some("up"))
+                .count() as u64;
+            let down = summaries
+                .iter()
+                .filter(|s| s.last_status.as_deref() == Some("down"))
+                .count() as u64;
             metrics::set_monitor_counts(up, down);
         }
 
         // Cleanup old checks (configurable retention, default 30 days)
-        let retention_days = db.get_setting("retention_days").await
+        let retention_days = db
+            .get_setting("retention_days")
+            .await
             .ok()
             .flatten()
             .and_then(|v| v.parse::<i64>().ok())
@@ -366,7 +396,11 @@ async fn run_monitor_check(
     };
 
     if let Err(e) = db.insert_check(&check).await {
-        tracing::error!("Scheduler: failed to save check for {}: {}", monitor.name, e);
+        tracing::error!(
+            "Scheduler: failed to save check for {}: {}",
+            monitor.name,
+            e
+        );
         return;
     }
 
@@ -382,113 +416,197 @@ async fn run_monitor_check(
         "response_time_ms": check.response_time_ms,
         "error_message": check.error_message,
         "checked_at": check.checked_at,
-    }).to_string();
+    })
+    .to_string();
     let _ = event_tx.send(event);
 
     // Detect status change and notify
     let is_up = check.status == "up" || check.status == "warning";
     if was_up != is_up {
         // Look up notifiers via monitor_notifiers table (N:M)
-        let notifier_ids = db.get_monitor_notifier_ids(&monitor.id).await.unwrap_or_default();
+        let notifier_ids = db
+            .get_monitor_notifier_ids(&monitor.id)
+            .await
+            .unwrap_or_default();
         for nid in &notifier_ids {
             if let Some(notifier) = notifiers.get(nid) {
-                if !notifier.enabled { continue; }
+                if !notifier.enabled {
+                    continue;
+                }
                 match notifier.notifier_type.as_str() {
                     "telegram" => {
-                        let bot_token = notifier.config_json.get("bot_token").and_then(|v| v.as_str());
+                        let bot_token = notifier
+                            .config_json
+                            .get("bot_token")
+                            .and_then(|v| v.as_str());
                         let chat_id = notifier.config_json.get("chat_id").and_then(|v| v.as_str());
                         if let (Some(token), Some(chat)) = (bot_token, chat_id) {
                             if let Err(e) = notifier::telegram::send_telegram_notification(
                                 token, chat, monitor, &check, was_up,
-                            ).await {
+                            )
+                            .await
+                            {
                                 tracing::warn!("Scheduler: telegram notification failed: {}", e);
                             }
                         }
                     }
                     "matrix" => {
-                        let homeserver = notifier.config_json.get("homeserver_url").and_then(|v| v.as_str());
-                        let access_token = notifier.config_json.get("access_token").and_then(|v| v.as_str());
+                        let homeserver = notifier
+                            .config_json
+                            .get("homeserver_url")
+                            .and_then(|v| v.as_str());
+                        let access_token = notifier
+                            .config_json
+                            .get("access_token")
+                            .and_then(|v| v.as_str());
                         let room_id = notifier.config_json.get("room_id").and_then(|v| v.as_str());
-                        if let (Some(hs), Some(tok), Some(rid)) = (homeserver, access_token, room_id) {
+                        if let (Some(hs), Some(tok), Some(rid)) =
+                            (homeserver, access_token, room_id)
+                        {
                             if let Err(e) = notifier::matrix::send_matrix_notification(
                                 hs, tok, rid, monitor, &check, was_up,
-                            ).await {
+                            )
+                            .await
+                            {
                                 tracing::warn!("Scheduler: matrix notification failed: {}", e);
                             }
                         }
                     }
                     "ntfy" => {
                         let topic = notifier.config_json.get("topic").and_then(|v| v.as_str());
-                        let server_url = notifier.config_json.get("server_url").and_then(|v| v.as_str()).unwrap_or("https://ntfy.sh");
+                        let server_url = notifier
+                            .config_json
+                            .get("server_url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("https://ntfy.sh");
                         let token = notifier.config_json.get("token").and_then(|v| v.as_str());
                         if let Some(t) = topic {
                             if let Err(e) = notifier::ntfy::send_ntfy_notification(
                                 t, server_url, token, monitor, &check, was_up,
-                            ).await {
+                            )
+                            .await
+                            {
                                 tracing::warn!("Scheduler: ntfy notification failed: {}", e);
                             }
                         }
                     }
                     "webhook" => {
                         let url = notifier.config_json.get("url").and_then(|v| v.as_str());
-                        let method = notifier.config_json.get("method").and_then(|v| v.as_str()).unwrap_or("POST");
-                        let headers_json = notifier.config_json.get("headers").map(|v| v.to_string()).unwrap_or_default();
+                        let method = notifier
+                            .config_json
+                            .get("method")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("POST");
+                        let headers_json = notifier
+                            .config_json
+                            .get("headers")
+                            .map(|v| v.to_string())
+                            .unwrap_or_default();
                         if let Some(u) = url {
                             if let Err(e) = notifier::webhook::send_webhook_notification(
-                                u, method, &headers_json, monitor, &check, was_up,
-                            ).await {
+                                u,
+                                method,
+                                &headers_json,
+                                monitor,
+                                &check,
+                                was_up,
+                            )
+                            .await
+                            {
                                 tracing::warn!("Scheduler: webhook notification failed: {}", e);
                             }
                         }
                     }
                     "slack" => {
-                        let webhook_url = notifier.config_json.get("webhook_url").and_then(|v| v.as_str());
+                        let webhook_url = notifier
+                            .config_json
+                            .get("webhook_url")
+                            .and_then(|v| v.as_str());
                         if let Some(u) = webhook_url {
-                            if let Err(e) = notifier::slack::send_slack_notification(
-                                u, monitor, &check, was_up,
-                            ).await {
+                            if let Err(e) =
+                                notifier::slack::send_slack_notification(u, monitor, &check, was_up)
+                                    .await
+                            {
                                 tracing::warn!("Scheduler: slack notification failed: {}", e);
                             }
                         }
                     }
                     "discord" => {
-                        let webhook_url = notifier.config_json.get("webhook_url").and_then(|v| v.as_str());
+                        let webhook_url = notifier
+                            .config_json
+                            .get("webhook_url")
+                            .and_then(|v| v.as_str());
                         if let Some(u) = webhook_url {
                             if let Err(e) = notifier::discord::send_discord_notification(
                                 u, monitor, &check, was_up,
-                            ).await {
+                            )
+                            .await
+                            {
                                 tracing::warn!("Scheduler: discord notification failed: {}", e);
                             }
                         }
                     }
                     "email" => {
-                        let smtp_host = notifier.config_json.get("smtp_host").and_then(|v| v.as_str());
-                        let smtp_port = notifier.config_json.get("smtp_port").and_then(|v| v.as_u64()).unwrap_or(587) as u16;
-                        let username = notifier.config_json.get("username").and_then(|v| v.as_str());
-                        let password = notifier.config_json.get("password").and_then(|v| v.as_str());
+                        let smtp_host = notifier
+                            .config_json
+                            .get("smtp_host")
+                            .and_then(|v| v.as_str());
+                        let smtp_port = notifier
+                            .config_json
+                            .get("smtp_port")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(587) as u16;
+                        let username = notifier
+                            .config_json
+                            .get("username")
+                            .and_then(|v| v.as_str());
+                        let password = notifier
+                            .config_json
+                            .get("password")
+                            .and_then(|v| v.as_str());
                         let from = notifier.config_json.get("from").and_then(|v| v.as_str());
                         let to = notifier.config_json.get("to").and_then(|v| v.as_str());
-                        if let (Some(host), Some(user), Some(pass), Some(f), Some(t)) = (smtp_host, username, password, from, to) {
+                        if let (Some(host), Some(user), Some(pass), Some(f), Some(t)) =
+                            (smtp_host, username, password, from, to)
+                        {
                             if let Err(e) = notifier::email::send_email_notification(
                                 host, smtp_port, user, pass, f, t, monitor, &check, was_up,
-                            ).await {
+                            )
+                            .await
+                            {
                                 tracing::warn!("Scheduler: email notification failed: {}", e);
                             }
                         }
                     }
                     "gotify" => {
-                        let server_url = notifier.config_json.get("server_url").and_then(|v| v.as_str()).unwrap_or("http://localhost:8080");
-                        let app_token = notifier.config_json.get("app_token").and_then(|v| v.as_str());
-                        let priority = notifier.config_json.get("priority").and_then(|v| v.as_i64()).unwrap_or(5);
+                        let server_url = notifier
+                            .config_json
+                            .get("server_url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("http://localhost:8080");
+                        let app_token = notifier
+                            .config_json
+                            .get("app_token")
+                            .and_then(|v| v.as_str());
+                        let priority = notifier
+                            .config_json
+                            .get("priority")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(5);
                         if let Some(t) = app_token {
                             if let Err(e) = notifier::gotify::send_gotify_notification(
                                 server_url, t, priority, monitor, &check, was_up,
-                            ).await {
+                            )
+                            .await
+                            {
                                 tracing::warn!("Scheduler: gotify notification failed: {}", e);
                             }
                         }
                     }
-                    _ => tracing::warn!("Scheduler: unknown notifier type '{}'", notifier.notifier_type),
+                    _ => tracing::warn!(
+                        "Scheduler: unknown notifier type '{}'",
+                        notifier.notifier_type
+                    ),
                 }
             }
         }
@@ -511,74 +629,5 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => { tracing::info!("🛑 SIGINT received, shutting down..."); }
         _ = terminate => { tracing::info!("🛑 SIGTERM received, shutting down..."); }
-    }
-}
-
-/// Check if a path is public (no auth required).
-fn is_public_path(path: &str) -> bool {
-    path == "/"
-        || path == "/index.html"
-        || path == "/health"
-        || path.starts_with("/auth/")
-        || path.starts_with("/assets/")
-        || path == "/api/events"
-        || path == "/metrics"
-        || path.ends_with(".html")
-        || path.ends_with(".js")
-        || path.ends_with(".css")
-        || path.ends_with(".png")
-        || path.ends_with(".ico")
-        || path.ends_with(".svg")
-        || path.ends_with(".json")
-        || path.ends_with(".woff2")
-        || path.ends_with(".woff")
-        || path.ends_with(".ttf")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_public_root() {
-        assert!(is_public_path("/"));
-    }
-
-    #[test]
-    fn test_is_public_health() {
-        assert!(is_public_path("/health"));
-    }
-
-    #[test]
-    fn test_is_public_auth() {
-        assert!(is_public_path("/auth/login"));
-        assert!(is_public_path("/auth/callback?code=x"));
-    }
-
-    #[test]
-    fn test_is_public_assets() {
-        assert!(is_public_path("/assets/main.js"));
-        assert!(is_public_path("/assets/style.css"));
-    }
-
-    #[test]
-    fn test_is_public_file_extensions() {
-        assert!(is_public_path("/index.html"));
-        assert!(is_public_path("/app.js"));
-        assert!(is_public_path("/style.css"));
-        assert!(is_public_path("/icon.png"));
-        assert!(is_public_path("/favicon.ico"));
-        assert!(is_public_path("/logo.svg"));
-        assert!(is_public_path("/data.json"));
-        assert!(is_public_path("/font.woff2"));
-        assert!(is_public_path("/font.woff"));
-        assert!(is_public_path("/font.ttf"));
-    }
-
-    #[test]
-    fn test_is_not_public_api() {
-        assert!(!is_public_path("/api/status"));
-        assert!(!is_public_path("/api/monitors"));
-        assert!(!is_public_path("/api/me"));
     }
 }

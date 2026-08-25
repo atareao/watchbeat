@@ -1,6 +1,6 @@
 [package]
 name = "watchbeat"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Self-hosted uptime monitor"
 license = "MIT"
@@ -19,7 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.52", features = ["full"] }
+tokio = { version = "1.53", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures = "0.3"
@@ -36,17 +36,17 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # HTTP client
-reqwest = { version = "0.12", default-features = false, features = [
-    "json", "rustls-tls",
+reqwest = { version = "0.13", default-features = false, features = [
+    "json", "rustls",
 ] }
 
 # OIDC / Auth
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
-base64 = "0.22"
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+base64 = "0.23"
 cookie = "0.18"
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
@@ -55,15 +55,15 @@ chrono-tz = "0.10"
 # TLS
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-rustls-pki-types = "1.0"
+rustls-pki-types = "1.15"
 webpki-roots = "1.0"
-x509-parser = "0.16"
+x509-parser = "0.18"
 
 # Embed SPA
 include_dir = "0.7"
 
 # General
-uuid = { version = "1.23", features = ["v4", "serde"] }
+uuid = { version = "1.25", features = ["v4", "serde"] }
 anyhow = "1.0"
 regex = "1"
 prometheus-client = "0.25"
@@ -73,11 +73,12 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "s
 url = "2.5"
 
 # PKCE
-sha1 = "0.10"
-sha2 = "0.10"
+sha1 = "0.11"
+sha2 = "0.11"
 
 dotenvy = "0.15"
 async-trait = "0.1"
+serde_urlencoded = "0.7"
 
 [dev-dependencies]
 tempfile = "3"

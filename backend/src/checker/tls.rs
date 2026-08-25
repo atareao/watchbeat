@@ -36,8 +36,10 @@ impl Checker for TlsChecker {
                 .with_root_certificates(roots)
                 .with_no_client_auth();
 
-            let server_name = rustls::pki_types::ServerName::try_from(host.clone())
-                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid host"))?;
+            let server_name =
+                rustls::pki_types::ServerName::try_from(host.clone()).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid host")
+                })?;
 
             let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
             let tls = connector.connect(server_name, tcp).await?;
@@ -79,10 +81,8 @@ impl Checker for TlsChecker {
 
                     if days_left < threshold {
                         outcome.status = "warning".into();
-                        outcome.error_message = Some(format!(
-                            "Certificate expires in {} days",
-                            days_left
-                        ));
+                        outcome.error_message =
+                            Some(format!("Certificate expires in {} days", days_left));
                     }
                 }
 
@@ -149,12 +149,18 @@ mod tests {
 
     #[test]
     fn test_parse_target_with_port() {
-        assert_eq!(parse_target("example.com:8443"), Some(("example.com".into(), 8443)));
+        assert_eq!(
+            parse_target("example.com:8443"),
+            Some(("example.com".into(), 8443))
+        );
     }
 
     #[test]
     fn test_parse_target_default_port() {
-        assert_eq!(parse_target("example.com"), Some(("example.com".into(), 443)));
+        assert_eq!(
+            parse_target("example.com"),
+            Some(("example.com".into(), 443))
+        );
     }
 
     #[test]

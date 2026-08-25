@@ -39,7 +39,7 @@ pub async fn timeline(
     Path(id): Path<String>,
     Query(query): Query<TimelineQuery>,
 ) -> Result<Json<serde_json::Value>, String> {
-    let days = query.days.unwrap_or(1).max(1).min(90);
+    let days = query.days.unwrap_or(1).clamp(1, 90);
     let since = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
 
     let timeline = state

@@ -1,0 +1,99 @@
+# ═══════════════════════════════════════════════════════════════
+# WatchBeat — Docker Compose
+# Monitor de uptime self-hosted
+# ═══════════════════════════════════════════════════════════════
+#
+# Uso:
+#   docker compose up -d
+#
+# Variables de entorno (configurar en .env o exportar):
+#   cp watchbeat.env.example .env
+#   # editar .env con tus valores OIDC
+#   docker compose up -d
+#
+# ═══════════════════════════════════════════════════════════════
+
+services:
+  watchbeat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Útil si necesitas forzar rebuild sin cache
+        BUILD_DATE: ${BUILD_DATE:-}
+    image: watchbeat:latest
+    container_name: watchbeat
+    restart: unless-stopped
+
+    ports:
+      # Mapeo de puertos: host:contenedor
+      # Cambia el puerto izquierdo si el 3055 está ocupado
+      - "${WATCHBEAT_PORT:-3055}:3055"
+
+    volumes:
+      # Persistencia de la base de datos SQLite
+      # WatchBeat guarda aquí la BD y otros datos runtime
+      - watchbeat_data:/app/data
+
+    environment:
+      # ── Server ──────────────────────────────────────────────
+      HOST: "0.0.0.0"
+      PORT: 3055
+      DATA_DIR: /app/data
+      DATABASE_URL: /app/data/watchbeat.db
+      TIMEZONE: ${TIMEZONE:-Europe/Madrid}
+      RUST_LOG: ${RUST_LOG:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-pretty}
+
+      # ── OIDC (obligatorio) ──────────────────────────────────
+      # WatchBeat requiere un proveedor OIDC (Authentik, Keycloak,
+      # Authelia, Google, etc.) para autenticación.
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?OIDC_ISSUER_URL es obligatoria}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?OIDC_CLIENT_ID es obligatoria}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?OIDC_CLIENT_SECRET es obligatoria}
+      # ⚠️  OIDC_REDIRECT_URL debe coincidir EXACTAMENTE con la URL
+      #    registrada en tu proveedor OIDC (incluyendo http/https,
+      #    dominio, puerto y path). Es la causa #1 de errores OIDC.
+      #    - Local:    http://localhost:3055/auth/callback
+      #    - Producción: https://watchbeat.tudominio.com/auth/callback
+      #    El path SIEMPRE es /auth/callback
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:?OIDC_REDIRECT_URL es obligatoria (ej: http://localhost:3055/auth/callback)}
+
+    env_file:
+      - path: .env
+        required: false
+
+    # Health check: el endpoint /health es público
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3055/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    # Límites de recursos recomendados
+    # Ajusta según el número de monitores que planees vigilar
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+
+    # Etiquetas para organizar el contenedor
+    labels:
+      app: watchbeat
+      description: "Self-hosted uptime monitor"
+      maintainer: "atareao"
+
+    # Política de logging para evitar saturación
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  watchbeat_data:
+    # Volumen nombrado para persistencia de SQLite
+    driver: local

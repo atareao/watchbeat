@@ -4,8 +4,8 @@ Monitor de uptime auto-hosteado con backend Rust + Axum y frontend React + Ant D
 
 ## Stack
 
-- **Backend:** Rust, Axum, SQLite (rusqlite), OIDC (autenticación), reqwest (HTTP checks)
-- **Frontend:** React 19, TypeScript, Vite, Ant Design 5
+- **Backend:** Rust, Axum, SQLite (sqlx 0.9), OIDC (autenticación), reqwest 0.13 (HTTP checks)
+- **Frontend:** React 19, TypeScript 7, Vite 8, Ant Design 6
 - **Infra:** Docker multi-stage, Git Flow, conventional commits
 
 ## Arquitectura
@@ -92,6 +92,65 @@ docker run -p 3055:3055 \
   -e OIDC_CLIENT_SECRET=secreto \
   watchbeat
 ```
+
+## Git Flow
+
+Este proyecto sigue **Git Flow** como modelo de ramas.
+
+### Convenciones
+
+| Rama base | Propósito |
+|-----------|----------|
+| `main` | Producción — solo recibe merges desde `release/` o `hotfix/` |
+| `development` | Integración — rama base para `feature/` y `release/` |
+
+### Prefijos
+
+| Prefijo | Uso | Origen | Destino |
+|---------|-----|--------|--------|
+| `feature/` | Nuevas funcionalidades | `development` | `development` |
+| `release/` | Preparación de versión | `development` | `main` + `development` |
+| `hotfix/` | Correcciones urgentes en producción | `main` | `main` + `development` |
+| `support/` | Ramas de soporte a largo plazo | `main` | — |
+
+### Flujo diario
+
+```bash
+# 1. Empezar una feature
+git flow feature start <nombre>
+
+# 2. Trabajar, commitear, pushear
+git add . && git commit -m "✨ feat: ..."
+git flow feature publish <nombre>
+
+# 3. Terminar la feature (merge a development)
+git flow feature finish <nombre>
+
+# 4. Preparar una release
+git flow release start <versión>
+# Ajustar versiones, CHANGELOG, etc.
+git flow release finish <versión>
+
+# 5. Hotfix urgente
+git flow hotfix start <versión>
+git flow hotfix finish <versión>
+```
+
+### Commits
+
+Usamos [Conventional Commits](https://www.conventionalcommits.org/):
+
+| Tipo | Significado |
+|------|-------------|
+| `✨ feat:` | Nueva funcionalidad |
+| `🐛 fix:` | Corrección de bug |
+| `🔒 fix:` | Corrección de seguridad |
+| `♻️ refactor:` | Refactorización |
+| `📝 docs:` | Documentación |
+| `✅ test:` | Tests |
+| `🎨 style:` | Formato, estilo |
+| `🔧 chore:` | Mantenimiento, CI, build |
+| `🏷️ rename:` | Renombrados |
 
 ## Licencia
 

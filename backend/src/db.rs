@@ -62,6 +62,19 @@ impl Database {
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS status_pages (
+                id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+                description TEXT, monitors TEXT NOT NULL DEFAULT '[]',
+                public INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS heartbeats (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
+                grace_seconds INTEGER NOT NULL DEFAULT 3600,
+                last_seen_at TEXT, status TEXT NOT NULL DEFAULT 'pending',
+                notifier_id TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );",
         )
         .execute(&pool)
@@ -69,14 +82,24 @@ impl Database {
         .context("Failed to run migrations")?;
 
         // ALTER TABLE for existing DBs (ignore errors if columns already exist)
-        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN confirmations_required INTEGER NOT NULL DEFAULT 0")
-            .execute(&pool).await;
-        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN failed_checks INTEGER NOT NULL DEFAULT 0")
-            .execute(&pool).await;
+        let _ = sqlx::raw_sql(
+            "ALTER TABLE monitors ADD COLUMN confirmations_required INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "ALTER TABLE monitors ADD COLUMN failed_checks INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&pool)
+        .await;
         let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
-            .execute(&pool).await;
+            .execute(&pool)
+            .await;
 
-        Ok(Self { pool, db_path: path.to_string_lossy().to_string() })
+        Ok(Self {
+            pool,
+            db_path: path.to_string_lossy().to_string(),
+        })
     }
 
     // ───── Monitors ─────
@@ -87,7 +110,8 @@ impl Database {
              timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
              created_at, updated_at FROM monitors ORDER BY name",
         )
-        .fetch_all(&self.pool).await
+        .fetch_all(&self.pool)
+        .await
         .context("Failed to list monitors")?;
         Ok(rows.into_iter().map(Monitor::from).collect())
     }
@@ -98,7 +122,9 @@ impl Database {
              timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
              created_at, updated_at FROM monitors WHERE id = ?",
         )
-        .bind(id).fetch_optional(&self.pool).await
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
         .context("Failed to get monitor")?;
         Ok(row.map(Monitor::from))
     }
@@ -133,27 +159,39 @@ impl Database {
              interval_seconds=?, timeout_seconds=?, enabled=?, notifier_id=?, \
              confirmations_required=?, failed_checks=?, tags=?, updated_at=? WHERE id=?",
         )
-        .bind(&monitor.name).bind(&monitor.monitor_type).bind(&monitor.target)
-        .bind(&config_json).bind(monitor.interval_seconds).bind(monitor.timeout_seconds)
-        .bind(monitor.enabled as i32).bind(&monitor.notifier_id)
-        .bind(monitor.confirmations_required).bind(monitor.failed_checks)
+        .bind(&monitor.name)
+        .bind(&monitor.monitor_type)
+        .bind(&monitor.target)
+        .bind(&config_json)
+        .bind(monitor.interval_seconds)
+        .bind(monitor.timeout_seconds)
+        .bind(monitor.enabled as i32)
+        .bind(&monitor.notifier_id)
+        .bind(monitor.confirmations_required)
+        .bind(monitor.failed_checks)
         .bind(serde_json::to_string(&monitor.tags).unwrap_or_else(|_| "[]".to_string()))
-        .bind(&now).bind(id)
-        .execute(&self.pool).await
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
         .context("Failed to update monitor")?;
         Ok(rows.rows_affected() > 0)
     }
 
     pub async fn delete_monitor(&self, id: &str) -> Result<bool> {
         let rows = sqlx::query("DELETE FROM monitors WHERE id=?")
-            .bind(id).execute(&self.pool).await
+            .bind(id)
+            .execute(&self.pool)
+            .await
             .context("Failed to delete monitor")?;
         Ok(rows.rows_affected() > 0)
     }
 
     pub async fn toggle_monitor(&self, id: &str) -> Result<Option<bool>> {
         let current: Option<(i32,)> = sqlx::query_as("SELECT enabled FROM monitors WHERE id=?")
-            .bind(id).fetch_optional(&self.pool).await
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
             .context("Failed to read monitor")?;
         let current_enabled = match current {
             Some((e,)) => e,
@@ -162,8 +200,11 @@ impl Database {
         let new_enabled = if current_enabled != 0 { 0 } else { 1 };
         let now = Utc::now().to_rfc3339();
         sqlx::query("UPDATE monitors SET enabled=?, updated_at=? WHERE id=?")
-            .bind(new_enabled).bind(&now).bind(id)
-            .execute(&self.pool).await
+            .bind(new_enabled)
+            .bind(&now)
+            .bind(id)
+            .execute(&self.pool)
+            .await
             .context("Failed to toggle monitor")?;
         Ok(Some(new_enabled != 0))
     }
@@ -171,8 +212,11 @@ impl Database {
     pub async fn set_failed_checks(&self, id: &str, count: i64) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         sqlx::query("UPDATE monitors SET failed_checks=?, updated_at=? WHERE id=?")
-            .bind(count).bind(&now).bind(id)
-            .execute(&self.pool).await
+            .bind(count)
+            .bind(&now)
+            .bind(id)
+            .execute(&self.pool)
+            .await
             .context("Failed to set failed_checks")?;
         Ok(())
     }
@@ -180,8 +224,10 @@ impl Database {
     pub async fn reset_failed_checks(&self, id: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         sqlx::query("UPDATE monitors SET failed_checks=0, updated_at=? WHERE id=?")
-            .bind(&now).bind(id)
-            .execute(&self.pool).await
+            .bind(&now)
+            .bind(id)
+            .execute(&self.pool)
+            .await
             .context("Failed to reset failed_checks")?;
         Ok(())
     }
@@ -201,7 +247,12 @@ impl Database {
         Ok(result.last_insert_rowid() as i64)
     }
 
-    pub async fn get_checks(&self, monitor_id: &str, limit: i64, offset: i64) -> Result<Vec<CheckResult>> {
+    pub async fn get_checks(
+        &self,
+        monitor_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
             "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at \
              FROM checks WHERE monitor_id=? ORDER BY checked_at DESC LIMIT ? OFFSET ?",
@@ -225,8 +276,10 @@ impl Database {
             "SELECT checked_at, status, response_time_ms FROM checks \
              WHERE monitor_id=? AND checked_at>=? ORDER BY checked_at ASC",
         )
-        .bind(monitor_id).bind(since)
-        .fetch_all(&self.pool).await
+        .bind(monitor_id)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await
         .context("Failed to get timeline")?;
         Ok(rows.into_iter().map(TimelinePoint::from).collect())
     }
@@ -251,12 +304,16 @@ impl Database {
             let uptime_7d = self.calculate_uptime(&m.id, 7).await?;
             let uptime_30d = self.calculate_uptime(&m.id, 30).await?;
             summaries.push(MonitorSummary {
-                id: m.id, name: m.name, monitor_type: m.monitor_type,
-                target: m.target, enabled: m.enabled,
+                id: m.id,
+                name: m.name,
+                monitor_type: m.monitor_type,
+                target: m.target,
+                enabled: m.enabled,
                 last_status: latest.as_ref().map(|c| c.status.clone()),
                 last_response_time_ms: latest.as_ref().map(|c| c.response_time_ms as u64),
                 last_checked_at: latest.map(|c| c.checked_at),
-                uptime_7d, uptime_30d,
+                uptime_7d,
+                uptime_30d,
             });
         }
         Ok(summaries)
@@ -269,38 +326,61 @@ impl Database {
              CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS INTEGER) as up_count \
              FROM checks WHERE monitor_id=? AND checked_at>=?",
         )
-        .bind(monitor_id).bind(&cutoff)
-        .fetch_optional(&self.pool).await
+        .bind(monitor_id)
+        .bind(&cutoff)
+        .fetch_optional(&self.pool)
+        .await
         .context("Failed to calculate uptime")?;
-        match result { Some((total, up)) if total > 0 => Ok(Some(up as f64 / total as f64 * 100.0)), _ => Ok(None) }
+        match result {
+            Some((total, up)) if total > 0 => Ok(Some(up as f64 / total as f64 * 100.0)),
+            _ => Ok(None),
+        }
     }
 
     pub async fn get_dashboard_status(&self) -> Result<DashboardStatus> {
         let monitors = self.list_monitors().await?;
         let total = monitors.len() as u64;
         let enabled = monitors.iter().filter(|m| m.enabled).count() as u64;
-        let mut up = 0u64; let mut down = 0u64; let mut total_rt = 0u64; let mut rt_count = 0u64;
+        let mut up = 0u64;
+        let mut down = 0u64;
+        let mut total_rt = 0u64;
+        let mut rt_count = 0u64;
         for m in &monitors {
             if let Ok(Some(latest)) = self.get_latest_check(&m.id).await {
-                match latest.status.as_str() { "up" => up += 1, _ => down += 1 }
-                total_rt += latest.response_time_ms as u64; rt_count += 1;
+                match latest.status.as_str() {
+                    "up" => up += 1,
+                    _ => down += 1,
+                }
+                total_rt += latest.response_time_ms as u64;
+                rt_count += 1;
             }
         }
         let cutoff_24h = (Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
         let checks_24h: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checks WHERE checked_at>=?")
-            .bind(&cutoff_24h).fetch_one(&self.pool).await.unwrap_or(0);
+            .bind(&cutoff_24h)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
         Ok(DashboardStatus {
-            total_monitors: total, enabled_monitors: enabled,
-            up_monitors: up, down_monitors: down,
+            total_monitors: total,
+            enabled_monitors: enabled,
+            up_monitors: up,
+            down_monitors: down,
             total_checks_24h: checks_24h as u64,
-            avg_response_time_24h: if rt_count > 0 { Some(total_rt / rt_count) } else { None },
+            avg_response_time_24h: if rt_count > 0 {
+                Some(total_rt.checked_div(rt_count).unwrap_or(0))
+            } else {
+                None
+            },
         })
     }
 
     pub async fn cleanup_old_checks(&self, retention_days: i64) -> Result<()> {
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days)).to_rfc3339();
         sqlx::query("DELETE FROM checks WHERE checked_at<?")
-            .bind(&cutoff).execute(&self.pool).await
+            .bind(&cutoff)
+            .execute(&self.pool)
+            .await
             .context("Failed to cleanup old checks")?;
         Ok(())
     }
@@ -323,8 +403,8 @@ impl Database {
 
     pub async fn upsert_notifier(&self, id: &str, notifier: &Notifier) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        let config_json = serde_json::to_string(&notifier.config_json)
-            .context("Failed to serialize config")?;
+        let config_json =
+            serde_json::to_string(&notifier.config_json).context("Failed to serialize config")?;
         sqlx::query(
             "INSERT INTO notifiers (id, name, notifier_type, config_json, enabled, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?) \
@@ -338,7 +418,10 @@ impl Database {
 
     pub async fn delete_notifier(&self, id: &str) -> Result<bool> {
         let rows = sqlx::query("DELETE FROM notifiers WHERE id=?")
-            .bind(id).execute(&self.pool).await.context("Failed to delete notifier")?;
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete notifier")?;
         Ok(rows.rows_affected() > 0)
     }
 
@@ -346,7 +429,10 @@ impl Database {
 
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
         sqlx::query_scalar("SELECT value FROM settings WHERE key=?")
-            .bind(key).fetch_optional(&self.pool).await.context("Failed to get setting")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .context("Failed to get setting")
     }
 
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
@@ -357,22 +443,36 @@ impl Database {
 
     // ───── Monitor-Notifier bindings ─────
 
-    pub async fn set_monitor_notifiers(&self, monitor_id: &str, notifier_ids: &[String]) -> Result<()> {
+    pub async fn set_monitor_notifiers(
+        &self,
+        monitor_id: &str,
+        notifier_ids: &[String],
+    ) -> Result<()> {
         sqlx::query("DELETE FROM monitor_notifiers WHERE monitor_id=?")
-            .bind(monitor_id).execute(&self.pool).await
+            .bind(monitor_id)
+            .execute(&self.pool)
+            .await
             .context("Failed to clear monitor notifiers")?;
         for nid in notifier_ids {
-            sqlx::query("INSERT OR IGNORE INTO monitor_notifiers (monitor_id, notifier_id) VALUES (?, ?)")
-                .bind(monitor_id).bind(nid).execute(&self.pool).await
-                .context("Failed to link monitor notifier")?;
+            sqlx::query(
+                "INSERT OR IGNORE INTO monitor_notifiers (monitor_id, notifier_id) VALUES (?, ?)",
+            )
+            .bind(monitor_id)
+            .bind(nid)
+            .execute(&self.pool)
+            .await
+            .context("Failed to link monitor notifier")?;
         }
         Ok(())
     }
 
     pub async fn get_monitor_notifier_ids(&self, monitor_id: &str) -> Result<Vec<String>> {
-        let rows: Vec<(String,)> = sqlx::query_as("SELECT notifier_id FROM monitor_notifiers WHERE monitor_id=?")
-            .bind(monitor_id).fetch_all(&self.pool).await
-            .context("Failed to get monitor notifiers")?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT notifier_id FROM monitor_notifiers WHERE monitor_id=?")
+                .bind(monitor_id)
+                .fetch_all(&self.pool)
+                .await
+                .context("Failed to get monitor notifiers")?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
@@ -415,7 +515,10 @@ impl Database {
 
     pub async fn delete_status_page(&self, id: &str) -> Result<bool> {
         let rows = sqlx::query("DELETE FROM status_pages WHERE id=?")
-            .bind(id).execute(&self.pool).await.context("Failed to delete status page")?;
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete status page")?;
         Ok(rows.rows_affected() > 0)
     }
 
@@ -458,7 +561,10 @@ impl Database {
 
     pub async fn delete_heartbeat(&self, id: &str) -> Result<bool> {
         let rows = sqlx::query("DELETE FROM heartbeats WHERE id=?")
-            .bind(id).execute(&self.pool).await.context("Failed to delete heartbeat")?;
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete heartbeat")?;
         Ok(rows.rows_affected() > 0)
     }
 
@@ -468,11 +574,21 @@ impl Database {
             "SELECT id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at FROM heartbeats WHERE token=?",
         ).bind(token).fetch_optional(&self.pool).await.context("Failed to find heartbeat")?;
         if let Some(r) = row {
-            sqlx::query("UPDATE heartbeats SET last_seen_at=?, status='ok', updated_at=? WHERE token=?")
-                .bind(&now).bind(&now).bind(token).execute(&self.pool).await
-                .context("Failed to touch heartbeat")?;
+            sqlx::query(
+                "UPDATE heartbeats SET last_seen_at=?, status='ok', updated_at=? WHERE token=?",
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(token)
+            .execute(&self.pool)
+            .await
+            .context("Failed to touch heartbeat")?;
             let hb = Heartbeat::from(r);
-            Ok(Some(Heartbeat { last_seen_at: Some(now), status: "ok".into(), ..hb }))
+            Ok(Some(Heartbeat {
+                last_seen_at: Some(now),
+                status: "ok".into(),
+                ..hb
+            }))
         } else {
             Ok(None)
         }
@@ -485,10 +601,13 @@ impl Database {
 
         // Force WAL checkpoint
         sqlx::raw_sql("PRAGMA wal_checkpoint(TRUNCATE);")
-            .execute(&self.pool).await.ok();
+            .execute(&self.pool)
+            .await
+            .ok();
 
         // Copy the database file (and WAL/SHM if present)
-        tokio::fs::copy(db_path, output_path).await
+        tokio::fs::copy(db_path, output_path)
+            .await
             .context("Failed to copy database file")?;
 
         let wal_path = format!("{}-wal", db_path);
