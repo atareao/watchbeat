@@ -48,6 +48,16 @@ pub async fn create(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateMonitorRequest>,
 ) -> Result<Json<serde_json::Value>, String> {
+    // Check name uniqueness
+    if !state
+        .db
+        .check_name_unique("monitors", "name", &req.name, None)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Err(format!("Ya existe un monitor con el nombre '{}'", req.name));
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     let monitor = Monitor {
         id: Uuid::new_v4().to_string(),
@@ -86,6 +96,20 @@ pub async fn update(
         .await
         .map_err(|e| e.to_string())?
         .ok_or("Monitor not found")?;
+
+    // Check name uniqueness if name is being changed
+    if let Some(ref name) = req.name {
+        if name != &existing.name {
+            if !state
+                .db
+                .check_name_unique("monitors", "name", name, Some(&id))
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                return Err(format!("Ya existe un monitor con el nombre '{}'", name));
+            }
+        }
+    }
 
     let now = chrono::Utc::now().to_rfc3339();
     let monitor = Monitor {

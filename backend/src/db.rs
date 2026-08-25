@@ -101,6 +101,35 @@ impl Database {
             .execute(&pool)
             .await;
 
+        // Unique indexes for name uniqueness (enforced at DB level)
+        let _ = sqlx::raw_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_monitors_name ON monitors(name)",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_notifiers_name ON notifiers(name)",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_heartbeats_name ON heartbeats(name)",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_status_pages_title ON status_pages(title)",
+        )
+        .execute(&pool)
+        .await;
+
+        // Index for ORDER BY on heartbeats and status_pages
+        let _ = sqlx::raw_sql(
+            "CREATE INDEX IF NOT EXISTS idx_heartbeats_status ON heartbeats(status)",
+        )
+        .execute(&pool)
+        .await;
+
         Ok(Self {
             pool,
             db_path: path.to_string_lossy().to_string(),
@@ -132,6 +161,45 @@ impl Database {
         .await
         .context("Failed to get monitor")?;
         Ok(row.map(Monitor::from))
+    }
+
+    pub async fn check_name_unique(&self, table: &str, column: &str, value: &str, exclude_id: Option<&str>) -> Result<bool> {
+        let count: i64 = match (table, column, exclude_id) {
+            ("monitors", "name", None) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM monitors WHERE name=?")
+                    .bind(value).fetch_one(&self.pool).await?
+            }
+            ("monitors", "name", Some(_)) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM monitors WHERE name=? AND id!=?")
+                    .bind(value).bind(exclude_id.unwrap()).fetch_one(&self.pool).await?
+            }
+            ("notifiers", "name", None) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM notifiers WHERE name=?")
+                    .bind(value).fetch_one(&self.pool).await?
+            }
+            ("notifiers", "name", Some(_)) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM notifiers WHERE name=? AND id!=?")
+                    .bind(value).bind(exclude_id.unwrap()).fetch_one(&self.pool).await?
+            }
+            ("heartbeats", "name", None) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM heartbeats WHERE name=?")
+                    .bind(value).fetch_one(&self.pool).await?
+            }
+            ("heartbeats", "name", Some(_)) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM heartbeats WHERE name=? AND id!=?")
+                    .bind(value).bind(exclude_id.unwrap()).fetch_one(&self.pool).await?
+            }
+            ("status_pages", "title", None) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM status_pages WHERE title=?")
+                    .bind(value).fetch_one(&self.pool).await?
+            }
+            ("status_pages", "title", Some(_)) => {
+                sqlx::query_scalar("SELECT COUNT(*) FROM status_pages WHERE title=? AND id!=?")
+                    .bind(value).bind(exclude_id.unwrap()).fetch_one(&self.pool).await?
+            }
+            _ => return Err(anyhow::anyhow!("Unknown table/column: {}/{}", table, column)),
+        };
+        Ok(count == 0)
     }
 
     pub async fn create_monitor(&self, monitor: &Monitor) -> Result<()> {
