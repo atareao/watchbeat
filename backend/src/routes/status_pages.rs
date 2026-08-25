@@ -30,6 +30,16 @@ pub async fn create(
     State(state): State<Arc<AppState>>,
     Json(req): Json<StatusPageRequest>,
 ) -> Result<Json<serde_json::Value>, String> {
+    // Check title uniqueness
+    if !state
+        .db
+        .check_name_unique("status_pages", "title", &req.title, None)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Err(format!("Ya existe una status page con el título '{}'", req.title));
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     let page = StatusPage {
         id: Uuid::new_v4().to_string(),
@@ -62,6 +72,18 @@ pub async fn update(
         .await
         .map_err(|e| e.to_string())?
         .ok_or("Status page not found")?;
+
+    // Check title uniqueness if title is being changed
+    if req.title != existing.title {
+        if !state
+            .db
+            .check_name_unique("status_pages", "title", &req.title, Some(&id))
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Err(format!("Ya existe una status page con el título '{}'", req.title));
+        }
+    }
 
     let now = chrono::Utc::now().to_rfc3339();
     let page = StatusPage {

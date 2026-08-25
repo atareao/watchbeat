@@ -32,6 +32,7 @@ pub async fn list(
 #[derive(Deserialize)]
 pub struct TimelineQuery {
     pub days: Option<i64>,
+    pub hours: Option<i64>,
 }
 
 pub async fn timeline(
@@ -39,8 +40,13 @@ pub async fn timeline(
     Path(id): Path<String>,
     Query(query): Query<TimelineQuery>,
 ) -> Result<Json<serde_json::Value>, String> {
-    let days = query.days.unwrap_or(1).clamp(1, 90);
-    let since = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+    let since = if let Some(h) = query.hours {
+        let h = h.clamp(1, 24 * 180); // max ~6 months in hours
+        (chrono::Utc::now() - chrono::Duration::hours(h)).to_rfc3339()
+    } else {
+        let days = query.days.unwrap_or(1).clamp(1, 180);
+        (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339()
+    };
 
     let timeline = state
         .db
@@ -69,4 +75,54 @@ pub async fn recent_global(
         .map_err(|e| e.to_string())?;
 
     Ok(Json(serde_json::json!({ "checks": checks })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn test_timeline_query_days_default() {
+        let query = TimelineQuery {
+            days: None,
+            hours: None,
+        };
+        let days = query.days.unwrap_or(1).clamp(1, 180);
+        assert_eq!(days, 1);
+        let since = (Utc::now() - Duration::days(days)).to_rfc3339();
+        let parsed = chrono::DateTime::parse_from_rfc3339(&since).unwrap();
+        let diff = Utc::now().signed_duration_since(parsed);
+        assert!(diff.num_hours() >= 23 && diff.num_hours() <= 25);
+    }
+
+    #[test]
+    fn test_timeline_query_days_clamp() {
+        let query = TimelineQuery {
+            days: Some(200),
+            hours: None,
+        };
+        let days = query.days.unwrap_or(1).clamp(1, 180);
+        assert_eq!(days, 180);
+    }
+
+    #[test]
+    fn test_timeline_query_hours() {
+        let query = TimelineQuery {
+            days: None,
+            hours: Some(6),
+        };
+        let h = query.hours.unwrap().clamp(1, 24 * 180);
+        assert_eq!(h, 6);
+    }
+
+    #[test]
+    fn test_timeline_query_hours_clamp() {
+        let query = TimelineQuery {
+            days: None,
+            hours: Some(5000),
+        };
+        let h = query.hours.unwrap().clamp(1, 24 * 180);
+        assert_eq!(h, 24 * 180);
+    }
 }
