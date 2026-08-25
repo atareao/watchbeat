@@ -40,7 +40,8 @@ const RANGE_OPTIONS: RangeOption[] = [
 ];
 
 // ── Helper: get health color for a bucket ──
-function healthColor(upPct: number): string {
+function healthColor(upPct: number, status: string): string {
+  if (status === 'no_data') return '#6b7280';  // gray for no data
   if (upPct >= 99) return '#22c55e';
   if (upPct >= 95) return '#4ade80';
   if (upPct >= 90) return '#86efac';
@@ -106,9 +107,10 @@ export default function MonitorDetail() {
   if (loading) return <div style={{ textAlign: 'center', padding: 40 }}><Spin size="large" /></div>;
   if (!monitor) return <Typography.Text type="danger">Monitor no encontrado</Typography.Text>;
 
-  // ── Uptime calculation from buckets ──
-  const uptime = buckets.length > 0
-    ? Math.round(buckets.reduce((sum, b) => sum + b.up_pct, 0) / buckets.length * 100) / 100
+  // ── Uptime calculation from buckets (exclude no_data) ──
+  const bucketsWithData = buckets.filter(b => b.dominant_status !== 'no_data');
+  const uptime = bucketsWithData.length > 0
+    ? Math.round(bucketsWithData.reduce((sum, b) => sum + b.up_pct, 0) / bucketsWithData.length * 100) / 100
     : null;
 
   const checksColumns = [
@@ -146,16 +148,14 @@ export default function MonitorDetail() {
         <div style={{ display: 'flex', gap: 1, alignItems: 'flex-end', height: 120 }}>
           {bars.map((b, i) => {
             const pct = (b.avg_response_time_ms / maxRt) * 100;
-            const color = healthColor(b.up_pct);
+            const color = healthColor(b.up_pct, b.dominant_status);
+            const tooltipTitle = b.dominant_status === 'no_data'
+              ? `Sin datos · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
+              : `${b.dominant_status.toUpperCase()} · ${b.up_pct.toFixed(1)}% UP · ` +
+                `${b.avg_response_time_ms.toFixed(0)}ms media · ` +
+                `${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`;
             return (
-              <Tooltip
-                key={i}
-                title={
-                  `${b.dominant_status.toUpperCase()} · ${b.up_pct.toFixed(1)}% UP · ` +
-                  `${b.avg_response_time_ms.toFixed(0)}ms media · ` +
-                  `${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
-                }
-              >
+              <Tooltip key={i} title={tooltipTitle}>
                 <div
                   style={{
                     flex: '1 1 0',
@@ -214,6 +214,7 @@ export default function MonitorDetail() {
           <span style={{ color: '#facc15' }}>■ ≥75%</span>
           <span style={{ color: '#fb923c' }}>■ ≥50%</span>
           <span style={{ color: '#ef4444' }}>■ {"<50%"}</span>
+          <span style={{ color: '#6b7280' }}>■ Sin datos</span>
           <span style={{ marginLeft: 8, fontWeight: 500, color: '#555' }}>Latencia (altura):</span>
           <span>▮ más alto = más lento</span>
         </div>

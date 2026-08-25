@@ -394,20 +394,21 @@ impl Database {
         since: &str,
         _bucket_seconds: i64,
     ) -> Result<Vec<TimelineBucket>> {
-        // Validate `since` is parseable, then fetch all timeline points
-        if chrono::DateTime::parse_from_rfc3339(since).is_err() {
-            return Ok(Vec::new());
-        }
+        // Always divide the REQUESTED range into exactly 80 blocks
+        let since_dt = match chrono::DateTime::parse_from_rfc3339(since) {
+            Ok(dt) => dt.with_timezone(&chrono::Utc),
+            Err(_) => return Ok(Vec::new()),
+        };
+        let now = chrono::Utc::now();
+        let total_span_secs = (now - since_dt).num_seconds().max(1);
 
+        const TARGET_BLOCKS: usize = 80;
+        let bucket_size_secs = (total_span_secs as f64 / TARGET_BLOCKS as f64).ceil().max(1.0) as i64;
+
+        // Fetch all timeline points in range (already ordered ASC)
         let points = self.get_timeline(monitor_id, since).await?;
-        if points.is_empty() {
-            return Ok(Vec::new());
-        }
 
-        // Target: at most 80 blocks, at most number of points
-        let target_blocks = (points.len() as i64).min(80).max(1) as usize;
-
-        // Convert points to unix timestamps for easier bucketing
+        // Convert points to unix timestamps for efficient lookup
         let point_ts: Vec<(i64, &str, f64)> = points
             .iter()
             .map(|p| {
@@ -418,18 +419,12 @@ impl Database {
             })
             .collect();
 
-        let start_ts = point_ts.first().map(|(ts, _, _)| *ts).unwrap_or(0);
-        let end_ts = point_ts.last().map(|(ts, _, _)| *ts).unwrap_or(0);
-        let actual_span = (end_ts - start_ts).max(1) as f64;
+        let since_ts = since_dt.timestamp();
+        let mut buckets: Vec<TimelineBucket> = Vec::with_capacity(TARGET_BLOCKS);
 
-        // Recalculate bucket size based on actual data span
-        let bucket_size = (actual_span / target_blocks as f64).max(1.0);
-
-        let mut buckets: Vec<TimelineBucket> = Vec::with_capacity(target_blocks);
-
-        for i in 0..target_blocks {
-            let bucket_start_ts = start_ts + (i as f64 * bucket_size) as i64;
-            let bucket_end_ts = start_ts + (((i + 1) as f64) * bucket_size) as i64;
+        for i in 0..TARGET_BLOCKS {
+            let bucket_start_ts = since_ts + (i as i64 * bucket_size_secs);
+            let bucket_end_ts = bucket_start_ts + bucket_size_secs;
 
             let bucket_points: Vec<_> = point_ts
                 .iter()
@@ -437,23 +432,16 @@ impl Database {
                 .collect();
 
             let count = bucket_points.len() as i64;
-            let up_count = bucket_points.iter().filter(|(_, s, _)| *s == "up").count() as i64;
-            let up_pct = if count > 0 {
-                (up_count as f64 / count as f64) * 100.0
+
+            let (up_pct, avg_rt, dominant_status) = if count > 0 {
+                let up_count = bucket_points.iter().filter(|(_, s, _)| *s == "up").count() as i64;
+                let up = (up_count as f64 / count as f64) * 100.0;
+                let avg = bucket_points.iter().map(|(_, _, rt)| rt).sum::<f64>() / count as f64;
+                let status = if up >= 50.0 { "up" } else { "down" };
+                (up, avg, status.to_string())
             } else {
-                0.0
-            };
-            let avg_rt = if count > 0 {
-                bucket_points.iter().map(|(_, _, rt)| rt).sum::<f64>() / count as f64
-            } else {
-                0.0
-            };
-            let dominant_status = if up_pct >= 50.0 {
-                "up"
-            } else if count > 0 && up_count < count {
-                "down"
-            } else {
-                "error"
+                // No data in this block — show as gray
+                (0.0, 0.0, "no_data".to_string())
             };
 
             let bucket_start = chrono::DateTime::from_timestamp(bucket_start_ts, 0)
@@ -465,7 +453,7 @@ impl Database {
                 up_pct: (up_pct * 100.0).round() / 100.0,
                 avg_response_time_ms: (avg_rt * 100.0).round() / 100.0,
                 count,
-                dominant_status: dominant_status.to_string(),
+                dominant_status,
             });
         }
 
