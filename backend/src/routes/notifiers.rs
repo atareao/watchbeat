@@ -138,33 +138,6 @@ pub async fn test(
         .map_err(|e| e.to_string())?
         .ok_or("Notifier not found")?;
 
-    let fake_monitor = crate::models::Monitor {
-        id: "test".into(),
-        name: "Test Notification".into(),
-        monitor_type: "http".into(),
-        target: "https://example.com".into(),
-        config_json: serde_json::json!({}),
-        interval_seconds: 300,
-        timeout_seconds: 30,
-        enabled: true,
-        notifier_id: None,
-        confirmations_required: 0,
-        failed_checks: 0,
-        tags: vec![],
-        created_at: String::new(),
-        updated_at: String::new(),
-    };
-
-    let fake_check = crate::models::CheckResult {
-        id: 0,
-        monitor_id: "test".into(),
-        status: "up".into(),
-        status_code: Some(200),
-        response_time_ms: 42,
-        error_message: None,
-        checked_at: chrono::Utc::now().to_rfc3339(),
-    };
-
     match notifier.notifier_type.as_str() {
         "telegram" => {
             let bot_token = notifier
@@ -180,9 +153,7 @@ pub async fn test(
             crate::notifier::telegram::send_telegram_notification(
                 bot_token,
                 chat_id,
-                &fake_monitor,
-                &fake_check,
-                false,
+                "Test notification from WatchBeat",
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -207,9 +178,7 @@ pub async fn test(
                 homeserver_url,
                 access_token,
                 room_id,
-                &fake_monitor,
-                &fake_check,
-                false,
+                "Test notification from WatchBeat",
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -230,9 +199,7 @@ pub async fn test(
                 topic,
                 server_url,
                 token,
-                &fake_monitor,
-                &fake_check,
-                false,
+                "Test notification from WatchBeat",
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -257,9 +224,7 @@ pub async fn test(
                 url,
                 method,
                 &headers_json,
-                &fake_monitor,
-                &fake_check,
-                false,
+                "Test notification from WatchBeat",
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -272,9 +237,7 @@ pub async fn test(
                 .ok_or("Missing webhook_url in notifier config")?;
             crate::notifier::slack::send_slack_notification(
                 webhook_url,
-                &fake_monitor,
-                &fake_check,
-                false,
+                "Test notification from WatchBeat",
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -287,9 +250,7 @@ pub async fn test(
                 .ok_or("Missing webhook_url in notifier config")?;
             crate::notifier::discord::send_discord_notification(
                 webhook_url,
-                &fake_monitor,
-                &fake_check,
-                false,
+                "Test notification from WatchBeat",
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -332,9 +293,7 @@ pub async fn test(
                 password,
                 from,
                 to,
-                &fake_monitor,
-                &fake_check,
-                false,
+                "Test notification from WatchBeat",
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -359,9 +318,7 @@ pub async fn test(
                 server_url,
                 app_token,
                 priority,
-                &fake_monitor,
-                &fake_check,
-                false,
+                "Test notification from WatchBeat",
             )
             .await
             .map_err(|e| e.to_string())?;
