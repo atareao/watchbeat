@@ -11,6 +11,7 @@ use watchbeat::db::Database;
 use watchbeat::embed::serve_embedded;
 use watchbeat::models::CheckResult;
 use watchbeat::notifier;
+use watchbeat::template::{self, TemplateContext};
 use watchbeat::routes;
 use watchbeat::routes::metrics;
 
@@ -470,10 +471,61 @@ async fn run_monitor_check(
     .to_string();
     let _ = event_tx.send(event);
 
-    // Detect status change and notify
+    // ── Detect status changes and latency breaches, render templates, notify ──
     let is_up = check.status == "up" || check.status == "warning";
-    if was_up != is_up {
-        // Look up notifiers via monitor_notifiers table (N:M)
+
+    // Determine notification type and render template
+    let notification_type: Option<(&str, String)> = {
+        // DOWN transition
+        if was_up && !is_up {
+            let template = monitor.message_template_down.as_deref().unwrap_or(template::defaults::DOWN);
+            let ctx = TemplateContext::for_down(monitor, &check, "up");
+            Some(("down", template::render_template(template, &ctx)))
+        }
+        // UP transition (recovery from DOWN or LATENCY)
+        else if !was_up && is_up {
+            let template = monitor.message_template_up.as_deref().unwrap_or(template::defaults::UP);
+            let ctx = TemplateContext::for_up(monitor, &check, "down");
+            Some(("up", template::render_template(template, &ctx)))
+        }
+        // Monitor is up — check for TLS expiry or latency breach
+        else if is_up {
+            // TLS certificate expiry takes priority over latency
+            let expiry_notification = monitor.config_json.get("expiry_days").and_then(|v| v.as_i64()).and_then(|expiry_days| {
+                outcome.tls.as_ref().and_then(|tls| tls.cert_days_left).and_then(|days_left| {
+                    if days_left < expiry_days {
+                        let template = monitor.message_template_expiry.as_deref().unwrap_or(template::defaults::EXPIRY);
+                        let ctx = TemplateContext::for_expiry(monitor, &check, days_left, expiry_days);
+                        Some(("expiry", template::render_template(template, &ctx)))
+                    } else {
+                        None
+                    }
+                })
+            });
+
+            if expiry_notification.is_some() {
+                expiry_notification
+            }
+            // Latency threshold breach
+            else if let Some(threshold) = monitor.latency_threshold_ms {
+                if check.response_time_ms > threshold {
+                    let template = monitor.message_template_latency.as_deref().unwrap_or(template::defaults::LATENCY);
+                    let ctx = TemplateContext::for_latency(monitor, &check, threshold);
+                    Some(("latency", template::render_template(template, &ctx)))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        else {
+            None
+        }
+    };
+
+    // Send notification if we have a rendered message
+    if let Some((_notif_type, message)) = notification_type {
         let notifier_ids = db
             .get_monitor_notifier_ids(&monitor.id)
             .await
@@ -492,7 +544,7 @@ async fn run_monitor_check(
                         let chat_id = notifier.config_json.get("chat_id").and_then(|v| v.as_str());
                         if let (Some(token), Some(chat)) = (bot_token, chat_id) {
                             if let Err(e) = notifier::telegram::send_telegram_notification(
-                                token, chat, monitor, &check, was_up,
+                                token, chat, &message,
                             )
                             .await
                             {
@@ -514,7 +566,7 @@ async fn run_monitor_check(
                             (homeserver, access_token, room_id)
                         {
                             if let Err(e) = notifier::matrix::send_matrix_notification(
-                                hs, tok, rid, monitor, &check, was_up,
+                                hs, tok, rid, &message,
                             )
                             .await
                             {
@@ -532,7 +584,7 @@ async fn run_monitor_check(
                         let token = notifier.config_json.get("token").and_then(|v| v.as_str());
                         if let Some(t) = topic {
                             if let Err(e) = notifier::ntfy::send_ntfy_notification(
-                                t, server_url, token, monitor, &check, was_up,
+                                t, server_url, token, &message,
                             )
                             .await
                             {
@@ -554,12 +606,7 @@ async fn run_monitor_check(
                             .unwrap_or_default();
                         if let Some(u) = url {
                             if let Err(e) = notifier::webhook::send_webhook_notification(
-                                u,
-                                method,
-                                &headers_json,
-                                monitor,
-                                &check,
-                                was_up,
+                                u, method, &headers_json, &message,
                             )
                             .await
                             {
@@ -574,7 +621,7 @@ async fn run_monitor_check(
                             .and_then(|v| v.as_str());
                         if let Some(u) = webhook_url {
                             if let Err(e) =
-                                notifier::slack::send_slack_notification(u, monitor, &check, was_up)
+                                notifier::slack::send_slack_notification(u, &message)
                                     .await
                             {
                                 tracing::warn!("Scheduler: slack notification failed: {}", e);
@@ -588,7 +635,7 @@ async fn run_monitor_check(
                             .and_then(|v| v.as_str());
                         if let Some(u) = webhook_url {
                             if let Err(e) = notifier::discord::send_discord_notification(
-                                u, monitor, &check, was_up,
+                                u, &message,
                             )
                             .await
                             {
@@ -620,7 +667,7 @@ async fn run_monitor_check(
                             (smtp_host, username, password, from, to)
                         {
                             if let Err(e) = notifier::email::send_email_notification(
-                                host, smtp_port, user, pass, f, t, monitor, &check, was_up,
+                                host, smtp_port, user, pass, f, t, &message,
                             )
                             .await
                             {
@@ -645,7 +692,7 @@ async fn run_monitor_check(
                             .unwrap_or(5);
                         if let Some(t) = app_token {
                             if let Err(e) = notifier::gotify::send_gotify_notification(
-                                server_url, t, priority, monitor, &check, was_up,
+                                server_url, t, priority, &message,
                             )
                             .await
                             {

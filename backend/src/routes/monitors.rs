@@ -23,6 +23,11 @@ pub struct CreateMonitorRequest {
     pub enabled: Option<bool>,
     pub notifier_id: Option<String>,
     pub confirmations_required: Option<i64>,
+    pub latency_threshold_ms: Option<i64>,
+    pub message_template_down: Option<String>,
+    pub message_template_latency: Option<String>,
+    pub message_template_up: Option<String>,
+    pub message_template_expiry: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -35,6 +40,11 @@ pub struct UpdateMonitorRequest {
     pub enabled: Option<bool>,
     pub notifier_id: Option<String>,
     pub confirmations_required: Option<i64>,
+    pub latency_threshold_ms: Option<i64>,
+    pub message_template_down: Option<String>,
+    pub message_template_latency: Option<String>,
+    pub message_template_up: Option<String>,
+    pub message_template_expiry: Option<String>,
 }
 
 // ───── Handlers ─────
@@ -71,6 +81,11 @@ pub async fn create(
         notifier_id: req.notifier_id,
         confirmations_required: req.confirmations_required.unwrap_or(0),
         failed_checks: 0,
+        latency_threshold_ms: req.latency_threshold_ms,
+        message_template_down: req.message_template_down,
+        message_template_latency: req.message_template_latency,
+        message_template_up: req.message_template_up,
+        message_template_expiry: req.message_template_expiry,
         tags: vec![],
         created_at: now.clone(),
         updated_at: now,
@@ -125,6 +140,11 @@ pub async fn update(
             .confirmations_required
             .unwrap_or(existing.confirmations_required),
         failed_checks: existing.failed_checks,
+        latency_threshold_ms: req.latency_threshold_ms.or(existing.latency_threshold_ms),
+        message_template_down: req.message_template_down.or(existing.message_template_down),
+        message_template_latency: req.message_template_latency.or(existing.message_template_latency),
+        message_template_up: req.message_template_up.or(existing.message_template_up),
+        message_template_expiry: req.message_template_expiry.or(existing.message_template_expiry),
         tags: existing.tags,
         created_at: existing.created_at,
         updated_at: now,

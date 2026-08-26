@@ -16,6 +16,11 @@ export interface Monitor {
   timeout_seconds: number;
   enabled: boolean;
   notifier_id: string | null;
+  latency_threshold_ms: number | null;
+  message_template_down: string | null;
+  message_template_latency: string | null;
+  message_template_up: string | null;
+  message_template_expiry: string | null;
   created_at: string;
   updated_at: string;
 }
