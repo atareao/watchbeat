@@ -403,7 +403,9 @@ impl Database {
         let total_span_secs = (now - since_dt).num_seconds().max(1);
 
         const TARGET_BLOCKS: usize = 80;
-        let bucket_size_secs = (total_span_secs as f64 / TARGET_BLOCKS as f64).ceil().max(1.0) as i64;
+        let bucket_size_secs = (total_span_secs as f64 / TARGET_BLOCKS as f64)
+            .ceil()
+            .max(1.0) as i64;
 
         // Fetch all timeline points in range (already ordered ASC)
         let points = self.get_timeline(monitor_id, since).await?;
