@@ -72,7 +72,7 @@ impl Checker for HttpChecker {
             _ => client.get(&url),
         };
 
-        let req = req.header("User-Agent", "Vigilatrs/0.1");
+        let req = req.header("User-Agent", "WatchBeat/0.1");
         let result = req.send().await;
 
         let elapsed = start.elapsed().as_millis() as u64;

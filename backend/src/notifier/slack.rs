@@ -32,7 +32,7 @@ pub async fn send_slack_notification(
                 { "title": "Response", "value": format!("{}ms", check.response_time_ms), "short": true },
                 { "title": "Error", "value": check.error_message.as_deref().unwrap_or("—"), "short": false },
             ],
-            "footer": "Vigilatrs",
+            "footer": "WatchBeat",
             "ts": chrono::Utc::now().timestamp(),
         }]
     });
@@ -147,7 +147,7 @@ mod tests {
                 request
             );
             assert!(request.contains("\"title\":\"CAÍDO — Test Monitor\""));
-            assert!(request.contains("\"footer\":\"Vigilatrs\""));
+            assert!(request.contains("\"footer\":\"WatchBeat\""));
 
             // Fields
             assert!(request.contains("\"Target\""));
