@@ -1,4 +1,4 @@
--- Create initial tables for Vigilatrs uptime monitor
+-- Create initial tables for WatchBeat uptime monitor
 CREATE TABLE IF NOT EXISTS monitors (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

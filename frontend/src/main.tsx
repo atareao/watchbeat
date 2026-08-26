@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router";
 import { ConfigProvider, theme as antTheme } from "antd";
 import App from "./App";
-import { useTheme } from "./hooks/useTheme";
+import { ThemeProvider, useTheme } from "./hooks/useTheme";
 import "./global.css";
 
 const lightTheme = {
@@ -30,6 +30,8 @@ function ThemedApp() {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <ThemedApp />
+    <ThemeProvider>
+      <ThemedApp />
+    </ThemeProvider>
   </React.StrictMode>
 );

@@ -287,10 +287,8 @@ async fn scheduler_iteration(
                                     "🔴 Heartbeat '{}' no ha latido en {}s — posible fallo de cron/backup",
                                     hb.name, hb.grace_seconds
                                 );
-                                let url = format!(
-                                    "https://api.telegram.org/bot{}/sendMessage",
-                                    token
-                                );
+                                let url =
+                                    format!("https://api.telegram.org/bot{}/sendMessage", token);
                                 let _ = reqwest::Client::new()
                                     .post(&url)
                                     .json(&serde_json::json!({"chat_id": chat, "text": msg}))
