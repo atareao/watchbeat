@@ -242,6 +242,12 @@ export default function MonitorDetail() {
         </Descriptions.Item>
         <Descriptions.Item label="Intervalo">{monitor.interval_seconds}s</Descriptions.Item>
         <Descriptions.Item label="Timeout">{monitor.timeout_seconds}s</Descriptions.Item>
+        <Descriptions.Item label="Umbral latencia">
+          {monitor.latency_threshold_ms != null ? `>${monitor.latency_threshold_ms}ms` : '—'}
+        </Descriptions.Item>
+        <Descriptions.Item label="Plantilla expiry">
+          {monitor.message_template_expiry ? 'Personalizada' : 'Por defecto'}
+        </Descriptions.Item>
         <Descriptions.Item label={`Uptime ${range.label}`}>
           {uptime !== null ? `${uptime.toFixed(2)}%` : '—'}
         </Descriptions.Item>

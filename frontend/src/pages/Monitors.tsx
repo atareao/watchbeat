@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import {
   Table, Button, Modal, Form, Input, InputNumber, Select, Switch, Tabs, Typography, Space, Tag, message, Popconfirm,
 } from 'antd';
-import { PlusOutlined, ReloadOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { PlusOutlined, ReloadOutlined, PlayCircleOutlined, SettingOutlined } from '@ant-design/icons';
 import {
   fetchMonitors, createMonitor, updateMonitor, deleteMonitor, toggleMonitor, runCheck,
   fetchNotifiers, type Monitor,
@@ -24,6 +24,7 @@ const CONFIG_FIELDS: Record<string, { name: string; label: string; type: string;
     { name: 'expected_status', label: 'Status esperado', type: 'number', defaultValue: 200 },
     { name: 'expected_body', label: 'Body esperado', type: 'text' },
     { name: 'body_is_regex', label: 'Body es regex', type: 'boolean', defaultValue: false },
+    { name: 'expiry_days', label: 'Días para expiry del certificado', type: 'number', defaultValue: 14 },
   ],
   tls: [
     { name: 'expiry_days', label: 'Días para expiry', type: 'number', defaultValue: 14 },
@@ -33,6 +34,7 @@ const CONFIG_FIELDS: Record<string, { name: string; label: string; type: string;
 };
 
 export default function Monitors() {
+  const navigate = useNavigate();
   const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [notifiers, setNotifiers] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -74,6 +76,11 @@ export default function Monitors() {
       notifier_id: m.notifier_id ?? null,
       confirmations_required: (m as any).confirmations_required ?? 0,
       config: m.config_json ?? {},
+      latency_threshold_ms: m.latency_threshold_ms,
+      message_template_down: m.message_template_down,
+      message_template_latency: m.message_template_latency,
+      message_template_up: m.message_template_up,
+      message_template_expiry: m.message_template_expiry,
     });
     setSelectedType(m.type);
     setModalOpen(true);
@@ -92,6 +99,11 @@ export default function Monitors() {
         notifier_id: values.notifier_id || null,
         confirmations_required: values.confirmations_required ?? 0,
         config_json: values.config ?? {},
+        latency_threshold_ms: values.latency_threshold_ms ?? null,
+        message_template_down: values.message_template_down || null,
+        message_template_latency: values.message_template_latency || null,
+        message_template_up: values.message_template_up || null,
+        message_template_expiry: values.message_template_expiry || null,
       };
       if (editingId) {
         await updateMonitor(editingId, payload);
@@ -228,6 +240,10 @@ export default function Monitors() {
                   <Select allowClear placeholder="Ninguno" options={notifiers.map(n => ({ value: n.id, label: n.name }))} />
                 </Form.Item>
               </Space>
+              <Form.Item name="latency_threshold_ms" label="Umbral de latencia (ms)"
+                tooltip="Si la latencia supera este valor estando UP, se envía una notificación de latencia alta">
+                <InputNumber min={0} max={60000} style={{ width: '100%' }} placeholder="Ej: 500" />
+              </Form.Item>
             </Tabs.TabPane>
             <Tabs.TabPane tab="Específico" key="specific">
               {CONFIG_FIELDS[selectedType]?.length > 0 ? (
@@ -247,6 +263,46 @@ export default function Monitors() {
               ) : (
                 <Typography.Text type="secondary">No hay opciones específicas para este tipo de monitor.</Typography.Text>
               )}
+            </Tabs.TabPane>
+            <Tabs.TabPane tab="Plantillas" key="templates">
+              <div style={{ marginBottom: 16 }}>
+                <Typography.Text type="secondary">
+                  Las plantillas usan sintaxis Jinja2. Variables disponibles:{' '}
+                  <code>{'{{ monitor_name }}'}</code>, <code>{'{{ target }}'}</code>,{' '}
+                  <code>{'{{ response_time_ms }}'}</code>, <code>{'{{ error_message }}'}</code>,{' '}
+                  <code>{'{{ status_code }}'}</code>, <code>{'{{ days_left }}'}</code>,{' '}
+                  <code>{'{{ expiry_threshold_days }}'}</code>
+                </Typography.Text>
+                <br />
+                <Button type="link" icon={<SettingOutlined />} onClick={() => navigate('/settings')}>
+                  Configurar plantillas por defecto
+                </Button>
+              </div>
+              <Tabs>
+                <Tabs.TabPane tab="DOWN" key="template-down">
+                  <Form.Item name="message_template_down" label="Plantilla DOWN">
+                    <Input.TextArea rows={6} placeholder={'⚠️ DOWN: {{ monitor.name }} — {{ monitor.target }} — Error: {{ error }}'} />
+                  </Form.Item>
+                </Tabs.TabPane>
+                <Tabs.TabPane tab="LATENCIA" key="template-latency">
+                  <Form.Item name="message_template_latency" label="Plantilla LATENCIA">
+                    <Input.TextArea rows={6} placeholder={'⚠️ Latencia alta: {{ monitor.name }} — {{ response_time_ms }}ms (umbral: {{ latency_threshold_ms }}ms)'} />
+                  </Form.Item>
+                </Tabs.TabPane>
+                <Tabs.TabPane tab="UP" key="template-up">
+                  <Form.Item name="message_template_up" label="Plantilla UP">
+                    <Input.TextArea rows={6} placeholder={'✅ UP: {{ monitor.name }} — {{ monitor.target }} — {{ response_time_ms }}ms'} />
+                  </Form.Item>
+                </Tabs.TabPane>
+                <Tabs.TabPane tab="EXPIRACIÓN" key="template-expiry">
+                  <Form.Item name="message_template_expiry" label="Plantilla EXPIRACIÓN">
+                    <Input.TextArea
+                      rows={6}
+                      placeholder={'🟡 {{ monitor_name }} — {{ target }}\nCertificate expires in {{ days_left }} days (threshold: {{ expiry_threshold_days }} days)'}
+                    />
+                  </Form.Item>
+                </Tabs.TabPane>
+              </Tabs>
             </Tabs.TabPane>
           </Tabs>
         </Form>

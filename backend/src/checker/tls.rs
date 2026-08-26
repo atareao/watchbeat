@@ -85,7 +85,7 @@ impl Checker for TlsChecker {
                 if let Some(days_left) = info.cert_days_left {
                     let threshold = monitor
                         .config_json
-                        .get("tls_expiry_days")
+                        .get("expiry_days")
                         .and_then(|v| v.as_i64())
                         .unwrap_or(14);
 
@@ -250,6 +250,11 @@ mod tests {
             notifier_id: None,
             confirmations_required: 0,
             failed_checks: 0,
+            latency_threshold_ms: None,
+            message_template_down: None,
+            message_template_latency: None,
+            message_template_up: None,
+            message_template_expiry: None,
             tags: vec![],
             created_at: String::new(),
             updated_at: String::new(),
@@ -273,6 +278,11 @@ mod tests {
             notifier_id: None,
             confirmations_required: 0,
             failed_checks: 0,
+            latency_threshold_ms: None,
+            message_template_down: None,
+            message_template_latency: None,
+            message_template_up: None,
+            message_template_expiry: None,
             tags: vec![],
             created_at: String::new(),
             updated_at: String::new(),

@@ -15,9 +15,10 @@ pub mod webhook;
 pub trait NotifierTrait: Send + Sync {
     async fn notify(
         &self,
-        monitor: &Monitor,
-        check: &CheckResult,
-        was_up: bool,
+        _monitor: &Monitor,
+        _check: &CheckResult,
+        _was_up: bool,
+        message: &str,
     ) -> anyhow::Result<()>;
 }
 
@@ -54,9 +55,10 @@ impl TelegramNotifier {
 impl NotifierTrait for TelegramNotifier {
     async fn notify(
         &self,
-        monitor: &Monitor,
-        check: &CheckResult,
-        was_up: bool,
+        _monitor: &Monitor,
+        _check: &CheckResult,
+        _was_up: bool,
+        message: &str,
     ) -> anyhow::Result<()> {
         let bot_token = self
             .config
@@ -68,10 +70,7 @@ impl NotifierTrait for TelegramNotifier {
             .get("chat_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing chat_id in telegram notifier config"))?;
-        crate::notifier::telegram::send_telegram_notification(
-            bot_token, chat_id, monitor, check, was_up,
-        )
-        .await
+        crate::notifier::telegram::send_telegram_notification(bot_token, chat_id, message).await
     }
 }
 
@@ -91,9 +90,10 @@ impl MatrixNotifier {
 impl NotifierTrait for MatrixNotifier {
     async fn notify(
         &self,
-        monitor: &Monitor,
-        check: &CheckResult,
-        was_up: bool,
+        _monitor: &Monitor,
+        _check: &CheckResult,
+        _was_up: bool,
+        message: &str,
     ) -> anyhow::Result<()> {
         let homeserver_url = self
             .config
@@ -110,15 +110,8 @@ impl NotifierTrait for MatrixNotifier {
             .get("room_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing room_id in matrix notifier config"))?;
-        crate::notifier::matrix::send_matrix_notification(
-            homeserver_url,
-            access_token,
-            room_id,
-            monitor,
-            check,
-            was_up,
-        )
-        .await
+        crate::notifier::matrix::send_matrix_notification(homeserver_url, access_token, room_id, message)
+            .await
     }
 }
 
@@ -138,9 +131,10 @@ impl NtfyNotifier {
 impl NotifierTrait for NtfyNotifier {
     async fn notify(
         &self,
-        monitor: &Monitor,
-        check: &CheckResult,
-        was_up: bool,
+        _monitor: &Monitor,
+        _check: &CheckResult,
+        _was_up: bool,
+        message: &str,
     ) -> anyhow::Result<()> {
         let topic = self
             .config
@@ -153,10 +147,7 @@ impl NotifierTrait for NtfyNotifier {
             .and_then(|v| v.as_str())
             .unwrap_or("https://ntfy.sh");
         let token = self.config.get("token").and_then(|v| v.as_str());
-        crate::notifier::ntfy::send_ntfy_notification(
-            topic, server_url, token, monitor, check, was_up,
-        )
-        .await
+        crate::notifier::ntfy::send_ntfy_notification(topic, server_url, token, message).await
     }
 }
 
@@ -176,9 +167,10 @@ impl WebhookNotifier {
 impl NotifierTrait for WebhookNotifier {
     async fn notify(
         &self,
-        monitor: &Monitor,
-        check: &CheckResult,
-        was_up: bool,
+        _monitor: &Monitor,
+        _check: &CheckResult,
+        _was_up: bool,
+        message: &str,
     ) -> anyhow::Result<()> {
         let url = self
             .config
@@ -195,15 +187,7 @@ impl NotifierTrait for WebhookNotifier {
             .get("headers")
             .map(|v| v.to_string())
             .unwrap_or_default();
-        crate::notifier::webhook::send_webhook_notification(
-            url,
-            method,
-            &headers_json,
-            monitor,
-            check,
-            was_up,
-        )
-        .await
+        crate::notifier::webhook::send_webhook_notification(url, method, &headers_json, message).await
     }
 }
 
@@ -223,16 +207,17 @@ impl SlackNotifier {
 impl NotifierTrait for SlackNotifier {
     async fn notify(
         &self,
-        monitor: &Monitor,
-        check: &CheckResult,
-        was_up: bool,
+        _monitor: &Monitor,
+        _check: &CheckResult,
+        _was_up: bool,
+        message: &str,
     ) -> anyhow::Result<()> {
         let webhook_url = self
             .config
             .get("webhook_url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing webhook_url in slack notifier config"))?;
-        crate::notifier::slack::send_slack_notification(webhook_url, monitor, check, was_up).await
+        crate::notifier::slack::send_slack_notification(webhook_url, message).await
     }
 }
 
@@ -252,17 +237,17 @@ impl DiscordNotifier {
 impl NotifierTrait for DiscordNotifier {
     async fn notify(
         &self,
-        monitor: &Monitor,
-        check: &CheckResult,
-        was_up: bool,
+        _monitor: &Monitor,
+        _check: &CheckResult,
+        _was_up: bool,
+        message: &str,
     ) -> anyhow::Result<()> {
         let webhook_url = self
             .config
             .get("webhook_url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing webhook_url in discord notifier config"))?;
-        crate::notifier::discord::send_discord_notification(webhook_url, monitor, check, was_up)
-            .await
+        crate::notifier::discord::send_discord_notification(webhook_url, message).await
     }
 }
 
@@ -282,9 +267,10 @@ impl EmailNotifier {
 impl NotifierTrait for EmailNotifier {
     async fn notify(
         &self,
-        monitor: &Monitor,
-        check: &CheckResult,
-        was_up: bool,
+        _monitor: &Monitor,
+        _check: &CheckResult,
+        _was_up: bool,
+        message: &str,
     ) -> anyhow::Result<()> {
         let smtp_host = self
             .config
@@ -317,7 +303,7 @@ impl NotifierTrait for EmailNotifier {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing to in email notifier config"))?;
         crate::notifier::email::send_email_notification(
-            smtp_host, smtp_port, username, password, from, to, monitor, check, was_up,
+            smtp_host, smtp_port, username, password, from, to, message,
         )
         .await
     }
@@ -339,9 +325,10 @@ impl GotifyNotifier {
 impl NotifierTrait for GotifyNotifier {
     async fn notify(
         &self,
-        monitor: &Monitor,
-        check: &CheckResult,
-        was_up: bool,
+        _monitor: &Monitor,
+        _check: &CheckResult,
+        _was_up: bool,
+        message: &str,
     ) -> anyhow::Result<()> {
         let server_url = self
             .config
@@ -358,9 +345,7 @@ impl NotifierTrait for GotifyNotifier {
             .get("priority")
             .and_then(|v| v.as_i64())
             .unwrap_or(5);
-        crate::notifier::gotify::send_gotify_notification(
-            server_url, app_token, priority, monitor, check, was_up,
-        )
-        .await
+        crate::notifier::gotify::send_gotify_notification(server_url, app_token, priority, message)
+            .await
     }
 }
