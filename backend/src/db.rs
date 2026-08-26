@@ -44,9 +44,13 @@ impl Database {
                 target TEXT NOT NULL, config_json TEXT NOT NULL DEFAULT '{}',
                 interval_seconds INTEGER NOT NULL DEFAULT 300, timeout_seconds INTEGER NOT NULL DEFAULT 30,
                 enabled INTEGER NOT NULL DEFAULT 1, notifier_id TEXT,
-                confirmations_required INTEGER NOT NULL DEFAULT 0, failed_checks INTEGER NOT NULL DEFAULT 0,
-                tags TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                 confirmations_required INTEGER NOT NULL DEFAULT 0, failed_checks INTEGER NOT NULL DEFAULT 0,
+                 tags TEXT NOT NULL DEFAULT '[]',
+                 latency_threshold_ms INTEGER,
+                 message_template_down TEXT,
+                 message_template_latency TEXT,
+                 message_template_up TEXT,
+                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS checks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,6 +105,27 @@ impl Database {
         let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
             .execute(&pool)
             .await;
+        let _ = sqlx::raw_sql(
+            "ALTER TABLE monitors ADD COLUMN latency_threshold_ms INTEGER",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "ALTER TABLE monitors ADD COLUMN message_template_down TEXT",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "ALTER TABLE monitors ADD COLUMN message_template_latency TEXT",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN message_template_up TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN message_template_expiry TEXT")
+            .execute(&pool)
+            .await;
 
         // Unique indexes for name uniqueness (enforced at DB level)
         let _ =
@@ -141,7 +166,8 @@ impl Database {
         let rows = sqlx::query_as::<_, MonitorRow>(
             "SELECT id, name, monitor_type, target, config_json, interval_seconds, \
              timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
-             created_at, updated_at FROM monitors ORDER BY name",
+             latency_threshold_ms, message_template_down, message_template_latency, \
+             message_template_up, message_template_expiry, created_at, updated_at FROM monitors ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await
@@ -153,7 +179,8 @@ impl Database {
         let row = sqlx::query_as::<_, MonitorRow>(
             "SELECT id, name, monitor_type, target, config_json, interval_seconds, \
              timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
-             created_at, updated_at FROM monitors WHERE id = ?",
+             latency_threshold_ms, message_template_down, message_template_latency, \
+             message_template_up, message_template_expiry, created_at, updated_at FROM monitors WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -239,8 +266,10 @@ impl Database {
             .context("Failed to serialize config_json")?;
         sqlx::query(
             "INSERT INTO monitors (id, name, monitor_type, target, config_json, interval_seconds, \
-             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
+             latency_threshold_ms, message_template_down, message_template_latency, \
+             message_template_up, message_template_expiry, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&monitor.id).bind(&monitor.name).bind(&monitor.monitor_type)
         .bind(&monitor.target).bind(&config_json)
@@ -248,6 +277,11 @@ impl Database {
         .bind(monitor.enabled as i32).bind(&monitor.notifier_id)
         .bind(monitor.confirmations_required).bind(monitor.failed_checks)
         .bind(serde_json::to_string(&monitor.tags).unwrap_or_else(|_| "[]".to_string()))
+        .bind(monitor.latency_threshold_ms)
+        .bind(&monitor.message_template_down)
+        .bind(&monitor.message_template_latency)
+        .bind(&monitor.message_template_up)
+        .bind(&monitor.message_template_expiry)
         .bind(&now).bind(&now)
         .execute(&self.pool).await
         .context("Failed to insert monitor")?;
@@ -258,10 +292,12 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let config_json = serde_json::to_string(&monitor.config_json)
             .context("Failed to serialize config_json")?;
-        let rows = sqlx::query(
+        let rows =         sqlx::query(
             "UPDATE monitors SET name=?, monitor_type=?, target=?, config_json=?, \
              interval_seconds=?, timeout_seconds=?, enabled=?, notifier_id=?, \
-             confirmations_required=?, failed_checks=?, tags=?, updated_at=? WHERE id=?",
+             confirmations_required=?, failed_checks=?, tags=?, \
+             latency_threshold_ms=?, message_template_down=?, message_template_latency=?, \
+             message_template_up=?, message_template_expiry=?, updated_at=? WHERE id=?",
         )
         .bind(&monitor.name)
         .bind(&monitor.monitor_type)
@@ -274,6 +310,11 @@ impl Database {
         .bind(monitor.confirmations_required)
         .bind(monitor.failed_checks)
         .bind(serde_json::to_string(&monitor.tags).unwrap_or_else(|_| "[]".to_string()))
+        .bind(monitor.latency_threshold_ms)
+        .bind(&monitor.message_template_down)
+        .bind(&monitor.message_template_latency)
+        .bind(&monitor.message_template_up)
+        .bind(&monitor.message_template_expiry)
         .bind(&now)
         .bind(id)
         .execute(&self.pool)
