@@ -239,7 +239,7 @@ th {{ background: #fafafa; font-size: 12px; text-transform: uppercase; color: #6
     <tr><th>Servicio</th><th>Estado</th><th>Uptime 30d</th></tr>
     {rows}
   </table>
-  <div class="footer">Generado por Vigilatrs</div>
+  <div class="footer">Generado por WatchBeat</div>
 </div>
 </body>
 </html>"#,

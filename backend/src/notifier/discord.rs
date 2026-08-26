@@ -38,7 +38,7 @@ pub async fn send_discord_notification(
                 { "name": "Response", "value": format!("{}ms", check.response_time_ms), "inline": true },
                 { "name": "Error", "value": check.error_message.as_deref().unwrap_or("—"), "inline": false },
             ],
-            "footer": { "text": "Vigilatrs" },
+            "footer": { "text": "WatchBeat" },
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }]
     });
@@ -148,7 +148,7 @@ mod tests {
             assert!(request.contains("embeds"));
             assert!(request.contains("\"CAÍDO — Test Monitor\""));
             assert!(request.contains("\"color\":15548997"));
-            assert!(request.contains("\"footer\":{\"text\":\"Vigilatrs\""));
+            assert!(request.contains("\"footer\":{\"text\":\"WatchBeat\""));
 
             // Fields
             assert!(request.contains("\"Target\""));

@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Button, Result } from 'antd';
+import { Button, Result, theme, Space, Typography } from 'antd';
+import { SunOutlined, MoonOutlined } from '@ant-design/icons';
+import { useTheme } from '../hooks/useTheme';
 
 export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
+  const { token } = theme.useToken();
+  const { isDark, toggle } = useTheme();
 
   const handleLogin = () => {
     window.location.href = '/auth/login';
@@ -16,31 +20,53 @@ export default function LoginPage() {
   }, []);
 
   return (
-    <div style={{
-      display: 'flex',
-      justifyContent: 'center',
-      alignItems: 'center',
-      minHeight: '100vh',
-      background: '#f0f2f5',
-    }}>
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        minHeight: '100vh',
+        background: token.colorBgLayout,
+        position: 'relative',
+      }}
+    >
+      {/* Theme toggle — top right */}
+      <div style={{ position: 'absolute', top: 16, right: 16 }}>
+        <Button
+          icon={isDark ? <SunOutlined /> : <MoonOutlined />}
+          onClick={toggle}
+          type="text"
+          size="large"
+        />
+      </div>
+
       <Result
-        icon={<span style={{ fontSize: 48 }}>💓</span>}
-        title="WatchBeat"
-        subTitle="Monitor de uptime auto-hosteado"
-        extra={
-          error ? (
-            <div>
-              <p style={{ color: '#ff4d4f' }}>{error}</p>
-              <Button type="primary" size="large" onClick={handleLogin}>
-                Reintentar
-              </Button>
-            </div>
-          ) : (
-            <Button type="primary" size="large" onClick={handleLogin}>
-              Iniciar sesión
-            </Button>
-          )
+        icon={
+          <span style={{ fontSize: 64 }}>
+            💓
+          </span>
         }
+        title={
+          <Typography.Title level={2} style={{ margin: 0, color: token.colorText }}>
+            WatchBeat
+          </Typography.Title>
+        }
+        subTitle={
+          <Typography.Text style={{ color: token.colorTextSecondary, fontSize: 16 }}>
+            Monitor de uptime auto-hosteado
+          </Typography.Text>
+        }
+        extra={
+          <Space direction="vertical" size="middle" style={{ width: '100%', alignItems: 'center' }}>
+            {error && (
+              <Typography.Text type="danger">{error}</Typography.Text>
+            )}
+            <Button type="primary" size="large" onClick={handleLogin} style={{ minWidth: 200 }}>
+              {error ? 'Reintentar' : 'Iniciar sesión con OIDC'}
+            </Button>
+          </Space>
+        }
+        style={{ padding: 48 }}
       />
     </div>
   );

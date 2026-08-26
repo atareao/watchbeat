@@ -392,58 +392,76 @@ impl Database {
         &self,
         monitor_id: &str,
         since: &str,
-        bucket_seconds: i64,
+        _bucket_seconds: i64,
     ) -> Result<Vec<TimelineBucket>> {
-        // Bucket by integer division of unix timestamp
-        // Note: each ? is a separate positional parameter in sqlx SQLite
-        // We pass bucket_seconds twice (once for division, once for multiplication)
-        let rows: Vec<(i64, i64, i64, f64)> = sqlx::query_as(
-            "SELECT \
-             (strftime('%s', checked_at) / ?) * ? AS bucket_unix, \
-             COUNT(*) AS total, \
-             SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS up_count, \
-             AVG(response_time_ms) AS avg_rt \
-             FROM checks \
-             WHERE monitor_id=? AND checked_at>=? \
-             GROUP BY bucket_unix \
-             ORDER BY bucket_unix ASC",
-        )
-        .bind(bucket_seconds)
-        .bind(bucket_seconds)
-        .bind(monitor_id)
-        .bind(since)
-        .fetch_all(&self.pool)
-        .await
-        .context("Failed to get timeline buckets")?;
+        // Always divide the REQUESTED range into exactly 80 blocks
+        let since_dt = match chrono::DateTime::parse_from_rfc3339(since) {
+            Ok(dt) => dt.with_timezone(&chrono::Utc),
+            Err(_) => return Ok(Vec::new()),
+        };
+        let now = chrono::Utc::now();
+        let total_span_secs = (now - since_dt).num_seconds().max(1);
 
-        Ok(rows
-            .into_iter()
-            .map(|(bucket_unix, total, up_count, avg_rt)| {
-                let up_pct = if total > 0 {
-                    (up_count as f64 / total as f64) * 100.0
-                } else {
-                    0.0
-                };
-                let dominant_status = if up_pct >= 50.0 {
-                    "up"
-                } else if up_count < total {
-                    "down"
-                } else {
-                    "error"
-                };
-                // Convert unix timestamp to RFC 3339
-                let bucket_start = chrono::DateTime::from_timestamp(bucket_unix, 0)
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_else(|| "unknown".to_string());
-                TimelineBucket {
-                    bucket_start,
-                    up_pct: (up_pct * 100.0).round() / 100.0, // 2 decimal places
-                    avg_response_time_ms: (avg_rt * 100.0).round() / 100.0,
-                    count: total,
-                    dominant_status: dominant_status.to_string(),
-                }
-            })
-            .collect())
+        const TARGET_BLOCKS: usize = 80;
+        let bucket_size_secs = (total_span_secs as f64 / TARGET_BLOCKS as f64)
+            .ceil()
+            .max(1.0) as i64;
+
+        // Fetch all timeline points in range (already ordered ASC)
+        let points = self.get_timeline(monitor_id, since).await?;
+
+        // Build bucket boundaries as RFC 3339 strings for direct comparison
+        // This avoids any chrono parsing issues with checked_at values
+        let since_ts = since_dt.timestamp();
+        let mut bucket_bounds: Vec<(i64, String)> = Vec::with_capacity(TARGET_BLOCKS + 1);
+        for i in 0..=TARGET_BLOCKS {
+            let ts = since_ts + (i as i64 * bucket_size_secs);
+            let bound = chrono::DateTime::from_timestamp(ts, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_else(|| "unknown".to_string());
+            bucket_bounds.push((ts, bound));
+        }
+
+        let mut buckets: Vec<TimelineBucket> = Vec::with_capacity(TARGET_BLOCKS);
+
+        for i in 0..TARGET_BLOCKS {
+            let (_, start_str) = &bucket_bounds[i];
+            let (_, end_str) = &bucket_bounds[i + 1];
+
+            // Count points in this bucket using string comparison on checked_at
+            // ISO 8601 strings sort lexicographically when same timezone
+            let bucket_points: Vec<_> = points
+                .iter()
+                .filter(|p| p.checked_at >= *start_str && p.checked_at < *end_str)
+                .collect();
+
+            let count = bucket_points.len() as i64;
+
+            let (up_pct, avg_rt, dominant_status) = if count > 0 {
+                let up_count = bucket_points.iter().filter(|p| p.status == "up").count() as i64;
+                let up = (up_count as f64 / count as f64) * 100.0;
+                let avg = bucket_points
+                    .iter()
+                    .filter_map(|p| p.response_time_ms)
+                    .map(|v| v as f64)
+                    .sum::<f64>()
+                    / count as f64;
+                let status = if up >= 50.0 { "up" } else { "down" };
+                (up, avg, status.to_string())
+            } else {
+                (0.0, 0.0, "no_data".to_string())
+            };
+
+            buckets.push(TimelineBucket {
+                bucket_start: start_str.clone(),
+                up_pct: (up_pct * 100.0).round() / 100.0,
+                avg_response_time_ms: (avg_rt * 100.0).round() / 100.0,
+                count,
+                dominant_status,
+            });
+        }
+
+        Ok(buckets)
     }
 
     pub async fn get_recent_checks_global(&self, limit: i64) -> Result<Vec<CheckResult>> {
