@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import {
-  Table, Button, Modal, Form, Input, InputNumber, Select, Switch, Typography, Space, Tag, message, Popconfirm,
+  Table, Button, Modal, Form, Input, InputNumber, Select, Switch, Tabs, Typography, Space, Tag, message, Popconfirm,
 } from 'antd';
 import { PlusOutlined, ReloadOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import {
@@ -28,6 +28,8 @@ const CONFIG_FIELDS: Record<string, { name: string; label: string; type: string;
   tls: [
     { name: 'expiry_days', label: 'Días para expiry', type: 'number', defaultValue: 14 },
   ],
+  tcp: [],
+  ping: [],
 };
 
 export default function Monitors() {
@@ -36,6 +38,7 @@ export default function Monitors() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [selectedType, setSelectedType] = useState<string>('http');
   const [form] = Form.useForm();
 
   const load = () => {
@@ -55,6 +58,7 @@ export default function Monitors() {
     setEditingId(null);
     form.resetFields();
     form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true, confirmations_required: 0, config: {} });
+    setSelectedType('http');
     setModalOpen(true);
   };
 
@@ -71,6 +75,7 @@ export default function Monitors() {
       confirmations_required: (m as any).confirmations_required ?? 0,
       config: m.config_json ?? {},
     });
+    setSelectedType(m.type);
     setModalOpen(true);
   };
 
@@ -175,63 +180,75 @@ export default function Monitors() {
         onCancel={() => setModalOpen(false)}
         width={600}
       >
-        <Form form={form} layout="vertical">
-          <Form.Item name="name" label="Nombre" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="type" label="Tipo" rules={[{ required: true }]}>
-            <Select options={MONITOR_TYPES} />
-          </Form.Item>
-          <Form.Item name="target" label="Target" rules={[{ required: true }]}
-            extra={(() => {
-              const type = form.getFieldValue('type');
-              if (type === 'http') return 'URL completa, ej: https://ejemplo.com';
-              if (type === 'tls') return 'host o host:puerto (sin https://), ej: atareao.es';
-              if (type === 'tcp') return 'host:puerto, ej: ejemplo.com:443';
-              if (type === 'ping') return 'IP o dominio, ej: 8.8.8.8';
-              return 'URL, host:puerto, o IP';
-            })()}
-          >
-            <Input placeholder={(() => {
-              const type = form.getFieldValue('type');
-              if (type === 'tls') return 'atareao.es';
-              if (type === 'tcp') return 'ejemplo.com:443';
-              if (type === 'ping') return '8.8.8.8';
-              return 'https://ejemplo.com';
-            })()} />
-          </Form.Item>
-          <Space style={{ width: '100%' }} size="large">
-            <Form.Item name="interval_seconds" label="Intervalo (s)">
-              <InputNumber min={10} max={86400} />
-            </Form.Item>
-            <Form.Item name="timeout_seconds" label="Timeout (s)">
-              <InputNumber min={1} max={120} />
-            </Form.Item>
-            <Form.Item name="confirmations_required" label="Confirmaciones">
-              <InputNumber min={0} max={10} />
-            </Form.Item>
-          </Space>
-          <Space style={{ width: '100%' }} size="large">
-            <Form.Item name="enabled" label="Habilitado" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item name="notifier_id" label="Notificador" style={{ minWidth: 200 }}>
-              <Select allowClear placeholder="Ninguno" options={notifiers.map(n => ({ value: n.id, label: n.name }))} />
-            </Form.Item>
-          </Space>
-          {CONFIG_FIELDS[form.getFieldValue('type')]?.map(field => (
-            <Form.Item key={field.name} name={['config', field.name]} label={field.label} valuePropName={field.type === 'boolean' ? 'checked' : undefined}>
-              {field.type === 'select' ? (
-                <Select options={['GET', 'HEAD', 'POST'].map(v => ({ value: v, label: v }))} />
-              ) : field.type === 'number' ? (
-                <InputNumber style={{ width: '100%' }} />
-              ) : field.type === 'boolean' ? (
-                <Switch />
-              ) : (
+        <Form form={form} layout="vertical" onValuesChange={(changedValues) => {
+          if ('type' in changedValues) {
+            setSelectedType(changedValues.type);
+          }
+        }}>
+          <Tabs>
+            <Tabs.TabPane tab="General" key="general">
+              <Form.Item name="name" label="Nombre" rules={[{ required: true }]}>
                 <Input />
+              </Form.Item>
+              <Form.Item name="type" label="Tipo" rules={[{ required: true }]}>
+                <Select options={MONITOR_TYPES} />
+              </Form.Item>
+              <Form.Item name="target" label="Target" rules={[{ required: true }]}
+                extra={(() => {
+                  if (selectedType === 'http') return 'URL completa, ej: https://ejemplo.com';
+                  if (selectedType === 'tls') return 'host o host:puerto (sin https://), ej: atareao.es';
+                  if (selectedType === 'tcp') return 'host:puerto, ej: ejemplo.com:443';
+                  if (selectedType === 'ping') return 'IP o dominio, ej: 8.8.8.8';
+                  return 'URL, host:puerto, o IP';
+                })()}
+              >
+                <Input placeholder={(() => {
+                  if (selectedType === 'tls') return 'atareao.es';
+                  if (selectedType === 'tcp') return 'ejemplo.com:443';
+                  if (selectedType === 'ping') return '8.8.8.8';
+                  return 'https://ejemplo.com';
+                })()} />
+              </Form.Item>
+              <Space style={{ width: '100%' }} size="large">
+                <Form.Item name="interval_seconds" label="Intervalo (s)">
+                  <InputNumber min={10} max={86400} />
+                </Form.Item>
+                <Form.Item name="timeout_seconds" label="Timeout (s)">
+                  <InputNumber min={1} max={120} />
+                </Form.Item>
+                <Form.Item name="confirmations_required" label="Confirmaciones">
+                  <InputNumber min={0} max={10} />
+                </Form.Item>
+              </Space>
+              <Space style={{ width: '100%' }} size="large">
+                <Form.Item name="enabled" label="Habilitado" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item name="notifier_id" label="Notificador" style={{ minWidth: 200 }}>
+                  <Select allowClear placeholder="Ninguno" options={notifiers.map(n => ({ value: n.id, label: n.name }))} />
+                </Form.Item>
+              </Space>
+            </Tabs.TabPane>
+            <Tabs.TabPane tab="Específico" key="specific">
+              {CONFIG_FIELDS[selectedType]?.length > 0 ? (
+                CONFIG_FIELDS[selectedType].map(field => (
+                  <Form.Item key={field.name} name={['config', field.name]} label={field.label} valuePropName={field.type === 'boolean' ? 'checked' : undefined}>
+                    {field.type === 'select' ? (
+                      <Select options={['GET', 'HEAD', 'POST'].map(v => ({ value: v, label: v }))} />
+                    ) : field.type === 'number' ? (
+                      <InputNumber style={{ width: '100%' }} />
+                    ) : field.type === 'boolean' ? (
+                      <Switch />
+                    ) : (
+                      <Input />
+                    )}
+                  </Form.Item>
+                ))
+              ) : (
+                <Typography.Text type="secondary">No hay opciones específicas para este tipo de monitor.</Typography.Text>
               )}
-            </Form.Item>
-          ))}
+            </Tabs.TabPane>
+          </Tabs>
         </Form>
       </Modal>
     </div>
