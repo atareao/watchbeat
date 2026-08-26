@@ -60,7 +60,7 @@ impl Checker for TlsChecker {
 
             // Parse first cert's not_after
             let info = if let Some(cert) = certs.first() {
-                parse_cert_not_after(cert)
+                parse_cert_not_after(cert.as_ref())
             } else {
                 TlsInfo::default()
             };
@@ -123,10 +123,10 @@ impl Checker for TlsChecker {
 }
 
 /// Parse a DER certificate and extract `not_after`.
-fn parse_cert_not_after(cert: &rustls_pki_types::CertificateDer) -> TlsInfo {
+pub(crate) fn parse_cert_not_after(cert_der: &[u8]) -> TlsInfo {
     use x509_parser::prelude::*;
 
-    match X509Certificate::from_der(cert.as_ref()) {
+    match X509Certificate::from_der(cert_der) {
         Ok((_, x509)) => {
             let not_after = x509.validity().not_after;
             // Convert to unix timestamp, then format via chrono

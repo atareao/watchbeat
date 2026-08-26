@@ -45,6 +45,7 @@ impl Checker for HttpChecker {
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::limited(5))
+            .tls_info(true)
             .build();
 
         let client = match client {
@@ -80,6 +81,17 @@ impl Checker for HttpChecker {
         match result {
             Ok(resp) => {
                 let status = resp.status().as_u16();
+
+                // Extract TLS certificate info if the URL is HTTPS
+                let tls_info = if url.starts_with("https://") {
+                    resp.extensions()
+                        .get::<reqwest::tls::TlsInfo>()
+                        .and_then(|info| info.peer_certificate())
+                        .map(crate::checker::tls::parse_cert_not_after)
+                } else {
+                    None
+                };
+
                 let expected = monitor
                     .config_json
                     .get("expected_status")
@@ -123,7 +135,7 @@ impl Checker for HttpChecker {
                             status_code: Some(status),
                             response_time_ms: elapsed,
                             error_message: None,
-                            tls: None,
+                            tls: tls_info.clone(),
                         }
                     } else {
                         CheckOutcome {
@@ -131,7 +143,7 @@ impl Checker for HttpChecker {
                             status_code: Some(status),
                             response_time_ms: elapsed,
                             error_message: Some("Body content did not match expected".into()),
-                            tls: None,
+                            tls: tls_info.clone(),
                         }
                     }
                 } else {
@@ -140,7 +152,7 @@ impl Checker for HttpChecker {
                         status_code: Some(status),
                         response_time_ms: elapsed,
                         error_message: Some(format!("Unexpected HTTP status: {}", status)),
-                        tls: None,
+                        tls: tls_info.clone(),
                     }
                 }
             }
