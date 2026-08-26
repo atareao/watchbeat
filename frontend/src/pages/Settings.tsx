@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  Card, Typography, InputNumber, Button, message, Space, Divider, Alert,
+  Card, Typography, InputNumber, Input, Button, message, Space, Divider, Alert,
 } from 'antd';
 import { SettingOutlined, DownloadOutlined, FileTextOutlined, SaveOutlined, WarningOutlined } from '@ant-design/icons';
 import { fetchStatus } from '../api/http';
@@ -12,6 +12,13 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
   const [status, setStatus] = useState<{ total_monitors: number } | null>(null);
+  const [defaultTemplates, setDefaultTemplates] = useState({
+    down: '',
+    latency: '',
+    up: '',
+    expiry: '',
+  });
+  const [savingTemplates, setSavingTemplates] = useState(false);
 
   useEffect(() => {
     fetchStatus().then(s => setStatus({ total_monitors: s.status.total_monitors })).catch(() => {});
@@ -22,6 +29,20 @@ export default function Settings() {
         if (d.value) setRetentionDays(parseInt(d.value, 10));
       })
       .catch(() => {});
+    // Load default templates
+    Promise.all([
+      fetch('/api/settings?key=default_template_down').then(r => r.json().catch(() => ({}))),
+      fetch('/api/settings?key=default_template_latency').then(r => r.json().catch(() => ({}))),
+      fetch('/api/settings?key=default_template_up').then(r => r.json().catch(() => ({}))),
+      fetch('/api/settings?key=default_template_expiry').then(r => r.json().catch(() => ({}))),
+    ]).then(([down, latency, up, expiry]) => {
+      setDefaultTemplates({
+        down: down.value || '',
+        latency: latency.value || '',
+        up: up.value || '',
+        expiry: expiry.value || '',
+      });
+    }).catch(() => {});
   }, []);
 
   const saveRetention = async () => {
@@ -55,6 +76,30 @@ export default function Settings() {
     }
   };
 
+  const saveDefaultTemplates = async () => {
+    setSavingTemplates(true);
+    try {
+      const entries = [
+        { key: 'default_template_down', value: defaultTemplates.down },
+        { key: 'default_template_latency', value: defaultTemplates.latency },
+        { key: 'default_template_up', value: defaultTemplates.up },
+        { key: 'default_template_expiry', value: defaultTemplates.expiry },
+      ];
+      for (const entry of entries) {
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(entry),
+        });
+      }
+      message.success('Plantillas por defecto guardadas');
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : 'Error al guardar');
+    } finally {
+      setSavingTemplates(false);
+    }
+  };
+
   const getMonitorSlug = () => {
     const path = window.location.hash;
     const match = path.match(/\/monitors\/([^/]+)/);
@@ -81,6 +126,54 @@ export default function Settings() {
           />
           <Button type="primary" icon={<SaveOutlined />} onClick={saveRetention} loading={saving}>
             Guardar
+          </Button>
+        </Space>
+      </Card>
+
+      <Card title="Plantillas por defecto" style={{ marginBottom: 16 }} id="templates">
+        <Paragraph>
+          Estas plantillas se usan cuando un monitor no tiene una plantilla personalizada.
+          Déjalas en blanco para usar las plantillas internas por defecto.
+        </Paragraph>
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>
+            <Text strong>DOWN</Text>
+            <Input.TextArea
+              rows={3}
+              value={defaultTemplates.down}
+              onChange={(e) => setDefaultTemplates(prev => ({ ...prev, down: e.target.value }))}
+              placeholder={'🔴 {{ monitor_name }} — {{ target }}\nStatus: {{ status }}\nResponse: {{ response_time_ms }}ms\n{{ error_message }}'}
+            />
+          </div>
+          <div>
+            <Text strong>LATENCIA</Text>
+            <Input.TextArea
+              rows={3}
+              value={defaultTemplates.latency}
+              onChange={(e) => setDefaultTemplates(prev => ({ ...prev, latency: e.target.value }))}
+              placeholder={'🟡 {{ monitor_name }} — {{ target }}\nHigh latency: {{ response_time_ms }}ms (threshold: {{ latency_threshold_ms }}ms)'}
+            />
+          </div>
+          <div>
+            <Text strong>UP (recuperación)</Text>
+            <Input.TextArea
+              rows={3}
+              value={defaultTemplates.up}
+              onChange={(e) => setDefaultTemplates(prev => ({ ...prev, up: e.target.value }))}
+              placeholder={'🟢 {{ monitor_name }} — {{ target }}\nRecovered — Response: {{ response_time_ms }}ms'}
+            />
+          </div>
+          <div>
+            <Text strong>EXPIRACIÓN TLS</Text>
+            <Input.TextArea
+              rows={3}
+              value={defaultTemplates.expiry}
+              onChange={(e) => setDefaultTemplates(prev => ({ ...prev, expiry: e.target.value }))}
+              placeholder={'🟡 {{ monitor_name }} — {{ target }}\nCertificate expires in {{ days_left }} days'}
+            />
+          </div>
+          <Button type="primary" icon={<SaveOutlined />} onClick={saveDefaultTemplates} loading={savingTemplates}>
+            Guardar plantillas por defecto
           </Button>
         </Space>
       </Card>
