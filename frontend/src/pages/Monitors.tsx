@@ -98,7 +98,7 @@ export default function Monitors() {
         enabled: values.enabled,
         notifier_id: values.notifier_id || null,
         confirmations_required: values.confirmations_required ?? 0,
-        config_json: values.config ?? {},
+        config: (values.config ?? {}) as any,
         latency_threshold_ms: values.latency_threshold_ms ?? null,
         message_template_down: values.message_template_down || null,
         message_template_latency: values.message_template_latency || null,
