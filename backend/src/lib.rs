@@ -5,4 +5,5 @@ pub mod db;
 pub mod embed;
 pub mod models;
 pub mod notifier;
+pub mod template;
 pub mod routes;

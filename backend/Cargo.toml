@@ -66,6 +66,7 @@ include_dir = "0.7"
 uuid = { version = "1.25", features = ["v4", "serde"] }
 anyhow = "1.0"
 regex = "1"
+minijinja = { version = "2.6", features = ["builtins", "json"] }
 prometheus-client = "0.25"
 
 # Email/SMTP
