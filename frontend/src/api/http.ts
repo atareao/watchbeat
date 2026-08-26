@@ -221,6 +221,23 @@ export async function deleteStatusPage(id: string): Promise<void> {
   return fetcher(`/api/status-pages/${id}`, { method: 'DELETE' });
 }
 
+// ───── Settings ─────
+
+export async function fetchSetting(key: string): Promise<{ key: string; value: string | null }> {
+  return fetcher(`/api/settings?key=${encodeURIComponent(key)}`);
+}
+
+export async function saveSetting(key: string, value: string): Promise<void> {
+  await fetcher('/api/settings', {
+    method: 'POST',
+    body: { key, value },
+  });
+}
+
+export async function createBackup(): Promise<{ path: string }> {
+  return fetcher('/api/backup', { method: 'POST' });
+}
+
 // ───── Heartbeats ─────
 
 export interface Heartbeat {
