@@ -344,28 +344,25 @@ export default function Dashboard() {
         </Typography.Text>
       </div>
 
-      {/* Loading overlay */}
-      {loading && (
-        <div style={{ textAlign: 'center', padding: 16 }}>
-          <Spin />
-        </div>
-      )}
-
       {/* Monitors grid */}
       {monitors.length > 0 && (
         <>
-          <Row gutter={[16, 16]}>
-            {monitors.map(m => (
-              <Col xs={24} sm={12} lg={8} xl={6} key={m.id}>
-                <MonitorCard
-                  item={m}
-                  onEdit={handleEdit}
-                  onDelete={handleDelete}
-                  onRefresh={load}
-                />
-              </Col>
-            ))}
-          </Row>
+          <Spin spinning={loading}>
+            <div style={{ minHeight: 300 }}>
+              <Row gutter={[16, 16]}>
+                {monitors.map(m => (
+                  <Col xs={24} sm={12} lg={8} xl={6} key={m.id}>
+                    <MonitorCard
+                      item={m}
+                      onEdit={handleEdit}
+                      onDelete={handleDelete}
+                      onRefresh={load}
+                    />
+                  </Col>
+                ))}
+              </Row>
+            </div>
+          </Spin>
 
           {/* Pagination */}
           {total > 0 && (

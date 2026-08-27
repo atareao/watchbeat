@@ -122,7 +122,8 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
       className="monitor-card"
       hoverable
       onClick={() => isHeartbeat ? onEdit(item) : navigate(`/monitors/${item.id}`)}
-      style={{ borderLeft: `4px solid ${cfg.color}` }}
+      style={{ borderLeft: `4px solid ${cfg.color}`, height: '100%' }}
+      styles={{ body: { padding: 16, display: 'flex', flexDirection: 'column', height: '100%' } }}
     >
       {/* Header */}
       <Space align="start" style={{ justifyContent: 'space-between', width: '100%' }}>
@@ -146,7 +147,8 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
         {cfg.icon}
       </Space>
 
-      {/* Body */}
+      {/* Body — flex-grow wrapper so action bar stays at bottom */}
+      <div style={{ flex: 1, minHeight: 0 }}>
       {isHeartbeat ? (
         <div style={{ marginTop: 8 }}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -172,6 +174,8 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
           </div>
         </>
       )}
+
+      </div>
 
       {/* Actions bar */}
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, display: 'flex', justifyContent: 'space-between' }}>
