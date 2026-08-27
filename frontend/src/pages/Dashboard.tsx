@@ -5,13 +5,15 @@ import {
 import {
   RocketOutlined, CheckCircleOutlined, CloseCircleOutlined,
   FieldTimeOutlined, DashboardOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, SettingOutlined,
+  HeartOutlined, ClockCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router';
 import {
-  fetchMonitors, createMonitor, updateMonitor, deleteMonitor, fetchNotifiers,
-  type DashboardStatus, type MonitorSummary, type UnifiedDashboardResponse,
+  fetchMonitors, createMonitor, updateMonitor, deleteMonitor, fetchNotifiers, fetchHeartbeats,
+  type DashboardStatus, type MonitorSummary, type UnifiedDashboardResponse, type Heartbeat,
 } from '../api/http';
 import MonitorCard from '../components/MonitorCard';
+import HeartbeatCard from '../components/HeartbeatCard';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import 'dayjs/locale/es';
@@ -64,6 +66,10 @@ export default function Dashboard() {
   const [scheduler, setScheduler] = useState<UnifiedDashboardResponse['scheduler']>({ last_run_at: null, next_run_at: null, last_monitors_checked: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Heartbeat state
+  const [heartbeats, setHeartbeats] = useState<Heartbeat[]>([]);
+  const [hbLoading, setHbLoading] = useState(true);
 
   // Pagination state
   const [page, setPage] = useState(1);
@@ -130,11 +136,14 @@ export default function Dashboard() {
       .finally(() => setLoading(false));
   }, [debouncedSearch, typeFilter, statusFilter, page, perPage]);
 
-  // Load notifiers once
+  // Load notifiers and heartbeats once
   useEffect(() => {
     fetchNotifiers()
       .then(nData => setNotifiers(nData.notifiers.map(n => ({ id: n.id, name: n.name }))))
       .catch(() => {});
+    fetchHeartbeats()
+      .then(hData => { setHeartbeats(hData.heartbeats); setHbLoading(false); })
+      .catch(() => setHbLoading(false));
   }, []);
 
   // Initial load & reload on filter/pagination change
@@ -299,6 +308,52 @@ export default function Dashboard() {
         </Row>
       )}
 
+      {/* Heartbeat stats mini-row */}
+      {heartbeats.length > 0 && (
+        <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+          <Col xs={12} sm={8} lg={6}>
+            <Card size="small">
+              <Statistic
+                title="Heartbeats"
+                value={heartbeats.length}
+                prefix={<HeartOutlined style={{ color: '#ec4899' }} />}
+                valueStyle={{ fontSize: 20 }}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={8} lg={6}>
+            <Card size="small">
+              <Statistic
+                title="OK"
+                value={heartbeats.filter(h => h.status === 'ok').length}
+                prefix={<CheckCircleOutlined style={{ color: '#22c55e' }} />}
+                valueStyle={{ fontSize: 20, color: '#22c55e' }}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={8} lg={6}>
+            <Card size="small">
+              <Statistic
+                title="Perdidos"
+                value={heartbeats.filter(h => h.status === 'missing').length}
+                prefix={<CloseCircleOutlined style={{ color: '#ef4444' }} />}
+                valueStyle={{ fontSize: 20, color: '#ef4444' }}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={8} lg={6}>
+            <Card size="small">
+              <Statistic
+                title="Pendientes"
+                value={heartbeats.filter(h => h.status === 'pending').length}
+                prefix={<ClockCircleOutlined style={{ color: '#f59e0b' }} />}
+                valueStyle={{ fontSize: 20, color: '#f59e0b' }}
+              />
+            </Card>
+          </Col>
+        </Row>
+      )}
+
       {/* Scheduler info */}
       <div style={{ marginBottom: 16, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -343,6 +398,40 @@ export default function Dashboard() {
               : 'No hay monitores configurados. Crea tu primer monitor.'}
           </Typography.Text>
         </Card>
+      )}
+
+      {/* Heartbeat section */}
+      {!hbLoading && heartbeats.length > 0 && (
+        <div style={{ marginTop: 24, marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <Title level={4} style={{ margin: 0 }}><HeartOutlined style={{ color: '#ec4899' }} /> Heartbeats</Title>
+            <Button size="small" onClick={() => navigate('/heartbeats')}>
+              Ir a Heartbeats
+            </Button>
+          </div>
+          <Row gutter={[16, 16]}>
+            {heartbeats.map(hb => (
+              <Col xs={24} sm={12} lg={8} xl={6} key={hb.id}>
+                <HeartbeatCard
+                  heartbeat={hb}
+                  onEdit={(hbData) => {
+                    // Navigate to heartbeats page for editing
+                    navigate('/heartbeats');
+                  }}
+                  onDelete={() => {
+                    fetchHeartbeats().then(hData => {
+                      setHeartbeats(hData.heartbeats);
+                      if (hData.heartbeats.length === 0) setHbLoading(false);
+                    }).catch(() => {});
+                  }}
+                  onRefresh={() => {
+                    fetchHeartbeats().then(hData => setHeartbeats(hData.heartbeats)).catch(() => {});
+                  }}
+                />
+              </Col>
+            ))}
+          </Row>
+        </div>
       )}
 
       {/* Pagination */}
