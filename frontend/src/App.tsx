@@ -8,8 +8,6 @@ import { Spin } from "antd";
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const MonitorDetail = lazy(() => import("./pages/MonitorDetail"));
-const Notifiers = lazy(() => import("./pages/Notifiers"));
-const StatusPages = lazy(() => import("./pages/StatusPages"));
 const Settings = lazy(() => import("./pages/Settings"));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -57,8 +55,6 @@ export default function App() {
         <Route index element={<SuspenseWrapper><Dashboard /></SuspenseWrapper>} />
         <Route path="dashboard" element={<SuspenseWrapper><Dashboard /></SuspenseWrapper>} />
         <Route path="monitors/:id" element={<SuspenseWrapper><MonitorDetail /></SuspenseWrapper>} />
-        <Route path="notifiers" element={<SuspenseWrapper><Notifiers /></SuspenseWrapper>} />
-        <Route path="status-pages" element={<SuspenseWrapper><StatusPages /></SuspenseWrapper>} />
         <Route path="settings" element={<SuspenseWrapper><Settings /></SuspenseWrapper>} />
       </Route>
     </Routes>
