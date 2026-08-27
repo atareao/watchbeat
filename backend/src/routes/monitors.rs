@@ -12,9 +12,13 @@ use crate::models::{CheckResult, Monitor};
 // ───── Request types ─────
 
 #[derive(Deserialize)]
-pub struct PaginationParams {
+pub struct MonitorListParams {
     pub page: Option<i64>,
     pub per_page: Option<i64>,
+    pub q: Option<String>,
+    #[serde(rename = "type")]
+    pub filter_type: Option<String>,
+    pub status: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -71,21 +75,40 @@ pub async fn get_one(
 
 pub async fn list(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<PaginationParams>,
+    Query(params): Query<MonitorListParams>,
 ) -> Result<Json<serde_json::Value>, String> {
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(20).clamp(1, 100);
+    let search = params.q.as_deref();
+    let filter_type = params.filter_type.as_deref();
+    let filter_status = params.status.as_deref();
 
-    let (monitors, total) = state
+    let (_monitors, total, summaries) = state
         .db
-        .list_monitors_paginated(page, per_page)
+        .list_monitors_paginated(page, per_page, search, filter_type, filter_status)
         .await
         .map_err(|e| e.to_string())?;
 
     let total_pages = (total as f64 / per_page as f64).ceil() as i64;
 
+    // Get global dashboard stats (unfiltered)
+    let status = state
+        .db
+        .get_dashboard_status()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let scheduler = state.scheduler_status.lock().await;
+    let sched_info = serde_json::json!({
+        "last_run_at": scheduler.last_run_at,
+        "next_run_at": scheduler.next_run_at,
+        "last_monitors_checked": scheduler.last_monitors_checked,
+    });
+
     Ok(Json(serde_json::json!({
-        "monitors": monitors,
+        "status": status,
+        "monitors": summaries,
+        "scheduler": sched_info,
         "total": total,
         "page": page,
         "per_page": per_page,

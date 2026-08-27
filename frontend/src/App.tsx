@@ -6,7 +6,6 @@ import { Spin } from "antd";
 
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
-const Monitors = lazy(() => import("./pages/Monitors"));
 const MonitorDetail = lazy(() => import("./pages/MonitorDetail"));
 const Notifiers = lazy(() => import("./pages/Notifiers"));
 const StatusPages = lazy(() => import("./pages/StatusPages"));
@@ -57,7 +56,6 @@ export default function App() {
       >
         <Route index element={<SuspenseWrapper><Dashboard /></SuspenseWrapper>} />
         <Route path="dashboard" element={<SuspenseWrapper><Dashboard /></SuspenseWrapper>} />
-        <Route path="monitors" element={<SuspenseWrapper><Monitors /></SuspenseWrapper>} />
         <Route path="monitors/:id" element={<SuspenseWrapper><MonitorDetail /></SuspenseWrapper>} />
         <Route path="notifiers" element={<SuspenseWrapper><Notifiers /></SuspenseWrapper>} />
         <Route path="status-pages" element={<SuspenseWrapper><StatusPages /></SuspenseWrapper>} />

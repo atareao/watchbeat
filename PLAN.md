@@ -1,187 +1,118 @@
-# WatchBeat — Plan v2: Features de producción
+# PLAN — Fusión Dashboard + Monitores (v0.8.0)
 
-Plan de expansión de WatchBeat para convertirlo de MVP a herramienta de producción.
+## Objetivo
 
-## Resumen de features
+Unificar las vistas Dashboard (`/dashboard`) y Monitores (`/monitors`) en una sola página principal que combine:
+- Métricas globales (tarjetas de stats)
+- Lista paginada de monitores en formato cards con acciones inline
+- Búsqueda y filtros
+- Auto-refresh cada 30s
 
-| # | Feature | Área | Complejidad | Valor |
-|---|---------|------|:-----------:|:-----:|
-| 1 | SSL/TLS expiry check | Backend | Baja | 🔥 |
-| 2 | Confirmación de caída (retry/backoff) | Backend | Media | 🔥 |
-| 3 | Validación de contenido (expected_body + regex) | Backend | Baja | 🔥 |
-| 4 | Multi-notifier por monitor | Backend + Frontend | Media | 🔥 |
-| 5 | Status page pública | Backend + Frontend | Media | 🔥 |
-| 6 | Heartbeat API | Backend + Frontend | Media | 🔥 |
-| 7 | SSE en vivo para dashboard | Backend + Frontend | Media | ⭐ |
-| 8 | Gráfica de latencia real (p95) | Frontend | Media | ⭐ |
-| 9 | Dark mode | Frontend | Baja | ⭐ |
-| 10 | Export CSV/JSON histórico | Backend + Frontend | Baja | ⭐ |
-| 11 | Retención configurable en UI | Backend + Frontend | Baja | 🧹 |
-| 12 | Backup SQLite (WAL checkpoint) | Backend | Baja | 🧹 |
-| 13 | Docker Compose de ejemplo | Infra | Baja | 🧹 |
-| 14 | OpenAPI/Swagger | Backend | Media | 🧹 |
+La ruta `/monitors` desaparece. La página `MonitorDetail` (`/monitors/:id`) se mantiene intacta.
 
-## Fase 1 — Backend hardening (1 sesión)
+## Cambios en backend
 
-### 1. SSL/TLS expiry check
+### 1. Endpoint `GET /api/monitors` — ampliar con search + filters + summary data
 
-Nuevo checker `tls` que conecta al host:puerto y lee el certificado:
+**Nuevos query params:**
+- `q` (opcional, string): búsqueda por nombre o target
+- `type` (opcional, string): filtrar por tipo de monitor (http, tcp, ping, tls)
+- `status` (opcional, string): filtrar por último estado (up, down, error)
 
-```rust
-// checker/tls.rs
-pub struct TlsChecker;
+**Nuevos campos en respuesta (por monitor):**
+- `last_status: string | null`
+- `last_response_time_ms: number | null`
+- `last_checked_at: string | null`
+- `uptime_7d: number | null`
+- `uptime_30d: number | null`
 
-// -> CheckOutcome con:
-//   status: "up" | "warning" | "down"
-//   extra: { expires_at, days_left }
+**SQL:** LEFT JOIN con checks para obtener el último check de cada monitor. Calcular uptime en Rust post-query (solo para los monitores de la página actual, max 100).
+
+### 2. Endpoint `GET /api/status` — simplificar
+
+Mantener solo las métricas globales (total_monitors, up_monitors, down_monitors, avg_response_time_24h). Quitar la lista de `monitors` y `scheduler` del response (ya no se necesita, los monitores vienen del endpoint paginado).
+
+## Cambios en frontend
+
+### 1. `Dashboard.tsx` — reescritura completa
+
+Página unificada con:
+
+```
+┌─── 🖥️ Dashboard ─────────────────────────── [🔄] [➕ Añadir] ─┐
+│ 📊 18 monitores │ ✅ 12 UP │ ❌ 3 DOWN │ ⏱️ 234ms media       │
+├─────────────────────────────────────────────────────────────────┤
+│ 🔍 Buscar...    [Tipo: ▾]     [Estado: ▾]                      │
+├─────────────────────────────────────────────────────────────────┤
+│ ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│ │ atareao.es   │  │ blog         │  │ api          │          │
+│ │ ✅ UP 45ms   │  │ ❌ DOWN err  │  │ ✅ UP 120ms  │          │
+│ │ Uptime 99.8% │  │ Uptime 76.3% │  │ Uptime 98.2% │          │
+│ │ Últ: 10:32   │  │ Últ: 10:27   │  │ Últ: 10:31   │          │
+│ │ [▶] [🔘] [⋯] │  │ [▶] [🔘] [⋯] │  │ [▶] [🔘] [⋯] │          │
+│ └──────────────┘  └──────────────┘  └──────────────┘          │
+│                                                                  │
+│ « 1-6 de 18  ▸ ❮ 1 2 3 ❯ »                                   │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-- `expires_in_days` configurable por monitor (default 14)
-- Si `days_left < expires_in_days` → `warning` (no es caída, pero se marca)
-- En `MonitorSummary` añadir `cert_expires_at`, `cert_days_left`
-- Dashboard: badge naranja "⚠️ cert expira en 10 días"
+**Componentes:**
+- **StatsRow**: 4 tarjetas de métricas globales (total, UP, DOWN, latencia media)
+- **SearchBar**: input de búsqueda + selects de tipo y estado + botón crear + botón recargar
+- **CardGrid**: grid de MonitorCard con acciones inline
+- **Pagination**: paginación servidor-side
 
-### 2. Confirmación de caída
+**MonitorCard** se modifica para incluir acciones:
+- `▶` Run check (siempre visible)
+- `🔘` Toggle enable/disable (siempre visible)
+- `⋯` Menú con "Editar" y "Eliminar" (con Popconfirm para eliminar)
 
-Evitar falsos positivos por timeouts puntuales:
+**Auto-refresh:** cada 30s, pero se pausa si hay un modal abierto o si el usuario está editando.
 
-- Añadir a `monitors`: `confirmations_required INTEGER DEFAULT 0`
-- Si un check falla y `confirmations_required > 0`, no se marca DOWN hasta N fallos consecutivos
-- Estado intermedio: `flapping` / `checking` en el summary
-- El scheduler re-check con backoff: 60s, 5min, 15min
+**Modal de creación/edición:** se reutiliza el mismo modal que estaba en Monitors.tsx con los 3 tabs (General, Específico, Plantillas).
 
-### 3. Validación de contenido
+### 2. `App.tsx` — eliminar ruta `/monitors`
 
-En `config_json` de monitores HTTP:
+- Ruta `/monitors` → eliminada
+- Ruta index (`/`) → Dashboard
+- Ruta `/dashboard` → Dashboard (mantener por compatibilidad)
 
-```json
-{
-  "expected_status": 200,
-  "expected_body": "error|panic|500",
-  "body_is_regex": true
-}
-```
+### 3. `AppLayout.tsx` — eliminar "Monitores" del sidebar
 
-- `expected_body`: substring o regex según `body_is_regex`
-- Si el body no matchea → DOWN con mensaje "Contenido no esperado"
-- Limitar body leído a 64KB para no tragar páginas enormes
+- Quitar `{ key: '/monitors', icon: <MonitorOutlined />, label: 'Monitores' }`
+- Renombrar "Dashboard" a algo más descriptivo o mantenerlo
 
-## Fase 2 — Notificaciones y status page (1 sesión)
+### 4. `http.ts` — actualizar tipos
 
-### 4. Multi-notifier por monitor
+- Añadir `search`, `typeFilter`, `statusFilter` a `fetchMonitors()`
+- Crear tipo `MonitorCardData` que extiende `Monitor` con los campos de summary
 
-Hoy `monitors.notifier_id` es 1:1. Cambiar a tabla N:M:
+## Flujo de datos
 
-```sql
-CREATE TABLE monitor_notifiers (
-    monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
-    notifier_id TEXT NOT NULL REFERENCES notifiers(id) ON DELETE CASCADE,
-    PRIMARY KEY (monitor_id, notifier_id)
-);
-```
+1. Dashboard carga → `GET /api/monitors?page=1&per_page=20` con filtros → recibe monitores + stats globales
+2. Usuario busca/filtra → mismo endpoint con query params → recarga la grid
+3. Usuario hace clic en card → navega a `/monitors/:id`
+4. Usuario hace check/toggle → llama al endpoint correspondiente → refresca la página actual
+5. Auto-refresh cada 30s → repite la misma request con los mismos filtros/página
 
-- Frontend: en el modal de monitor, `Select multiple` de notificadores
-- El scheduler itera todos los notifiers del monitor y envía a cada uno
+## Archivos a modificar
 
-### 5. Status page pública
+### Backend
+- `backend/src/db.rs` — modificar `list_monitors_paginated` para search/filter + summary data
+- `backend/src/routes/monitors.rs` — ampliar query params en `list` handler
+- `backend/src/routes/status.rs` — simplificar response
 
-- Tabla `status_pages`:
-```sql
-CREATE TABLE status_pages (
-    id TEXT PRIMARY KEY,
-    slug TEXT UNIQUE NOT NULL,
-    title TEXT NOT NULL,
-    description TEXT,
-    monitors TEXT NOT NULL,  -- JSON array de monitor_ids
-    public INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-);
-```
-- Ruta pública: `GET /status/<slug>` — HTML embebido (sin auth) con:
-  - Estado global (UP/DOWN por monitor)
-  - Uptime 90d
-  - Timeline compacto
-- CSS inline, sin JS (o JS vanilla mínimo) — embebible en iframe
-- Frontend: sección Status Pages para crear/editar slug, título, monitores
+### Frontend
+- `frontend/src/pages/Dashboard.tsx` — reescritura completa
+- `frontend/src/components/MonitorCard.tsx` — añadir acciones inline
+- `frontend/src/App.tsx` — eliminar ruta `/monitors`
+- `frontend/src/components/AppLayout.tsx` — actualizar sidebar
+- `frontend/src/api/http.ts` — actualizar tipos y fetchMonitors
 
-### 6. Heartbeat API
+## Archivos a eliminar
+- `frontend/src/pages/Monitors.tsx` — toda su funcionalidad se migra a Dashboard.tsx
 
-Para vigilar cron jobs / backups:
-
-- Tabla `heartbeats`:
-```sql
-CREATE TABLE heartbeats (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    token TEXT UNIQUE NOT NULL,
-    grace_seconds INTEGER NOT NULL DEFAULT 3600,
-    last_seen_at TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    notifier_id TEXT,
-    created_at TEXT NOT NULL
-);
-```
-- Ruta pública: `POST /api/heartbeat/<token>` → actualiza `last_seen_at`
-- Scheduler: si `now - last_seen_at > grace_seconds` → status `missing` + notificación
-- Frontend: sección Heartbeats con CRUD + URL a copiar
-
-## Fase 3 — Frontend avanzado (1 sesión)
-
-### 7. SSE en vivo
-
-- Endpoint `GET /api/events` (SSE, auth)
-- Broadcast de cada check completado → dashboard se actualiza al momento
-- Frontend: `EventSource` con fallback a polling 30s
-- Implementación: `tokio::sync::broadcast` + `axum::response::sse`
-
-### 8. Gráfica de latencia real
-
-- Sustituir las barras de `MonitorDetail` por línea de latencia
-- Añadir percentil p95 calculado en backend: `GET /api/monitors/{id}/latency?days=7` → `{ points: [{t, p50, p95}], p95_7d }`
-- Frontend: componente SVG custom (sin librería pesada) o echarts
-
-### 9. Dark mode
-
-- `ConfigProvider` con `theme.darkAlgorithm`
-- Toggle en header, persistencia en localStorage
-- Ajustar colores de MonitorCard/Timeline
-
-## Fase 4 — Calidad y ops (1 sesión)
-
-### 10. Export CSV/JSON
-- `GET /api/monitors/{id}/export?format=csv|json&days=30`
-- Botón en MonitorDetail
-
-### 11. Retención configurable
-- `settings.retention_days` editable en UI (Ajustes)
-- El scheduler usa el valor en vez de hardcode 30
-
-### 12. Backup SQLite
-- Comando/scheduler: `VACUUM INTO` para snapshot consistente
-- Retención de N backups
-- Opcional: `BACKUP_CRON` env var
-
-### 13. Docker Compose
-- `docker-compose.yml` con volumen, healthcheck, restart policy
-- Env vars documentadas
-
-### 14. OpenAPI/Swagger
-- `utoipa` para generar spec del router
-- `/docs` con Swagger UI embebida (swagger-ui crate o CDN)
-
-## Calendario
-
-| Sesión | Fase | Entregable |
-|--------|------|-----------|
-| 1 | Backend hardening | SSL + confirmación + body check |
-| 2 | Notificaciones + status page | Multi-notifier + status page + heartbeat |
-| 3 | Frontend avanzado | SSE + latencia + dark mode |
-| 4 | Calidad y ops | Export + retención + backup + compose + swagger |
-
-## Quality Gates
-
-- `cargo fmt --check && cargo clippy -- -D warnings && cargo test` — todo verde
-- `pnpm build` — sin errores TS
-- Migraciones nuevas en `backend/migrations/` con naming `YYYYMMDDHHMMSS_<name>.sql`
-- Tests para cada feature nueva (unit + integración)
-- Sin romper los 49 tests existentes
+## No tocar
+- `frontend/src/pages/MonitorDetail.tsx` — se queda igual
+- `backend/src/routes/checks.rs` — timeline y checks list se quedan igual
+- Estructura de base de datos — no hay migraciones
