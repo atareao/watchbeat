@@ -6,6 +6,7 @@ import {
 } from '@ant-design/icons';
 import type { DashboardItem } from '../api/http';
 import { runCheck, toggleMonitor } from '../api/http';
+import { useNavigate } from 'react-router';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import 'dayjs/locale/es';
@@ -83,7 +84,7 @@ function HeartbeatView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps &
   ];
 
   return (
-    <Card className="monitor-card" style={{ borderLeft: `4px solid ${cfg.color}` }}>
+    <Card className="monitor-card" hoverable onClick={() => onEdit(item)} style={{ borderLeft: `4px solid ${cfg.color}` }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <Space>
@@ -104,7 +105,7 @@ function HeartbeatView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps &
       </div>
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
         <Dropdown menu={{ items: dropdownItems }} trigger={['click']}>
-          <Button size="small" icon={<MoreOutlined />} />
+          <Button size="small" icon={<MoreOutlined />} onClick={e => e.stopPropagation()} />
         </Dropdown>
       </div>
     </Card>
@@ -114,6 +115,7 @@ function HeartbeatView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps &
 // ── Monitor card ──
 
 function MonitorView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps & { item: DashboardItem & { kind: 'monitor' } }) {
+  const navigate = useNavigate();
   const cfg = item.last_status ? STATUS_CONFIG[item.last_status] ?? STATUS_CONFIG.error : STATUS_CONFIG.error;
 
   const handleCheck = async () => {
@@ -153,7 +155,7 @@ function MonitorView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps & {
   ];
 
   return (
-    <Card className="monitor-card" style={{ borderLeft: `4px solid ${cfg.color}` }}>
+    <Card className="monitor-card" hoverable onClick={() => navigate(`/monitors/${item.id}`)} style={{ borderLeft: `4px solid ${cfg.color}` }}>
       <Space align="start" style={{ justifyContent: 'space-between', width: '100%' }}>
         <div>
           <Typography.Text strong style={{ fontSize: 16 }}>{item.name}</Typography.Text>
@@ -181,13 +183,13 @@ function MonitorView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps & {
       </div>
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, display: 'flex', justifyContent: 'space-between' }}>
         <Space>
-          <Button size="small" icon={<PlayCircleOutlined />} onClick={handleCheck} />
+          <Button size="small" icon={<PlayCircleOutlined />} onClick={e => { e.stopPropagation(); handleCheck(); }} />
           <Popconfirm title="¿Cambiar estado?" onConfirm={handleToggle}>
-            <Button size="small">{item.enabled ? 'Desactivar' : 'Activar'}</Button>
+            <Button size="small" onClick={e => e.stopPropagation()}>{item.enabled ? 'Desactivar' : 'Activar'}</Button>
           </Popconfirm>
         </Space>
         <Dropdown menu={{ items: dropdownItems }} trigger={['click']}>
-          <Button size="small" icon={<MoreOutlined />} />
+          <Button size="small" icon={<MoreOutlined />} onClick={e => e.stopPropagation()} />
         </Dropdown>
       </div>
     </Card>
