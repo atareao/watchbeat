@@ -76,11 +76,11 @@ function HeartbeatView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps &
   const statusLabel = item.status === 'ok' ? 'OK' : item.status === 'missing' ? 'Perdido' : 'Pendiente';
 
   const dropdownItems = [
-    { key: 'edit', label: 'Editar', onClick: () => onEdit(item) },
-    { key: 'copy-token', icon: <CopyOutlined />, label: 'Copiar token', onClick: handleCopyToken },
-    { key: 'copy-url', icon: <CopyOutlined />, label: 'Copiar URL de pulso', onClick: handleCopyUrl },
+    { key: 'edit', label: 'Editar', onClick: (e: any) => { e?.stopPropagation(); onEdit(item); } },
+    { key: 'copy-token', icon: <CopyOutlined />, label: 'Copiar token', onClick: (e: any) => { e?.stopPropagation(); handleCopyToken(); } },
+    { key: 'copy-url', icon: <CopyOutlined />, label: 'Copiar URL de pulso', onClick: (e: any) => { e?.stopPropagation(); handleCopyUrl(); } },
     { type: 'divider' as const },
-    { key: 'delete', label: 'Eliminar', danger: true, onClick: handleDelete },
+    { key: 'delete', label: 'Eliminar', danger: true, onClick: (e: any) => { e?.stopPropagation(); handleDelete(); } },
   ];
 
   return (
@@ -150,8 +150,8 @@ function MonitorView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps & {
   };
 
   const dropdownItems = [
-    { key: 'edit', label: 'Editar', onClick: () => onEdit(item) },
-    { key: 'delete', label: 'Eliminar', danger: true, onClick: handleDeleteClick },
+    { key: 'edit', label: 'Editar', onClick: (e: any) => { e?.stopPropagation(); onEdit(item); } },
+    { key: 'delete', label: 'Eliminar', danger: true, onClick: (e: any) => { e?.stopPropagation(); handleDeleteClick(); } },
   ];
 
   return (
