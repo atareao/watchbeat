@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+
 import { Routes, Route, Navigate } from "react-router";
 import { useAuth } from "./hooks/useAuth";
 import AppLayout from "./components/AppLayout";
@@ -9,7 +10,6 @@ const Dashboard = lazy(() => import("./pages/Dashboard"));
 const MonitorDetail = lazy(() => import("./pages/MonitorDetail"));
 const Notifiers = lazy(() => import("./pages/Notifiers"));
 const StatusPages = lazy(() => import("./pages/StatusPages"));
-const Heartbeats = lazy(() => import("./pages/Heartbeats"));
 const Settings = lazy(() => import("./pages/Settings"));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -59,7 +59,6 @@ export default function App() {
         <Route path="monitors/:id" element={<SuspenseWrapper><MonitorDetail /></SuspenseWrapper>} />
         <Route path="notifiers" element={<SuspenseWrapper><Notifiers /></SuspenseWrapper>} />
         <Route path="status-pages" element={<SuspenseWrapper><StatusPages /></SuspenseWrapper>} />
-        <Route path="heartbeats" element={<SuspenseWrapper><Heartbeats /></SuspenseWrapper>} />
         <Route path="settings" element={<SuspenseWrapper><Settings /></SuspenseWrapper>} />
       </Route>
     </Routes>

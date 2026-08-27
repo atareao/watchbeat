@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Layout, Menu, Typography, Button } from 'antd';
 import {
   DashboardOutlined, BellOutlined, SettingOutlined, LogoutOutlined,
-  ControlOutlined, HeartOutlined, SunOutlined, MoonOutlined,
+  ControlOutlined, SunOutlined, MoonOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router';
 import { useAuth } from '../hooks/useAuth';
@@ -15,7 +15,6 @@ const menuItems = [
   { key: '/dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
   { key: '/notifiers', icon: <BellOutlined />, label: 'Notificadores' },
   { key: '/status-pages', icon: <ControlOutlined />, label: 'Status Pages' },
-  { key: '/heartbeats', icon: <HeartOutlined />, label: 'Heartbeats' },
   { key: '/settings', icon: <SettingOutlined />, label: 'Ajustes' },
 ];
 

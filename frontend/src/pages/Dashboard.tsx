@@ -10,6 +10,7 @@ import {
 import { useNavigate } from 'react-router';
 import {
   fetchMonitors, createMonitor, updateMonitor, deleteMonitor, fetchNotifiers, fetchHeartbeats,
+  createHeartbeat, updateHeartbeat, deleteHeartbeat,
   type DashboardStatus, type MonitorSummary, type UnifiedDashboardResponse, type Heartbeat,
 } from '../api/http';
 import MonitorCard from '../components/MonitorCard';
@@ -83,15 +84,20 @@ export default function Dashboard() {
   const [statusFilter, setStatusFilter] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
-  // Modal state
+  // Monitor modal state
   const [modalOpen, setModalOpen] = useState(false);
   const [editingMonitor, setEditingMonitor] = useState<MonitorSummary | null>(null);
   const [selectedType, setSelectedType] = useState<string>('http');
   const [notifiers, setNotifiers] = useState<{ id: string; name: string }[]>([]);
   const [form] = Form.useForm();
 
+  // Heartbeat modal state
+  const [hbModalOpen, setHbModalOpen] = useState(false);
+  const [editingHeartbeat, setEditingHeartbeat] = useState<Heartbeat | null>(null);
+  const [hbForm] = Form.useForm();
+
   // Track if any modal is open for auto-refresh pausing
-  const anyModalOpen = modalOpen;
+  const anyModalOpen = modalOpen || hbModalOpen;
 
   // Debounce search
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -137,19 +143,23 @@ export default function Dashboard() {
   }, [debouncedSearch, typeFilter, statusFilter, page, perPage]);
 
   // Load notifiers and heartbeats once
-  useEffect(() => {
-    fetchNotifiers()
-      .then(nData => setNotifiers(nData.notifiers.map(n => ({ id: n.id, name: n.name }))))
-      .catch(() => {});
+  const refreshHeartbeats = useCallback(() => {
     fetchHeartbeats()
       .then(hData => { setHeartbeats(hData.heartbeats); setHbLoading(false); })
       .catch(() => setHbLoading(false));
   }, []);
 
+  useEffect(() => {
+    fetchNotifiers()
+      .then(nData => setNotifiers(nData.notifiers.map(n => ({ id: n.id, name: n.name }))))
+      .catch(() => {});
+    refreshHeartbeats();
+  }, [refreshHeartbeats]);
+
   // Initial load & reload on filter/pagination change
   useEffect(() => {
     load();
-  }, [debouncedSearch, typeFilter, statusFilter, page, perPage]);
+  }, [debouncedSearch, typeFilter, statusFilter, page, perPage, load]);
 
   // Auto-refresh every 30 seconds, paused when modal is open
   useEffect(() => {
@@ -158,7 +168,12 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [anyModalOpen, load]);
 
-  // ── Modal handlers ──
+  // ── Unified stats ──
+  const totalItems = (status?.total_monitors ?? 0) + heartbeats.length;
+  const healthyItems = (status?.up_monitors ?? 0) + heartbeats.filter(h => h.status === 'ok').length;
+  const problemItems = (status?.down_monitors ?? 0) + heartbeats.filter(h => h.status === 'missing').length;
+
+  // ── Monitor modal handlers ──
 
   const handleCreate = () => {
     setEditingMonitor(null);
@@ -171,8 +186,6 @@ export default function Dashboard() {
   const handleEdit = (m: MonitorSummary) => {
     setEditingMonitor(m);
     form.resetFields();
-    // We need to fetch the full monitor data for editing fields
-    // Since MonitorSummary doesn't have all fields, we'll do a quick fetch
     import('../api/http').then(({ fetchMonitor }) => {
       fetchMonitor(m.id).then(full => {
         form.setFieldsValue({
@@ -239,8 +252,59 @@ export default function Dashboard() {
     } catch { message.error('Error al eliminar'); }
   };
 
+  // ── Heartbeat modal handlers ──
+
+  const handleCreateHeartbeat = () => {
+    setEditingHeartbeat(null);
+    hbForm.resetFields();
+    hbForm.setFieldsValue({ grace_seconds: 3600 });
+    setHbModalOpen(true);
+  };
+
+  const handleEditHeartbeat = (hb: Heartbeat) => {
+    setEditingHeartbeat(hb);
+    hbForm.setFieldsValue({
+      name: hb.name,
+      grace_seconds: hb.grace_seconds,
+      notifier_id: hb.notifier_id,
+    });
+    setHbModalOpen(true);
+  };
+
+  const handleDeleteHeartbeat = async (id: string) => {
+    try {
+      await deleteHeartbeat(id);
+      message.success('Heartbeat eliminado');
+      refreshHeartbeats();
+    } catch { message.error('Error al eliminar heartbeat'); }
+  };
+
+  const handleSaveHeartbeat = async () => {
+    try {
+      const values = await hbForm.validateFields();
+      const payload = {
+        name: values.name,
+        grace_seconds: values.grace_seconds ?? 3600,
+        notifier_id: values.notifier_id || null,
+      };
+      if (editingHeartbeat) {
+        await updateHeartbeat(editingHeartbeat.id, payload);
+        message.success('Heartbeat actualizado');
+      } else {
+        await createHeartbeat(payload);
+        message.success('Heartbeat creado');
+      }
+      setHbModalOpen(false);
+      refreshHeartbeats();
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error('Error al guardar');
+    }
+  };
+
   const handleRefresh = () => {
     load();
+    refreshHeartbeats();
   };
 
   // ── Render ──
@@ -286,45 +350,53 @@ export default function Dashboard() {
             style={{ width: 150 }}
           />
           <Button icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading}>Recargar</Button>
+          <Button icon={<HeartOutlined />} onClick={handleCreateHeartbeat}>Añadir heartbeat</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>Añadir monitor</Button>
         </Space>
       </div>
 
-      {/* Stats row */}
-      {status && (
-        <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-          <Col xs={12} sm={12} lg={6}>
-            <Card><Statistic title="Monitores" value={status.total_monitors} prefix={<RocketOutlined style={{ color: '#1677ff' }} />} /></Card>
-          </Col>
-          <Col xs={12} sm={12} lg={6}>
-            <Card><Statistic title="UP" value={status.up_monitors} prefix={<CheckCircleOutlined style={{ color: '#22c55e' }} />} suffix={`/ ${status.enabled_monitors}`} /></Card>
-          </Col>
-          <Col xs={12} sm={12} lg={6}>
-            <Card><Statistic title="DOWN" value={status.down_monitors} prefix={<CloseCircleOutlined style={{ color: '#ef4444' }} />} /></Card>
-          </Col>
-          <Col xs={12} sm={12} lg={6}>
-            <Card><Statistic title="Latencia media" value={status.avg_response_time_24h ?? 0} suffix="ms" prefix={<FieldTimeOutlined style={{ color: '#a78bfa' }} />} /></Card>
-          </Col>
-        </Row>
-      )}
-
-      {/* Heartbeat stats inline — same style as monitor stats */}
-      {heartbeats.length > 0 && (
-        <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-          <Col xs={12} sm={12} lg={3}>
-            <Card><Statistic title="Heartbeats" value={heartbeats.length} prefix={<HeartOutlined style={{ color: '#ec4899' }} />} /></Card>
-          </Col>
-          <Col xs={12} sm={12} lg={3}>
-            <Card><Statistic title="OK" value={heartbeats.filter(h => h.status === 'ok').length} prefix={<CheckCircleOutlined style={{ color: '#22c55e' }} />} valueStyle={{ color: '#22c55e' }} /></Card>
-          </Col>
-          <Col xs={12} sm={12} lg={3}>
-            <Card><Statistic title="Perdidos" value={heartbeats.filter(h => h.status === 'missing').length} prefix={<CloseCircleOutlined style={{ color: '#ef4444' }} />} valueStyle={{ color: '#ef4444' }} /></Card>
-          </Col>
-          <Col xs={12} sm={12} lg={3}>
-            <Card><Statistic title="Pendientes" value={heartbeats.filter(h => h.status === 'pending').length} prefix={<ClockCircleOutlined style={{ color: '#f59e0b' }} />} valueStyle={{ color: '#f59e0b' }} /></Card>
-          </Col>
-        </Row>
-      )}
+      {/* Unified stats row — monitors + heartbeats combined */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={12} sm={12} lg={6}>
+          <Card>
+            <Statistic
+              title="Total"
+              value={totalItems}
+              prefix={<RocketOutlined style={{ color: '#1677ff' }} />}
+            />
+          </Card>
+        </Col>
+        <Col xs={12} sm={12} lg={6}>
+          <Card>
+            <Statistic
+              title="En línea"
+              value={healthyItems}
+              prefix={<CheckCircleOutlined style={{ color: '#22c55e' }} />}
+              valueStyle={{ color: '#22c55e' }}
+            />
+          </Card>
+        </Col>
+        <Col xs={12} sm={12} lg={6}>
+          <Card>
+            <Statistic
+              title="Con problemas"
+              value={problemItems}
+              prefix={<CloseCircleOutlined style={{ color: '#ef4444' }} />}
+              valueStyle={{ color: '#ef4444' }}
+            />
+          </Card>
+        </Col>
+        <Col xs={12} sm={12} lg={6}>
+          <Card>
+            <Statistic
+              title="Latencia media"
+              value={status?.avg_response_time_24h ?? 0}
+              suffix="ms"
+              prefix={<FieldTimeOutlined style={{ color: '#a78bfa' }} />}
+            />
+          </Card>
+        </Col>
+      </Row>
 
       {/* Scheduler info */}
       <div style={{ marginBottom: 16, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
@@ -347,80 +419,70 @@ export default function Dashboard() {
       )}
 
       {/* Monitors grid */}
-      <Row gutter={[16, 16]}>
-        {monitors.map(m => (
-          <Col xs={24} sm={12} lg={8} xl={6} key={m.id}>
-            <MonitorCard
-              monitor={m}
-              onToggle={load}
-              onEdit={handleEdit}
-              onDelete={handleDelete}
-              onCheck={load}
-            />
-          </Col>
-        ))}
-      </Row>
-
-      {/* Heartbeat section — before empty state, after monitors grid */}
-      {!hbLoading && heartbeats.length > 0 && (
-        <div style={{ marginTop: 24, marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <Title level={4} style={{ margin: 0 }}><HeartOutlined style={{ color: '#ec4899' }} /> Heartbeats</Title>
-            <Button size="small" onClick={() => navigate('/heartbeats')}>
-              Ir a Heartbeats
-            </Button>
-          </div>
+      {monitors.length > 0 && (
+        <>
           <Row gutter={[16, 16]}>
-            {heartbeats.map(hb => (
-              <Col xs={24} sm={12} lg={8} xl={6} key={hb.id}>
-                <HeartbeatCard
-                  heartbeat={hb}
-                  onEdit={() => navigate('/heartbeats')}
-                  onDelete={() => {
-                    fetchHeartbeats().then(hData => {
-                      setHeartbeats(hData.heartbeats);
-                    }).catch(() => {});
-                  }}
-                  onRefresh={() => {
-                    fetchHeartbeats().then(hData => setHeartbeats(hData.heartbeats)).catch(() => {});
-                  }}
+            {monitors.map(m => (
+              <Col xs={24} sm={12} lg={8} xl={6} key={m.id}>
+                <MonitorCard
+                  monitor={m}
+                  onToggle={load}
+                  onEdit={handleEdit}
+                  onDelete={handleDelete}
+                  onCheck={load}
                 />
               </Col>
             ))}
           </Row>
-        </div>
+
+          {/* Pagination */}
+          {total > 0 && (
+            <div style={{ marginTop: 16, display: 'flex', justifyContent: 'center', flexDirection: 'column', alignItems: 'center' }}>
+              <Pagination
+                current={page}
+                pageSize={perPage}
+                total={total}
+                showSizeChanger
+                pageSizeOptions={['10', '20', '50', '100']}
+                showTotal={(total, range) => `${range[0]}-${range[1]} de ${total} monitores (pág. ${page} de ${totalPages})`}
+                onChange={(p, ps) => {
+                  setPage(p);
+                  setPerPage(ps);
+                }}
+              />
+            </div>
+          )}
+        </>
       )}
 
-      {/* Empty state (only after both sections) */}
-      {!loading && monitors.length === 0 && (
+      {/* Heartbeat cards — integrated without separate heading */}
+      {!hbLoading && heartbeats.length > 0 && (
+        <Row gutter={[16, 16]} style={{ marginTop: monitors.length > 0 ? 16 : 0 }}>
+          {heartbeats.map(hb => (
+            <Col xs={24} sm={12} lg={8} xl={6} key={hb.id}>
+              <HeartbeatCard
+                heartbeat={hb}
+                onEdit={handleEditHeartbeat}
+                onDelete={handleDeleteHeartbeat}
+                onRefresh={refreshHeartbeats}
+              />
+            </Col>
+          ))}
+        </Row>
+      )}
+
+      {/* Empty state (only when both sections are empty) */}
+      {!loading && monitors.length === 0 && heartbeats.length === 0 && (
         <Card style={{ marginTop: 16 }}>
           <Typography.Text type="secondary">
             {debouncedSearch || typeFilter || statusFilter
               ? 'No hay monitores que coincidan con los filtros'
-              : 'No hay monitores configurados. Crea tu primer monitor.'}
+              : 'No hay elementos configurados. Crea tu primer monitor o heartbeat.'}
           </Typography.Text>
         </Card>
       )}
 
-      {/* Pagination */}
-      {total > 0 && (
-        <div style={{ marginTop: 16, display: 'flex', justifyContent: 'center', flexDirection: 'column', alignItems: 'center' }}>
-          <Pagination
-            current={page}
-            pageSize={perPage}
-            total={total}
-            showSizeChanger
-            pageSizeOptions={['10', '20', '50', '100']}
-            showTotal={(total, range) => `${range[0]}-${range[1]} de ${total} monitores (pág. ${page} de ${totalPages})`}
-            onChange={(p, ps) => {
-              setPage(p);
-              setPerPage(ps);
-            }}
-          />
-        </div>
-      )}
-
-      {/* Create/Edit Modal */}
+      {/* ── Create/Edit Monitor Modal ── */}
       <Modal
         title={editingMonitor ? 'Editar monitor' : 'Nuevo monitor'}
         open={modalOpen}
@@ -542,6 +604,37 @@ export default function Dashboard() {
             </Tabs.TabPane>
           </Tabs>
         </Form>
+      </Modal>
+
+      {/* ── Create/Edit Heartbeat Modal ── */}
+      <Modal
+        title={editingHeartbeat ? 'Editar heartbeat' : 'Nuevo heartbeat'}
+        open={hbModalOpen}
+        onOk={handleSaveHeartbeat}
+        onCancel={() => setHbModalOpen(false)}
+        width={500}
+      >
+        <Form form={hbForm} layout="vertical">
+          <Form.Item name="name" label="Nombre" rules={[{ required: true }]}>
+            <Input placeholder="Ej: backup-diario" />
+          </Form.Item>
+          <Form.Item name="grace_seconds" label="Grace period (segundos)" rules={[{ required: true }]}>
+            <InputNumber min={60} max={2592000} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="notifier_id" label="Notificador para alertas">
+            <Select allowClear placeholder="Ninguno" options={notifiers.map(n => ({ value: n.id, label: n.name }))} />
+          </Form.Item>
+        </Form>
+        {editingHeartbeat && (
+          <div style={{ marginTop: 8 }}>
+            <Typography.Text strong>URL de pulso:</Typography.Text>
+            <Input
+              value={`${window.location.origin}/api/heartbeat/${editingHeartbeat.token}`}
+              readOnly
+              style={{ marginTop: 4 }}
+            />
+          </div>
+        )}
       </Modal>
     </div>
   );
