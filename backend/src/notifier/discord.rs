@@ -1,7 +1,4 @@
-pub async fn send_discord_notification(
-    webhook_url: &str,
-    message: &str,
-) -> anyhow::Result<()> {
+pub async fn send_discord_notification(webhook_url: &str, message: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let resp = client
         .post(webhook_url)

@@ -83,8 +83,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result =
-            send_ntfy_notification("mytopic", &server_url, None, "my test message").await;
+        let result = send_ntfy_notification("mytopic", &server_url, None, "my test message").await;
         assert!(result.is_ok());
         handle.await.unwrap();
     }
@@ -150,8 +149,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result =
-            send_ntfy_notification("mytopic", &server_url, None, "my test message").await;
+        let result = send_ntfy_notification("mytopic", &server_url, None, "my test message").await;
         assert!(result.is_ok());
         handle.await.unwrap();
     }
@@ -159,8 +157,7 @@ mod tests {
     #[tokio::test]
     async fn test_ntfy_connection_refused() {
         let result =
-            send_ntfy_notification("topic", "http://127.0.0.1:1", None, "test message")
-                .await;
+            send_ntfy_notification("topic", "http://127.0.0.1:1", None, "test message").await;
         assert!(result.is_err());
     }
 }

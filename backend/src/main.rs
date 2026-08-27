@@ -11,9 +11,9 @@ use watchbeat::db::Database;
 use watchbeat::embed::serve_embedded;
 use watchbeat::models::CheckResult;
 use watchbeat::notifier;
-use watchbeat::template::{self, TemplateContext};
 use watchbeat::routes;
 use watchbeat::routes::metrics;
+use watchbeat::template::{self, TemplateContext};
 
 #[tokio::main]
 async fn main() {
@@ -478,30 +478,52 @@ async fn run_monitor_check(
     let notification_type: Option<(&str, String)> = {
         // DOWN transition
         if was_up && !is_up {
-            let template = monitor.message_template_down.as_deref().unwrap_or(template::defaults::DOWN);
+            let template = monitor
+                .message_template_down
+                .as_deref()
+                .unwrap_or(template::defaults::DOWN);
             let ctx = TemplateContext::for_down(monitor, &check, "up");
             Some(("down", template::render_template(template, &ctx)))
         }
         // UP transition (recovery from DOWN or LATENCY)
         else if !was_up && is_up {
-            let template = monitor.message_template_up.as_deref().unwrap_or(template::defaults::UP);
+            let template = monitor
+                .message_template_up
+                .as_deref()
+                .unwrap_or(template::defaults::UP);
             let ctx = TemplateContext::for_up(monitor, &check, "down");
             Some(("up", template::render_template(template, &ctx)))
         }
         // Monitor is up — check for TLS expiry or latency breach
         else if is_up {
             // TLS certificate expiry takes priority over latency
-            let expiry_notification = monitor.config_json.get("expiry_days").and_then(|v| v.as_i64()).and_then(|expiry_days| {
-                outcome.tls.as_ref().and_then(|tls| tls.cert_days_left).and_then(|days_left| {
-                    if days_left < expiry_days {
-                        let template = monitor.message_template_expiry.as_deref().unwrap_or(template::defaults::EXPIRY);
-                        let ctx = TemplateContext::for_expiry(monitor, &check, days_left, expiry_days);
-                        Some(("expiry", template::render_template(template, &ctx)))
-                    } else {
-                        None
-                    }
-                })
-            });
+            let expiry_notification = monitor
+                .config_json
+                .get("expiry_days")
+                .and_then(|v| v.as_i64())
+                .and_then(|expiry_days| {
+                    outcome
+                        .tls
+                        .as_ref()
+                        .and_then(|tls| tls.cert_days_left)
+                        .and_then(|days_left| {
+                            if days_left < expiry_days {
+                                let template = monitor
+                                    .message_template_expiry
+                                    .as_deref()
+                                    .unwrap_or(template::defaults::EXPIRY);
+                                let ctx = TemplateContext::for_expiry(
+                                    monitor,
+                                    &check,
+                                    days_left,
+                                    expiry_days,
+                                );
+                                Some(("expiry", template::render_template(template, &ctx)))
+                            } else {
+                                None
+                            }
+                        })
+                });
 
             if expiry_notification.is_some() {
                 expiry_notification
@@ -509,7 +531,10 @@ async fn run_monitor_check(
             // Latency threshold breach
             else if let Some(threshold) = monitor.latency_threshold_ms {
                 if check.response_time_ms > threshold {
-                    let template = monitor.message_template_latency.as_deref().unwrap_or(template::defaults::LATENCY);
+                    let template = monitor
+                        .message_template_latency
+                        .as_deref()
+                        .unwrap_or(template::defaults::LATENCY);
                     let ctx = TemplateContext::for_latency(monitor, &check, threshold);
                     Some(("latency", template::render_template(template, &ctx)))
                 } else {
@@ -518,8 +543,7 @@ async fn run_monitor_check(
             } else {
                 None
             }
-        }
-        else {
+        } else {
             None
         }
     };
@@ -575,10 +599,9 @@ async fn run_monitor_check(
                         if let (Some(hs), Some(tok), Some(rid)) =
                             (homeserver, access_token, room_id)
                         {
-                            if let Err(e) = notifier::matrix::send_matrix_notification(
-                                hs, tok, rid, &message,
-                            )
-                            .await
+                            if let Err(e) =
+                                notifier::matrix::send_matrix_notification(hs, tok, rid, &message)
+                                    .await
                             {
                                 tracing::warn!("Scheduler: matrix notification failed: {}", e);
                             }
@@ -616,7 +639,10 @@ async fn run_monitor_check(
                             .unwrap_or_default();
                         if let Some(u) = url {
                             if let Err(e) = notifier::webhook::send_webhook_notification(
-                                u, method, &headers_json, &message,
+                                u,
+                                method,
+                                &headers_json,
+                                &message,
                             )
                             .await
                             {
@@ -631,8 +657,7 @@ async fn run_monitor_check(
                             .and_then(|v| v.as_str());
                         if let Some(u) = webhook_url {
                             if let Err(e) =
-                                notifier::slack::send_slack_notification(u, &message)
-                                    .await
+                                notifier::slack::send_slack_notification(u, &message).await
                             {
                                 tracing::warn!("Scheduler: slack notification failed: {}", e);
                             }
@@ -644,10 +669,8 @@ async fn run_monitor_check(
                             .get("webhook_url")
                             .and_then(|v| v.as_str());
                         if let Some(u) = webhook_url {
-                            if let Err(e) = notifier::discord::send_discord_notification(
-                                u, &message,
-                            )
-                            .await
+                            if let Err(e) =
+                                notifier::discord::send_discord_notification(u, &message).await
                             {
                                 tracing::warn!("Scheduler: discord notification failed: {}", e);
                             }

@@ -114,8 +114,20 @@ export async function fetchMe(): Promise<User> {
   return data.user;
 }
 
-export async function fetchMonitors(): Promise<{ monitors: Monitor[] }> {
-  return fetcher('/api/monitors');
+export interface PaginatedResponse<T> {
+  monitors: T[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
+export async function fetchMonitors(page = 1, perPage = 20): Promise<PaginatedResponse<Monitor>> {
+  return fetcher(`/api/monitors?page=${page}&per_page=${perPage}`);
+}
+
+export async function fetchMonitor(id: string): Promise<Monitor> {
+  return fetcher<Monitor>(`/api/monitors/${id}`);
 }
 
 export async function createMonitor(data: Partial<Monitor>): Promise<Monitor> {
@@ -138,8 +150,15 @@ export async function runCheck(id: string): Promise<CheckResult> {
   return fetcher<CheckResult>(`/api/monitors/${id}/check`, { method: 'POST' });
 }
 
-export async function fetchChecks(id: string, limit = 50, offset = 0): Promise<{ checks: CheckResult[] }> {
-  return fetcher(`/api/monitors/${id}/checks?limit=${limit}&offset=${offset}`);
+export async function fetchChecks(id: string, page = 1, perPage = 20): Promise<{
+  checks: CheckResult[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}> {
+  const offset = (page - 1) * perPage;
+  return fetcher(`/api/monitors/${id}/checks?limit=${perPage}&offset=${offset}`);
 }
 
 export async function fetchTimeline(id: string, opts?: { days?: number; hours?: number }): Promise<{ timeline: TimelinePoint[] }> {

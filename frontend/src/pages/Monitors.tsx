@@ -43,11 +43,23 @@ export default function Monitors() {
   const [selectedType, setSelectedType] = useState<string>('http');
   const [form] = Form.useForm();
 
-  const load = () => {
+  // Pagination state
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+
+  const load = (p?: number, pp?: number) => {
+    const currentPage = p ?? page;
+    const currentPerPage = pp ?? perPage;
     setLoading(true);
-    Promise.all([fetchMonitors(), fetchNotifiers()])
+    Promise.all([fetchMonitors(currentPage, currentPerPage), fetchNotifiers()])
       .then(([mData, nData]) => {
         setMonitors(mData.monitors);
+        setTotal(mData.total);
+        setPage(mData.page);
+        setPerPage(mData.per_page);
+        setTotalPages(mData.total_pages);
         setNotifiers(nData.notifiers.map(n => ({ id: n.id, name: n.name })));
       })
       .catch(err => message.error(err.message))
@@ -178,12 +190,26 @@ export default function Monitors() {
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <Title level={3} style={{ margin: 0 }}>Monitores</Title>
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={load}>Recargar</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => load()}>Recargar</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>Añadir</Button>
         </Space>
       </div>
 
-      <Table dataSource={monitors} columns={columns} rowKey="id" loading={loading} pagination={false} />
+      <Table
+        dataSource={monitors}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        pagination={{
+          current: page,
+          pageSize: perPage,
+          total,
+          showSizeChanger: true,
+          pageSizeOptions: ['10', '20', '50', '100'],
+          showTotal: (total, range) => `${range[0]}-${range[1]} de ${total} monitores (pág. ${page} de ${totalPages})`,
+          onChange: (p, ps) => load(p, ps),
+        }}
+      />
 
       <Modal
         title={editingId ? 'Editar monitor' : 'Nuevo monitor'}
@@ -281,17 +307,17 @@ export default function Monitors() {
               <Tabs>
                 <Tabs.TabPane tab="DOWN" key="template-down">
                   <Form.Item name="message_template_down" label="Plantilla DOWN">
-                    <Input.TextArea rows={6} placeholder={'⚠️ DOWN: {{ monitor.name }} — {{ monitor.target }} — Error: {{ error }}'} />
+                    <Input.TextArea rows={6} placeholder={'⚠️ DOWN: {{ monitor_name }} — {{ target }} — Error: {{ error_message }}'} />
                   </Form.Item>
                 </Tabs.TabPane>
                 <Tabs.TabPane tab="LATENCIA" key="template-latency">
                   <Form.Item name="message_template_latency" label="Plantilla LATENCIA">
-                    <Input.TextArea rows={6} placeholder={'⚠️ Latencia alta: {{ monitor.name }} — {{ response_time_ms }}ms (umbral: {{ latency_threshold_ms }}ms)'} />
+                    <Input.TextArea rows={6} placeholder={'⚠️ Latencia alta: {{ monitor_name }} — {{ response_time_ms }}ms (umbral: {{ latency_threshold_ms }}ms)'} />
                   </Form.Item>
                 </Tabs.TabPane>
                 <Tabs.TabPane tab="UP" key="template-up">
                   <Form.Item name="message_template_up" label="Plantilla UP">
-                    <Input.TextArea rows={6} placeholder={'✅ UP: {{ monitor.name }} — {{ monitor.target }} — {{ response_time_ms }}ms'} />
+                    <Input.TextArea rows={6} placeholder={'✅ UP: {{ monitor_name }} — {{ target }} — {{ response_time_ms }}ms'} />
                   </Form.Item>
                 </Tabs.TabPane>
                 <Tabs.TabPane tab="EXPIRACIÓN" key="template-expiry">

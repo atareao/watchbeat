@@ -110,8 +110,13 @@ impl NotifierTrait for MatrixNotifier {
             .get("room_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing room_id in matrix notifier config"))?;
-        crate::notifier::matrix::send_matrix_notification(homeserver_url, access_token, room_id, message)
-            .await
+        crate::notifier::matrix::send_matrix_notification(
+            homeserver_url,
+            access_token,
+            room_id,
+            message,
+        )
+        .await
     }
 }
 
@@ -187,7 +192,8 @@ impl NotifierTrait for WebhookNotifier {
             .get("headers")
             .map(|v| v.to_string())
             .unwrap_or_default();
-        crate::notifier::webhook::send_webhook_notification(url, method, &headers_json, message).await
+        crate::notifier::webhook::send_webhook_notification(url, method, &headers_json, message)
+            .await
     }
 }
 

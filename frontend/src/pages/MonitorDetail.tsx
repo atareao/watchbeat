@@ -1,8 +1,8 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'react-router';
 import { Card, Typography, Spin, Table, Tag, Button, Descriptions, Space, Tooltip } from 'antd';
 import { ReloadOutlined, PlayCircleOutlined, ClockCircleOutlined, BarChartOutlined } from '@ant-design/icons';
-import { fetchMonitors, fetchChecks, fetchTimelineBuckets, runCheck, type Monitor, type CheckResult, type TimelineBucket } from '../api/http';
+import { fetchMonitor, fetchChecks, fetchTimelineBuckets, runCheck, type Monitor, type CheckResult, type TimelineBucket } from '../api/http';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import 'dayjs/locale/es';
@@ -61,50 +61,78 @@ function formatBucketTime(bucketStart: string, bucketSeconds: number): string {
 export default function MonitorDetail() {
   const { id } = useParams();
   const [monitor, setMonitor] = useState<Monitor | null>(null);
+  const [monitorLoading, setMonitorLoading] = useState(true);
   const [checks, setChecks] = useState<CheckResult[]>([]);
   const [buckets, setBuckets] = useState<TimelineBucket[]>([]);
   const [loading, setLoading] = useState(true);
   const [rangeKey, setRangeKey] = useState(3); // default: 24h
 
+  // Pagination state for checks table
+  const [checksPage, setChecksPage] = useState(1);
+  const [checksPerPage, setChecksPerPage] = useState(20);
+  const [checksTotal, setChecksTotal] = useState(0);
+  const [checksTotalPages, setChecksTotalPages] = useState(0);
+
   const range = RANGE_OPTIONS[rangeKey];
 
-  const load = useCallback(async () => {
+  // ── Load monitor data (only once per id) ──
+  useEffect(() => {
+    if (!id) return;
+    setMonitorLoading(true);
+    fetchMonitor(id)
+      .then(setMonitor)
+      .catch(() => setMonitor(null))
+      .finally(() => setMonitorLoading(false));
+  }, [id]);
+
+  // ── Load timeline buckets (only when rangeKey changes) ──
+  useEffect(() => {
+    if (!id) return;
+    const params: Record<string, number> = { bucket_seconds: range.bucketSeconds };
+    if (range.hours != null) {
+      (params as { hours: number; bucket_seconds: number }).hours = range.hours;
+    } else if (range.days != null) {
+      (params as { days: number; bucket_seconds: number }).days = range.days;
+    }
+    fetchTimelineBuckets(
+      id,
+      params as { bucket_seconds: number } & ({ hours: number } | { days: number }),
+    )
+      .then(({ buckets: b }) => setBuckets(b))
+      .catch(() => setBuckets([]));
+  }, [id, rangeKey, range.bucketSeconds, range.hours, range.days]);
+
+  // ── Load checks (only when pagination changes) ──
+  const loadChecks = useCallback(async (cp: number, cpp: number) => {
     if (!id) return;
     setLoading(true);
     try {
-      const { monitors } = await fetchMonitors();
-      const m = monitors.find(m => m.id === id) ?? null;
-      setMonitor(m);
-
-      const { checks: c } = await fetchChecks(id, 100);
-      setChecks(c);
-
-      const params: Record<string, number> = { bucket_seconds: range.bucketSeconds };
-      if (range.hours != null) {
-        (params as { hours: number; bucket_seconds: number }).hours = range.hours;
-      } else if (range.days != null) {
-        (params as { days: number; bucket_seconds: number }).days = range.days;
-      }
-      const { buckets: b } = await fetchTimelineBuckets(
-        id,
-        params as { bucket_seconds: number } & ({ hours: number } | { days: number }),
-      );
-      setBuckets(b);
-    } catch { /* ignore */ }
+      const checksData = await fetchChecks(id, cp, cpp);
+      setChecks(checksData.checks);
+      setChecksPage(checksData.page);
+      setChecksPerPage(checksData.per_page);
+      setChecksTotal(checksData.total);
+      setChecksTotalPages(checksData.total_pages);
+    } catch {
+      // ignore
+    }
     setLoading(false);
-  }, [id, rangeKey, range.bucketSeconds, range.hours, range.days]);
+  }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  // Initial checks load
+  useEffect(() => {
+    loadChecks(checksPage, checksPerPage);
+  }, [loadChecks]); // only when id changes (via loadChecks callback dep)
 
   const handleCheck = async () => {
     if (!id) return;
     try {
       await runCheck(id);
-      load();
+      loadChecks(1, checksPerPage);
     } catch { /* ignore */ }
   };
 
-  if (loading) return <div style={{ textAlign: 'center', padding: 40 }}><Spin size="large" /></div>;
+  if (monitorLoading) return <div style={{ textAlign: 'center', padding: 40 }}><Spin size="large" /></div>;
   if (!monitor) return <Typography.Text type="danger">Monitor no encontrado</Typography.Text>;
 
   // ── Uptime calculation from buckets (exclude no_data) ──
@@ -132,9 +160,6 @@ export default function MonitorDetail() {
   ];
 
   // ── Health & Latency chart (unified) ──
-  //   - Bar height = latency (como el chart de latencia)
-  //   - Bar color  = % UP (verde = bien, rojo = mal)
-  //   Así un solo gráfico muestra ambas dimensiones
   const renderHealthLatencyChart = () => {
     if (buckets.length === 0) return <Text type="secondary">Sin datos en {range.labelLong.toLowerCase()}</Text>;
 
@@ -227,7 +252,7 @@ export default function MonitorDetail() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Title level={3} style={{ margin: 0 }}>{monitor.name}</Title>
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={load}>Recargar</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => loadChecks(1, checksPerPage)}>Recargar</Button>
           <Button icon={<PlayCircleOutlined />} onClick={handleCheck}>Check ahora</Button>
         </Space>
       </div>
@@ -285,7 +310,15 @@ export default function MonitorDetail() {
           dataSource={checks}
           columns={checksColumns}
           rowKey="id"
-          pagination={{ pageSize: 20, showSizeChanger: true, pageSizeOptions: ['10', '20', '50', '100'] }}
+          pagination={{
+            current: checksPage,
+            pageSize: checksPerPage,
+            total: checksTotal,
+            showSizeChanger: true,
+            pageSizeOptions: ['10', '20', '50', '100'],
+            showTotal: (total, range) => `${range[0]}-${range[1]} de ${total} checks (pág. ${checksPage} de ${checksTotalPages})`,
+            onChange: (p, ps) => loadChecks(p, ps),
+          }}
           size="small"
         />
       </Card>

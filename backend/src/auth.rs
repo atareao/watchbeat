@@ -116,6 +116,24 @@ impl JwtValidator {
                 }
             }
         }
+
+        // All cached keys failed — re-fetch JWKS in case keys were rotated
+        tracing::warn!("All cached JWKs failed, re-fetching JWKS (key rotation?)...");
+        self.fetch_jwks(&self.issuer).await?;
+
+        let fresh_keys = self.jwks.read().await.clone();
+        for (i, key) in fresh_keys.iter().enumerate() {
+            match decode::<Claims>(token, key, &validation) {
+                Ok(data) => {
+                    tracing::info!(key_index = i, sub = %data.claims.sub, "token validated after JWKS refresh");
+                    return Ok(data.claims);
+                }
+                Err(e) => {
+                    tracing::debug!(key_index = i, error = %e, "fresh JWK decode attempt failed");
+                }
+            }
+        }
+
         Err("no matching JWK found for token".to_string())
     }
 }

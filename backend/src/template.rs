@@ -1,7 +1,7 @@
+use crate::db::Database;
+use crate::models::{CheckResult, Monitor};
 use minijinja::{Environment, Value};
 use serde_json::json;
-use crate::models::{Monitor, CheckResult};
-use crate::db::Database;
 
 /// Global default templates loaded from settings.
 pub struct GlobalDefaults {
@@ -26,9 +26,17 @@ impl GlobalDefaults {
 pub async fn load_global_defaults(db: &Database) -> GlobalDefaults {
     GlobalDefaults {
         down: db.get_setting("default_template_down").await.ok().flatten(),
-        latency: db.get_setting("default_template_latency").await.ok().flatten(),
+        latency: db
+            .get_setting("default_template_latency")
+            .await
+            .ok()
+            .flatten(),
         up: db.get_setting("default_template_up").await.ok().flatten(),
-        expiry: db.get_setting("default_template_expiry").await.ok().flatten(),
+        expiry: db
+            .get_setting("default_template_expiry")
+            .await
+            .ok()
+            .flatten(),
     }
 }
 
@@ -53,14 +61,23 @@ impl TemplateContext {
         Value::from_serialize(&ctx)
     }
 
-    pub fn for_expiry(monitor: &Monitor, check: &CheckResult, days_left: i64, expiry_days: i64) -> Value {
+    pub fn for_expiry(
+        monitor: &Monitor,
+        check: &CheckResult,
+        days_left: i64,
+        expiry_days: i64,
+    ) -> Value {
         let mut ctx = Self::build_ctx(monitor, check, "up");
         ctx["days_left"] = json!(days_left);
         ctx["expiry_threshold_days"] = json!(expiry_days);
         Value::from_serialize(&ctx)
     }
 
-    fn build_ctx(monitor: &Monitor, check: &CheckResult, previous_status: &str) -> serde_json::Value {
+    fn build_ctx(
+        monitor: &Monitor,
+        check: &CheckResult,
+        previous_status: &str,
+    ) -> serde_json::Value {
         json!({
             "monitor_name": monitor.name,
             "monitor_type": monitor.monitor_type,

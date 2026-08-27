@@ -1,3 +1,5 @@
+use uuid::Uuid;
+
 /// Send a notification via Matrix. Called from the scheduler after resolving
 /// notifier config from DB.
 pub async fn send_matrix_notification(
@@ -6,15 +8,17 @@ pub async fn send_matrix_notification(
     room_id: &str,
     message: &str,
 ) -> anyhow::Result<()> {
+    let txn_id = Uuid::new_v4().to_string();
     let url = format!(
-        "{}/_matrix/client/v3/rooms/{}/send/m.room.message",
+        "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
         homeserver_url.trim_end_matches('/'),
         room_id,
+        txn_id,
     );
     let client = reqwest::Client::new();
     let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", access_token))
+        .put(&url)
+        .bearer_auth(access_token)
         .json(&serde_json::json!({
             "msgtype": "m.text",
             "body": message,
@@ -80,15 +84,15 @@ mod tests {
             let raw = read_http_request(&mut stream).await;
             let request = String::from_utf8_lossy(&raw);
 
-            // Verify POST method and correct path (no txn_id suffix now)
+            // Verify PUT method and correct path (with txn_id suffix)
             assert!(
-                request.starts_with("POST"),
-                "Expected POST method, got:\n{}",
+                request.starts_with("PUT"),
+                "Expected PUT method, got:\n{}",
                 request
             );
             assert!(
-                request.contains("/_matrix/client/v3/rooms/!room:id/send/m.room.message"),
-                "Missing Matrix room path:\n{}",
+                request.contains("/_matrix/client/v3/rooms/!room:id/send/m.room.message/"),
+                "Missing Matrix room path with txn_id:\n{}",
                 request
             );
 
@@ -111,13 +115,8 @@ mod tests {
                 .unwrap();
         });
 
-        let result = send_matrix_notification(
-            &server_url,
-            "test_token",
-            "!room:id",
-            "Test Alert",
-        )
-        .await;
+        let result =
+            send_matrix_notification(&server_url, "test_token", "!room:id", "Test Alert").await;
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
 
         handle.await.unwrap();
@@ -125,13 +124,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_matrix_connection_refused() {
-        let result = send_matrix_notification(
-            "http://127.0.0.1:1",
-            "token",
-            "!room:id",
-            "test message",
-        )
-        .await;
+        let result =
+            send_matrix_notification("http://127.0.0.1:1", "token", "!room:id", "test message")
+                .await;
         assert!(
             result.is_err(),
             "Expected connection error, got Ok: {:?}",

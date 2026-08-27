@@ -135,9 +135,33 @@ pub async fn test(
         .db
         .get_notifier(&id)
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or("Notifier not found")?;
+        .map_err(|e| {
+            tracing::error!(notifier_id = %id, error = %e, "test: failed to fetch notifier");
+            e.to_string()
+        })?
+        .ok_or_else(|| {
+            tracing::warn!(notifier_id = %id, "test: notifier not found");
+            "Notifier not found".to_string()
+        })?;
 
+    tracing::info!(notifier_id = %id, notifier_type = %notifier.notifier_type, "test: sending test notification");
+
+    let send_result = send_test_notification(&notifier).await;
+
+    if let Err(ref e) = send_result {
+        tracing::error!(
+            notifier_id = %id,
+            notifier_type = %notifier.notifier_type,
+            error = %e,
+            "test: notification failed"
+        );
+    }
+
+    send_result?;
+    Ok(Json(serde_json::json!({"sent": true})))
+}
+
+async fn send_test_notification(notifier: &Notifier) -> Result<(), String> {
     match notifier.notifier_type.as_str() {
         "telegram" => {
             let bot_token = notifier
@@ -156,7 +180,7 @@ pub async fn test(
                 "Test notification from WatchBeat",
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
         }
         "matrix" => {
             let homeserver_url = notifier
@@ -181,7 +205,7 @@ pub async fn test(
                 "Test notification from WatchBeat",
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
         }
         "ntfy" => {
             let topic = notifier
@@ -202,7 +226,7 @@ pub async fn test(
                 "Test notification from WatchBeat",
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
         }
         "webhook" => {
             let url = notifier
@@ -227,7 +251,7 @@ pub async fn test(
                 "Test notification from WatchBeat",
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
         }
         "slack" => {
             let webhook_url = notifier
@@ -240,7 +264,7 @@ pub async fn test(
                 "Test notification from WatchBeat",
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
         }
         "discord" => {
             let webhook_url = notifier
@@ -253,7 +277,7 @@ pub async fn test(
                 "Test notification from WatchBeat",
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
         }
         "email" => {
             let smtp_host = notifier
@@ -296,7 +320,7 @@ pub async fn test(
                 "Test notification from WatchBeat",
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
         }
         "gotify" => {
             let server_url = notifier
@@ -321,15 +345,11 @@ pub async fn test(
                 "Test notification from WatchBeat",
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
         }
-        _ => {
-            return Err(format!(
-                "Unsupported notifier type: {}",
-                notifier.notifier_type
-            ))
-        }
+        _ => Err(format!(
+            "Unsupported notifier type: {}",
+            notifier.notifier_type
+        )),
     }
-
-    Ok(Json(serde_json::json!({"sent": true})))
 }
