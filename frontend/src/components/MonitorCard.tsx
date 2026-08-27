@@ -118,7 +118,8 @@ function MonitorView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps & {
   const navigate = useNavigate();
   const cfg = item.last_status ? STATUS_CONFIG[item.last_status] ?? STATUS_CONFIG.error : STATUS_CONFIG.error;
 
-  const handleCheck = async () => {
+  const handleCheck = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     try {
       const result = await runCheck(item.id);
       message.success(`Check: ${result.status} (${result.response_time_ms}ms)`);
@@ -138,7 +139,8 @@ function MonitorView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps & {
     }
   };
 
-  const handleDeleteClick = () => {
+  const handleDeleteClick = (e: any) => {
+    e?.stopPropagation();
     Modal.confirm({
       title: '¿Eliminar monitor?',
       content: `¿Estás seguro de eliminar "${item.name}"?`,
@@ -151,7 +153,7 @@ function MonitorView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps & {
 
   const dropdownItems = [
     { key: 'edit', label: 'Editar', onClick: (e: any) => { e?.stopPropagation(); onEdit(item); } },
-    { key: 'delete', label: 'Eliminar', danger: true, onClick: (e: any) => { e?.stopPropagation(); handleDeleteClick(); } },
+    { key: 'delete', label: 'Eliminar', danger: true, onClick: (e: any) => { e?.stopPropagation(); handleDeleteClick(e); } },
   ];
 
   return (
@@ -183,8 +185,8 @@ function MonitorView({ item, onEdit, onDelete, onRefresh }: MonitorCardProps & {
       </div>
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, display: 'flex', justifyContent: 'space-between' }}>
         <Space>
-          <Button size="small" icon={<PlayCircleOutlined />} onClick={e => { e.stopPropagation(); handleCheck(); }} />
-          <Popconfirm title="¿Cambiar estado?" onConfirm={handleToggle}>
+          <Button size="small" icon={<PlayCircleOutlined />} onClick={e => handleCheck(e)} />
+          <Popconfirm title="¿Cambiar estado?" onConfirm={e => { if (e) (e as any).stopPropagation?.(); handleToggle(); }}>
             <Button size="small" onClick={e => e.stopPropagation()}>{item.enabled ? 'Desactivar' : 'Activar'}</Button>
           </Popconfirm>
         </Space>
