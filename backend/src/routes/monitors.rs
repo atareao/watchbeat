@@ -131,6 +131,12 @@ pub async fn create(
     }
 
     let now = chrono::Utc::now().to_rfc3339();
+    let is_heartbeat = req.monitor_type == "heartbeat";
+    let token = if is_heartbeat {
+        Some(Uuid::new_v4().to_string().replace('-', ""))
+    } else {
+        None
+    };
     let monitor = Monitor {
         id: Uuid::new_v4().to_string(),
         name: req.name,
@@ -149,6 +155,9 @@ pub async fn create(
         message_template_up: req.message_template_up,
         message_template_expiry: req.message_template_expiry,
         tags: vec![],
+        token,
+        grace_seconds: if is_heartbeat { Some(3600) } else { None },
+        last_seen_at: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -221,6 +230,9 @@ pub async fn update(
             .message_template_expiry
             .or(existing.message_template_expiry),
         tags: existing.tags,
+        token: existing.token,
+        grace_seconds: existing.grace_seconds,
+        last_seen_at: existing.last_seen_at,
         created_at: existing.created_at,
         updated_at: now,
     };

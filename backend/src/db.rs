@@ -6,9 +6,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
 use crate::models::{
-    CheckResult, DashboardStatus, Heartbeat, HeartbeatRow, Monitor, MonitorRow, MonitorSummary,
-    MonitorWithSummaryRow, Notifier, NotifierRow, StatusPage, StatusPageRow, TimelineBucket,
-    TimelinePoint, TimelinePointRow,
+    CheckResult, DashboardStatus, Monitor, MonitorRow, MonitorSummary, MonitorWithSummaryRow,
+    Notifier, NotifierRow, StatusPage, StatusPageRow, TimelineBucket, TimelinePoint,
+    TimelinePointRow,
 };
 
 #[derive(Clone)]
@@ -74,13 +74,6 @@ impl Database {
                 public INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS heartbeats (
-                id TEXT PRIMARY KEY, name TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
-                grace_seconds INTEGER NOT NULL DEFAULT 3600,
-                last_seen_at TEXT, status TEXT NOT NULL DEFAULT 'pending',
-                notifier_id TEXT,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
             CREATE TABLE IF NOT EXISTS monitor_notifiers (
                 monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
                 notifier_id TEXT NOT NULL REFERENCES notifiers(id) ON DELETE CASCADE,
@@ -121,6 +114,33 @@ impl Database {
             .execute(&pool)
             .await;
 
+        // Heartbeat fields for monitors
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN token TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN grace_seconds INTEGER")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN last_seen_at TEXT")
+            .execute(&pool)
+            .await;
+
+        // Migrate heartbeats → monitors (idempotent: ignores if no heartbeats table)
+        let _ = sqlx::raw_sql(
+            "INSERT OR IGNORE INTO monitors (id, name, monitor_type, target, config_json, interval_seconds, timeout_seconds, enabled, notifier_id, token, grace_seconds, last_seen_at, created_at, updated_at) SELECT id, name, 'heartbeat', '', '{}', 300, 30, 1, notifier_id, token, grace_seconds, last_seen_at, created_at, updated_at FROM heartbeats"
+        ).execute(&pool).await;
+
+        // Drop heartbeats table (ignore if missing)
+        let _ = sqlx::raw_sql("DROP TABLE IF EXISTS heartbeats")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::raw_sql("DROP INDEX IF EXISTS idx_heartbeats_name")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::raw_sql("DROP INDEX IF EXISTS idx_heartbeats_status")
+            .execute(&pool)
+            .await;
+
         // Unique indexes for name uniqueness (enforced at DB level)
         let _ =
             sqlx::raw_sql("CREATE UNIQUE INDEX IF NOT EXISTS idx_monitors_name ON monitors(name)")
@@ -132,21 +152,10 @@ impl Database {
         .execute(&pool)
         .await;
         let _ = sqlx::raw_sql(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_heartbeats_name ON heartbeats(name)",
-        )
-        .execute(&pool)
-        .await;
-        let _ = sqlx::raw_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_status_pages_title ON status_pages(title)",
         )
         .execute(&pool)
         .await;
-
-        // Index for ORDER BY on heartbeats and status_pages
-        let _ =
-            sqlx::raw_sql("CREATE INDEX IF NOT EXISTS idx_heartbeats_status ON heartbeats(status)")
-                .execute(&pool)
-                .await;
 
         Ok(Self {
             pool,
@@ -386,19 +395,6 @@ impl Database {
             }
             ("notifiers", "name", Some(_)) => {
                 sqlx::query_scalar("SELECT COUNT(*) FROM notifiers WHERE name=? AND id!=?")
-                    .bind(value)
-                    .bind(exclude_id.unwrap())
-                    .fetch_one(&self.pool)
-                    .await?
-            }
-            ("heartbeats", "name", None) => {
-                sqlx::query_scalar("SELECT COUNT(*) FROM heartbeats WHERE name=?")
-                    .bind(value)
-                    .fetch_one(&self.pool)
-                    .await?
-            }
-            ("heartbeats", "name", Some(_)) => {
-                sqlx::query_scalar("SELECT COUNT(*) FROM heartbeats WHERE name=? AND id!=?")
                     .bind(value)
                     .bind(exclude_id.unwrap())
                     .fetch_one(&self.pool)
@@ -928,76 +924,60 @@ impl Database {
         Ok(rows.rows_affected() > 0)
     }
 
-    // ───── Heartbeats ─────
+    // ───── Heartbeat pulse (public endpoint) ─────
 
-    pub async fn list_heartbeats(&self) -> Result<Vec<Heartbeat>> {
-        let rows = sqlx::query_as::<_, HeartbeatRow>(
-            "SELECT id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at FROM heartbeats ORDER BY name",
-        ).fetch_all(&self.pool).await.context("Failed to list heartbeats")?;
-        Ok(rows.into_iter().map(Heartbeat::from).collect())
-    }
+    /// Record a heartbeat pulse: find monitor by token, insert a check, update last_seen_at.
+    pub async fn record_heartbeat_pulse(&self, token: &str) -> Result<Option<Monitor>> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let row = sqlx::query_as::<_, MonitorRow>(
+            "SELECT id, name, monitor_type, target, config_json, interval_seconds, timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, latency_threshold_ms, message_template_down, message_template_latency, message_template_up, message_template_expiry, token, grace_seconds, last_seen_at, created_at, updated_at FROM monitors WHERE token=? AND monitor_type='heartbeat'",
+        )
+        .bind(token)
+        .fetch_optional(&self.pool)
+        .await
+        .context("Failed to find monitor by token")?;
 
-    pub async fn get_heartbeat(&self, id: &str) -> Result<Option<Heartbeat>> {
-        let row = sqlx::query_as::<_, HeartbeatRow>(
-            "SELECT id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at FROM heartbeats WHERE id=?",
-        ).bind(id).fetch_optional(&self.pool).await.context("Failed to get heartbeat")?;
-        Ok(row.map(Heartbeat::from))
-    }
+        let monitor = match row {
+            Some(r) => Monitor::from(r),
+            None => return Ok(None),
+        };
 
-    pub async fn get_heartbeat_by_token(&self, token: &str) -> Result<Option<Heartbeat>> {
-        let row = sqlx::query_as::<_, HeartbeatRow>(
-            "SELECT id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at FROM heartbeats WHERE token=?",
-        ).bind(token).fetch_optional(&self.pool).await.context("Failed to get heartbeat by token")?;
-        Ok(row.map(Heartbeat::from))
-    }
-
-    pub async fn upsert_heartbeat(&self, id: &str, hb: &Heartbeat) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
+        // Insert a check record for the pulse
+        let check = CheckResult {
+            id: 0,
+            monitor_id: monitor.id.clone(),
+            status: "ok".into(),
+            status_code: None,
+            response_time_ms: 0,
+            error_message: None,
+            checked_at: now.clone(),
+        };
         sqlx::query(
-            "INSERT INTO heartbeats (id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(id) DO UPDATE SET name=excluded.name, token=excluded.token, \
-             grace_seconds=excluded.grace_seconds, last_seen_at=excluded.last_seen_at, \
-             status=excluded.status, notifier_id=excluded.notifier_id, updated_at=excluded.updated_at",
-        ).bind(id).bind(&hb.name).bind(&hb.token).bind(hb.grace_seconds).bind(&hb.last_seen_at)
-        .bind(&hb.status).bind(&hb.notifier_id).bind(&now).bind(&now)
-        .execute(&self.pool).await.context("Failed to upsert heartbeat")?;
-        Ok(())
-    }
+            "INSERT INTO checks (monitor_id, status, status_code, response_time_ms, error_message, checked_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&check.monitor_id)
+        .bind(&check.status)
+        .bind(check.status_code.map(|v| v as i64))
+        .bind(check.response_time_ms)
+        .bind(&check.error_message)
+        .bind(&check.checked_at)
+        .execute(&self.pool)
+        .await
+        .context("Failed to insert heartbeat check")?;
 
-    pub async fn delete_heartbeat(&self, id: &str) -> Result<bool> {
-        let rows = sqlx::query("DELETE FROM heartbeats WHERE id=?")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .context("Failed to delete heartbeat")?;
-        Ok(rows.rows_affected() > 0)
-    }
-
-    pub async fn touch_heartbeat(&self, token: &str) -> Result<Option<Heartbeat>> {
-        let now = Utc::now().to_rfc3339();
-        let row = sqlx::query_as::<_, HeartbeatRow>(
-            "SELECT id, name, token, grace_seconds, last_seen_at, status, notifier_id, created_at, updated_at FROM heartbeats WHERE token=?",
-        ).bind(token).fetch_optional(&self.pool).await.context("Failed to find heartbeat")?;
-        if let Some(r) = row {
-            sqlx::query(
-                "UPDATE heartbeats SET last_seen_at=?, status='ok', updated_at=? WHERE token=?",
-            )
+        // Update last_seen_at
+        sqlx::query("UPDATE monitors SET last_seen_at=?, updated_at=? WHERE id=?")
             .bind(&now)
             .bind(&now)
-            .bind(token)
+            .bind(&monitor.id)
             .execute(&self.pool)
             .await
-            .context("Failed to touch heartbeat")?;
-            let hb = Heartbeat::from(r);
-            Ok(Some(Heartbeat {
-                last_seen_at: Some(now),
-                status: "ok".into(),
-                ..hb
-            }))
-        } else {
-            Ok(None)
-        }
+            .context("Failed to update last_seen_at")?;
+
+        Ok(Some(Monitor {
+            last_seen_at: Some(now),
+            ..monitor
+        }))
     }
 
     // ───── Backup ─────

@@ -257,61 +257,6 @@ async fn scheduler_iteration(
         }
     }
 
-    // ── Heartbeat monitoring ──
-    if let Ok(hbs) = db.list_heartbeats().await {
-        let now = chrono::Utc::now();
-        for hb in &hbs {
-            let hb_status_ok = hb.status == "ok" || hb.status == "pending";
-            let grace_expired = match &hb.last_seen_at {
-                Some(ts) => chrono::DateTime::parse_from_rfc3339(ts)
-                    .map(|t| {
-                        now - t.with_timezone(&chrono::Utc)
-                            > chrono::Duration::seconds(hb.grace_seconds)
-                    })
-                    .unwrap_or(false),
-                None => true,
-            };
-
-            if hb_status_ok && grace_expired {
-                tracing::info!("Heartbeat '{}' missed — grace period expired", hb.name);
-                if let Some(nid) = &hb.notifier_id {
-                    if let Some(notifier) = notifiers.get(nid) {
-                        if notifier.enabled && notifier.notifier_type == "telegram" {
-                            let bot_token = notifier
-                                .config_json
-                                .get("bot_token")
-                                .and_then(|v| v.as_str());
-                            let chat_id =
-                                notifier.config_json.get("chat_id").and_then(|v| v.as_str());
-                            if let (Some(token), Some(chat)) = (bot_token, chat_id) {
-                                let msg = format!(
-                                    "🔴 Heartbeat '{}' no ha latido en {}s — posible fallo de cron/backup",
-                                    hb.name, hb.grace_seconds
-                                );
-                                let url =
-                                    format!("https://api.telegram.org/bot{}/sendMessage", token);
-                                let _ = reqwest::Client::new()
-                                    .post(&url)
-                                    .json(&serde_json::json!({"chat_id": chat, "text": msg}))
-                                    .send()
-                                    .await;
-                            }
-                        }
-                    }
-                }
-                let _ = db
-                    .upsert_heartbeat(
-                        &hb.id,
-                        &watchbeat::models::Heartbeat {
-                            status: "missing".into(),
-                            ..hb.clone()
-                        },
-                    )
-                    .await;
-            }
-        }
-    }
-
     // Update scheduler status
     {
         let mut status = sched_status.lock().await;

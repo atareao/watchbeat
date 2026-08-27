@@ -75,14 +75,6 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             routing::put(status_pages::update).delete(status_pages::delete),
         )
         .route(
-            "/api/heartbeats",
-            routing::get(heartbeats::list).post(heartbeats::create),
-        )
-        .route(
-            "/api/heartbeats/{id}",
-            routing::put(heartbeats::update).delete(heartbeats::delete),
-        )
-        .route(
             "/api/monitors/{id}/export/{format}",
             routing::get(exports::export),
         )

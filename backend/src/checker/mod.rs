@@ -27,6 +27,7 @@ pub fn checker_for(monitor: &Monitor) -> Option<Box<dyn Checker>> {
         "tcp" => Some(Box::new(TcpChecker)),
         "ping" => Some(Box::new(PingChecker)),
         "tls" => Some(Box::new(tls::TlsChecker)),
+        "heartbeat" => None,
         _ => None,
     }
 }

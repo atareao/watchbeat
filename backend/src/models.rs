@@ -25,6 +25,9 @@ pub struct Monitor {
     pub message_template_up: Option<String>,
     pub message_template_expiry: Option<String>,
     pub tags: Vec<String>,
+    pub token: Option<String>,
+    pub grace_seconds: Option<i64>,
+    pub last_seen_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -168,50 +171,6 @@ impl From<StatusPageRow> for StatusPage {
     }
 }
 
-// ───── Heartbeat ─────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Heartbeat {
-    pub id: String,
-    pub name: String,
-    pub token: String,
-    pub grace_seconds: i64,
-    pub last_seen_at: Option<String>,
-    pub status: String,
-    pub notifier_id: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct HeartbeatRow {
-    pub id: String,
-    pub name: String,
-    pub token: String,
-    pub grace_seconds: i64,
-    pub last_seen_at: Option<String>,
-    pub status: String,
-    pub notifier_id: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-impl From<HeartbeatRow> for Heartbeat {
-    fn from(row: HeartbeatRow) -> Self {
-        Heartbeat {
-            id: row.id,
-            name: row.name,
-            token: row.token,
-            grace_seconds: row.grace_seconds,
-            last_seen_at: row.last_seen_at,
-            status: row.status,
-            notifier_id: row.notifier_id,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        }
-    }
-}
-
 // ───── DB row types (SQLx FromRow) ─────
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -233,6 +192,9 @@ pub struct MonitorRow {
     pub message_template_up: Option<String>,
     pub message_template_expiry: Option<String>,
     pub tags: String,
+    pub token: Option<String>,
+    pub grace_seconds: Option<i64>,
+    pub last_seen_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -257,6 +219,9 @@ pub struct MonitorWithSummaryRow {
     pub message_template_up: Option<String>,
     pub message_template_expiry: Option<String>,
     pub tags: String,
+    pub token: Option<String>,
+    pub grace_seconds: Option<i64>,
+    pub last_seen_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     // Summary fields from LEFT JOIN
@@ -285,6 +250,9 @@ impl From<MonitorWithSummaryRow> for Monitor {
             message_template_up: row.message_template_up,
             message_template_expiry: row.message_template_expiry,
             tags: serde_json::from_str(&row.tags).unwrap_or_default(),
+            token: row.token,
+            grace_seconds: row.grace_seconds,
+            last_seen_at: row.last_seen_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -311,6 +279,9 @@ impl From<MonitorRow> for Monitor {
             message_template_up: row.message_template_up,
             message_template_expiry: row.message_template_expiry,
             tags: serde_json::from_str(&row.tags).unwrap_or_default(),
+            token: row.token,
+            grace_seconds: row.grace_seconds,
+            last_seen_at: row.last_seen_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
