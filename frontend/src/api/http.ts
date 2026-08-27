@@ -305,3 +305,10 @@ export async function updateHeartbeat(id: string, data: Partial<Heartbeat>): Pro
 export async function deleteHeartbeat(id: string): Promise<void> {
   return fetcher(`/api/heartbeats/${id}`, { method: 'DELETE' });
 }
+
+// ───── Unified Dashboard Item ─────
+// A single item in the dashboard grid — can be a monitor or a heartbeat
+
+export type DashboardItem =
+  | (MonitorSummary & { kind: 'monitor' })
+  | (Heartbeat & { kind: 'heartbeat' });
