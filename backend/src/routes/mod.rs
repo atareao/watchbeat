@@ -42,7 +42,8 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/api/monitors/{id}",
-            routing::put(monitors::update)
+            routing::get(monitors::get_one)
+                .put(monitors::update)
                 .delete(monitors::delete)
                 .patch(monitors::toggle),
         )

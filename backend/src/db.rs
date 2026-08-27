@@ -105,21 +105,15 @@ impl Database {
         let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
             .execute(&pool)
             .await;
-        let _ = sqlx::raw_sql(
-            "ALTER TABLE monitors ADD COLUMN latency_threshold_ms INTEGER",
-        )
-        .execute(&pool)
-        .await;
-        let _ = sqlx::raw_sql(
-            "ALTER TABLE monitors ADD COLUMN message_template_down TEXT",
-        )
-        .execute(&pool)
-        .await;
-        let _ = sqlx::raw_sql(
-            "ALTER TABLE monitors ADD COLUMN message_template_latency TEXT",
-        )
-        .execute(&pool)
-        .await;
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN latency_threshold_ms INTEGER")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN message_template_down TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN message_template_latency TEXT")
+            .execute(&pool)
+            .await;
         let _ = sqlx::raw_sql("ALTER TABLE monitors ADD COLUMN message_template_up TEXT")
             .execute(&pool)
             .await;
@@ -173,6 +167,31 @@ impl Database {
         .await
         .context("Failed to list monitors")?;
         Ok(rows.into_iter().map(Monitor::from).collect())
+    }
+
+    pub async fn list_monitors_paginated(
+        &self,
+        page: i64,
+        per_page: i64,
+    ) -> Result<(Vec<Monitor>, i64)> {
+        let offset = (page - 1) * per_page;
+        let rows = sqlx::query_as::<_, MonitorRow>(
+            "SELECT id, name, monitor_type, target, config_json, interval_seconds, \
+             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
+             latency_threshold_ms, message_template_down, message_template_latency, \
+             message_template_up, message_template_expiry, created_at, updated_at \
+             FROM monitors ORDER BY name LIMIT ? OFFSET ?",
+        )
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to list monitors (paginated)")?;
+        let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM monitors")
+            .fetch_one(&self.pool)
+            .await
+            .context("Failed to count monitors")?;
+        Ok((rows.into_iter().map(Monitor::from).collect(), total.0))
     }
 
     pub async fn get_monitor(&self, id: &str) -> Result<Option<Monitor>> {
@@ -271,19 +290,27 @@ impl Database {
              message_template_up, message_template_expiry, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&monitor.id).bind(&monitor.name).bind(&monitor.monitor_type)
-        .bind(&monitor.target).bind(&config_json)
-        .bind(monitor.interval_seconds).bind(monitor.timeout_seconds)
-        .bind(monitor.enabled as i32).bind(&monitor.notifier_id)
-        .bind(monitor.confirmations_required).bind(monitor.failed_checks)
+        .bind(&monitor.id)
+        .bind(&monitor.name)
+        .bind(&monitor.monitor_type)
+        .bind(&monitor.target)
+        .bind(&config_json)
+        .bind(monitor.interval_seconds)
+        .bind(monitor.timeout_seconds)
+        .bind(monitor.enabled as i32)
+        .bind(&monitor.notifier_id)
+        .bind(monitor.confirmations_required)
+        .bind(monitor.failed_checks)
         .bind(serde_json::to_string(&monitor.tags).unwrap_or_else(|_| "[]".to_string()))
         .bind(monitor.latency_threshold_ms)
         .bind(&monitor.message_template_down)
         .bind(&monitor.message_template_latency)
         .bind(&monitor.message_template_up)
         .bind(&monitor.message_template_expiry)
-        .bind(&now).bind(&now)
-        .execute(&self.pool).await
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
         .context("Failed to insert monitor")?;
         Ok(())
     }
@@ -292,7 +319,7 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let config_json = serde_json::to_string(&monitor.config_json)
             .context("Failed to serialize config_json")?;
-        let rows =         sqlx::query(
+        let rows = sqlx::query(
             "UPDATE monitors SET name=?, monitor_type=?, target=?, config_json=?, \
              interval_seconds=?, timeout_seconds=?, enabled=?, notifier_id=?, \
              confirmations_required=?, failed_checks=?, tags=?, \
@@ -405,6 +432,15 @@ impl Database {
         .bind(monitor_id).bind(limit).bind(offset)
         .fetch_all(&self.pool).await
         .context("Failed to get checks")
+    }
+
+    pub async fn get_checks_count(&self, monitor_id: &str) -> Result<i64> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM checks WHERE monitor_id=?")
+            .bind(monitor_id)
+            .fetch_one(&self.pool)
+            .await
+            .context("Failed to count checks")?;
+        Ok(count)
     }
 
     pub async fn get_latest_check(&self, monitor_id: &str) -> Result<Option<CheckResult>> {

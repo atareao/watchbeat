@@ -17,8 +17,8 @@ pub async fn list(
     Path(id): Path<String>,
     Query(query): Query<ChecksQuery>,
 ) -> Result<Json<serde_json::Value>, String> {
-    let limit = query.limit.unwrap_or(50).min(200);
-    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0).max(0);
 
     let checks = state
         .db
@@ -26,7 +26,22 @@ pub async fn list(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(Json(serde_json::json!({ "checks": checks })))
+    let total = state
+        .db
+        .get_checks_count(&id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let total_pages = (total as f64 / limit as f64).ceil() as i64;
+    let page = (offset / limit) + 1;
+
+    Ok(Json(serde_json::json!({
+        "checks": checks,
+        "total": total,
+        "page": page,
+        "per_page": limit,
+        "total_pages": total_pages,
+    })))
 }
 
 #[derive(Deserialize)]

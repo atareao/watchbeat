@@ -13,8 +13,13 @@ pub async fn send_email_notification(
     message: &str,
 ) -> anyhow::Result<()> {
     let email = Message::builder()
-        .from(from.parse::<Mailbox>().map_err(|e| anyhow::anyhow!("Invalid from address: {}", e))?)
-        .to(to.parse::<Mailbox>().map_err(|e| anyhow::anyhow!("Invalid to address: {}", e))?)
+        .from(
+            from.parse::<Mailbox>()
+                .map_err(|e| anyhow::anyhow!("Invalid from address: {}", e))?,
+        )
+        .to(to
+            .parse::<Mailbox>()
+            .map_err(|e| anyhow::anyhow!("Invalid to address: {}", e))?)
         .subject("WatchBeat Alert")
         .body(message.to_string())
         .map_err(|e| anyhow::anyhow!("Failed to build email: {}", e))?;
