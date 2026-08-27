@@ -3,10 +3,10 @@ import { Card, Tag, Typography, Space, Button, Dropdown, Modal, Popconfirm, mess
 import {
   CheckCircleOutlined, CloseCircleOutlined, WarningOutlined,
   PlayCircleOutlined, MoreOutlined, HeartOutlined, ClockCircleOutlined, CopyOutlined,
+  GlobalOutlined, ApiOutlined, WifiOutlined, SafetyOutlined,
 } from '@ant-design/icons';
 import type { MonitorSummary } from '../api/http';
 import { runCheck, toggleMonitor } from '../api/http';
-import { useNavigate } from 'react-router';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import 'dayjs/locale/es';
@@ -23,6 +23,14 @@ const STATUS_CONFIG: Record<string, { color: string; icon: React.ReactNode }> = 
   pending: { color: '#f59e0b', icon: <ClockCircleOutlined style={{ color: '#f59e0b', fontSize: 24 }} /> },
 };
 
+const TYPE_ICONS: Record<string, React.ReactNode> = {
+  http: <GlobalOutlined style={{ color: '#1677ff' }} />,
+  tcp: <ApiOutlined style={{ color: '#8b5cf6' }} />,
+  ping: <WifiOutlined style={{ color: '#06b6d4' }} />,
+  tls: <SafetyOutlined style={{ color: '#f59e0b' }} />,
+  heartbeat: <HeartOutlined style={{ color: '#ec4899' }} />,
+};
+
 interface MonitorCardProps {
   item: MonitorSummary;
   onEdit: (item: MonitorSummary) => void;
@@ -31,7 +39,6 @@ interface MonitorCardProps {
 }
 
 export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: MonitorCardProps) {
-  const navigate = useNavigate();
   const isHeartbeat = item.monitor_type === 'heartbeat';
 
   // Heartbeat status uses last_seen_at + grace logic
@@ -51,6 +58,11 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
       : STATUS_CONFIG.error;
 
   const pulseUrl = isHeartbeat ? `${window.location.origin}/api/heartbeat/${item.token}` : '';
+  const typeIcon = TYPE_ICONS[item.monitor_type] ?? null;
+
+  const handleCardClick = () => {
+    onEdit(item);
+  };
 
   const handleCheck = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -73,20 +85,17 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
     }
   };
 
-  const handleCopyToken = (e: any) => {
-    e?.stopPropagation();
+  const handleCopyToken = () => {
     navigator.clipboard.writeText(item.token ?? '');
     message.success('Token copiado');
   };
 
-  const handleCopyUrl = (e: any) => {
-    e?.stopPropagation();
+  const handleCopyUrl = () => {
     navigator.clipboard.writeText(pulseUrl);
     message.success('URL de pulso copiada');
   };
 
-  const handleDeleteClick = (e: any) => {
-    e?.stopPropagation();
+  const handleDeleteClick = () => {
     Modal.confirm({
       title: isHeartbeat ? '¿Eliminar heartbeat?' : '¿Eliminar monitor?',
       content: `¿Estás seguro de eliminar "${item.name}"?`,
@@ -98,19 +107,19 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
   };
 
   const dropdownItems: any[] = [
-    { key: 'edit', label: 'Editar', onClick: (e: any) => { e?.stopPropagation(); onEdit(item); } },
+    { key: 'edit', label: 'Editar', onClick: ({ domEvent }: any) => { domEvent?.stopPropagation(); onEdit(item); } },
   ];
 
   if (isHeartbeat) {
     dropdownItems.push(
-      { key: 'copy-token', icon: <CopyOutlined />, label: 'Copiar token', onClick: handleCopyToken },
-      { key: 'copy-url', icon: <CopyOutlined />, label: 'Copiar URL de pulso', onClick: handleCopyUrl },
+      { key: 'copy-token', icon: <CopyOutlined />, label: 'Copiar token', onClick: ({ domEvent }: any) => { domEvent?.stopPropagation(); handleCopyToken(); } },
+      { key: 'copy-url', icon: <CopyOutlined />, label: 'Copiar URL de pulso', onClick: ({ domEvent }: any) => { domEvent?.stopPropagation(); handleCopyUrl(); } },
     );
   }
 
   dropdownItems.push(
     { type: 'divider' },
-    { key: 'delete', label: 'Eliminar', danger: true, onClick: handleDeleteClick },
+    { key: 'delete', label: 'Eliminar', danger: true, onClick: ({ domEvent }: any) => { domEvent?.stopPropagation(); handleDeleteClick(); } },
   );
 
   const statusLabel = isHeartbeat
@@ -121,15 +130,15 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
     <Card
       className="monitor-card"
       hoverable
-      onClick={() => isHeartbeat ? onEdit(item) : navigate(`/monitors/${item.id}`)}
-      style={{ borderLeft: `4px solid ${cfg.color}`, height: '100%' }}
+      onClick={handleCardClick}
+      style={{ borderLeft: `4px solid ${cfg.color}`, height: '100%', cursor: 'pointer' }}
       styles={{ body: { padding: 16, display: 'flex', flexDirection: 'column', height: '100%' } }}
     >
       {/* Header */}
       <Space align="start" style={{ justifyContent: 'space-between', width: '100%' }}>
         <div>
           <Space>
-            {isHeartbeat && <HeartOutlined style={{ color: '#ec4899' }} />}
+            {typeIcon}
             <Typography.Text strong style={{ fontSize: 16 }}>{item.name}</Typography.Text>
           </Space>
           <div style={{ marginTop: 4 }}>
@@ -181,21 +190,28 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, display: 'flex', justifyContent: 'space-between' }}>
         <Space>
           {!isHeartbeat && (
-            <>
-              <Button size="small" icon={<PlayCircleOutlined />} onClick={handleCheck} />
-              <Popconfirm title="¿Cambiar estado?" onConfirm={(e: any) => { e?.stopPropagation?.(); handleToggle(); }}>
-                <Button size="small" onClick={e => e.stopPropagation()}>{item.enabled ? 'Desactivar' : 'Activar'}</Button>
-              </Popconfirm>
-            </>
+            <Button size="small" icon={<PlayCircleOutlined />} onClick={handleCheck} />
           )}
+          <Popconfirm
+            title={item.enabled ? '¿Desactivar?' : '¿Activar?'}
+            onConfirm={handleToggle}
+            onCancel={(e: any) => e?.stopPropagation()}
+          >
+            <Button size="small" onClick={(e) => e.stopPropagation()}>
+              {item.enabled ? 'Desactivar' : 'Activar'}
+            </Button>
+          </Popconfirm>
           {isHeartbeat && (
             <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
               {item.token ? `Token: ${item.token.slice(0, 8)}...` : ''}
             </Typography.Text>
           )}
         </Space>
-        <Dropdown menu={{ items: dropdownItems }} trigger={['click']}>
-          <Button size="small" icon={<MoreOutlined />} onClick={e => e.stopPropagation()} />
+        <Dropdown
+          menu={{ items: dropdownItems }}
+          trigger={['click']}
+        >
+          <Button size="small" icon={<MoreOutlined />} onClick={(e) => e.stopPropagation()} />
         </Dropdown>
       </div>
     </Card>

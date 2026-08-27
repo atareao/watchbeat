@@ -16,10 +16,7 @@ export default function AppLayout() {
   const { user } = useAuth();
   const { isDark, toggle } = useTheme();
 
-  const isSettings = location.pathname === '/settings';
-  const navIcon = isSettings ? <DashboardOutlined /> : <SettingOutlined />;
-  const navLabel = isSettings ? 'Dashboard' : 'Ajustes';
-  const navPath = isSettings ? '/dashboard' : '/settings';
+  const isDashboard = location.pathname === '/dashboard' || location.pathname === '/'
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -34,16 +31,23 @@ export default function AppLayout() {
       }}>
         {/* Left: brand + navigation */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <span style={{ fontWeight: 'bold', fontSize: 18 }}>💓 WatchBeat</span>
-          <Button
-            type="text"
-            icon={navIcon}
-            onClick={() => navigate(navPath)}
-            size="large"
-            style={{ fontSize: 16 }}
+          <span
+            style={{ fontWeight: 'bold', fontSize: 18, cursor: 'pointer' }}
+            onClick={() => navigate('/dashboard')}
           >
-            {navLabel}
-          </Button>
+            💓 WatchBeat
+          </span>
+          {isDashboard && (
+            <Button
+              type="text"
+              icon={<SettingOutlined />}
+              onClick={() => navigate('/settings')}
+              size="large"
+              style={{ fontSize: 16 }}
+            >
+              Ajustes
+            </Button>
+          )}
         </div>
 
         {/* Right: user + theme + logout */}
