@@ -127,8 +127,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result =
-            send_gotify_notification(&server_url, "token", 10, "my test message").await;
+        let result = send_gotify_notification(&server_url, "token", 10, "my test message").await;
         assert!(result.is_ok());
         handle.await.unwrap();
     }
@@ -157,8 +156,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result =
-            send_gotify_notification(&server_url, "token", 0, "my test message").await;
+        let result = send_gotify_notification(&server_url, "token", 0, "my test message").await;
         assert!(result.is_ok());
         handle.await.unwrap();
     }
@@ -166,8 +164,7 @@ mod tests {
     #[tokio::test]
     async fn test_gotify_connection_refused() {
         let result =
-            send_gotify_notification("http://127.0.0.1:1", "token", 5, "test message")
-                .await;
+            send_gotify_notification("http://127.0.0.1:1", "token", 5, "test message").await;
         assert!(result.is_err());
     }
 }

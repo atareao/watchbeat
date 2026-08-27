@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -10,6 +10,12 @@ use crate::checker;
 use crate::models::{CheckResult, Monitor};
 
 // ───── Request types ─────
+
+#[derive(Deserialize)]
+pub struct PaginationParams {
+    pub page: Option<i64>,
+    pub per_page: Option<i64>,
+}
 
 #[derive(Deserialize)]
 pub struct CreateMonitorRequest {
@@ -49,9 +55,42 @@ pub struct UpdateMonitorRequest {
 
 // ───── Handlers ─────
 
-pub async fn list(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, String> {
-    let monitors = state.db.list_monitors().await.map_err(|e| e.to_string())?;
-    Ok(Json(serde_json::json!({ "monitors": monitors })))
+pub async fn get_one(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, String> {
+    let monitor = state
+        .db
+        .get_monitor(&id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("Monitor not found".to_string())?;
+
+    Ok(Json(serde_json::json!(monitor)))
+}
+
+pub async fn list(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<serde_json::Value>, String> {
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(20).clamp(1, 100);
+
+    let (monitors, total) = state
+        .db
+        .list_monitors_paginated(page, per_page)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let total_pages = (total as f64 / per_page as f64).ceil() as i64;
+
+    Ok(Json(serde_json::json!({
+        "monitors": monitors,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+    })))
 }
 
 pub async fn create(
@@ -151,9 +190,13 @@ pub async fn update(
         failed_checks: existing.failed_checks,
         latency_threshold_ms: req.latency_threshold_ms.or(existing.latency_threshold_ms),
         message_template_down: req.message_template_down.or(existing.message_template_down),
-        message_template_latency: req.message_template_latency.or(existing.message_template_latency),
+        message_template_latency: req
+            .message_template_latency
+            .or(existing.message_template_latency),
         message_template_up: req.message_template_up.or(existing.message_template_up),
-        message_template_expiry: req.message_template_expiry.or(existing.message_template_expiry),
+        message_template_expiry: req
+            .message_template_expiry
+            .or(existing.message_template_expiry),
         tags: existing.tags,
         created_at: existing.created_at,
         updated_at: now,

@@ -203,8 +203,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_connection_refused() {
         let result =
-            send_webhook_notification("http://127.0.0.1:1", "POST", "{}", "test alert")
-                .await;
+            send_webhook_notification("http://127.0.0.1:1", "POST", "{}", "test alert").await;
         assert!(result.is_err());
     }
 }
