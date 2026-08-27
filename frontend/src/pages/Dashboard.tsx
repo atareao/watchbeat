@@ -331,19 +331,6 @@ export default function Dashboard() {
         </Col>
       </Row>
 
-      {/* Scheduler info */}
-      <div style={{ marginBottom: 16, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          Última ejecución: {scheduler.last_run_at ? dayjs(scheduler.last_run_at).fromNow() : '—'}
-        </Typography.Text>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          Próxima ejecución: {scheduler.next_run_at ? dayjs(scheduler.next_run_at).fromNow() : '—'}
-        </Typography.Text>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          Monitores verificados: {scheduler.last_monitors_checked}
-        </Typography.Text>
-      </div>
-
       {/* Monitors grid */}
       {monitors.length > 0 && (
         <>
