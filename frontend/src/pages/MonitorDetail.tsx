@@ -64,7 +64,7 @@ export default function MonitorDetail() {
   const [checks, setChecks] = useState<CheckResult[]>([]);
   const [buckets, setBuckets] = useState<TimelineBucket[]>([]);
   const [loading, setLoading] = useState(true);
-  const [rangeKey, setRangeKey] = useState(4); // default: 7d
+  const [rangeKey, setRangeKey] = useState(3); // default: 24h
 
   const range = RANGE_OPTIONS[rangeKey];
 

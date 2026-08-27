@@ -97,6 +97,15 @@ pub async fn create(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Sync the many-to-many monitor_notifiers table
+    if let Some(ref nid) = monitor.notifier_id {
+        state
+            .db
+            .set_monitor_notifiers(&monitor.id, std::slice::from_ref(nid))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
     Ok(Json(serde_json::json!(monitor)))
 }
 
@@ -155,6 +164,22 @@ pub async fn update(
         .update_monitor(&id, &monitor)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Sync the many-to-many monitor_notifiers table with the final notifier_id
+    if let Some(ref nid) = monitor.notifier_id {
+        state
+            .db
+            .set_monitor_notifiers(&id, std::slice::from_ref(nid))
+            .await
+            .map_err(|e| e.to_string())?;
+    } else {
+        // Clear the monitor_notifiers table if notifier was removed
+        state
+            .db
+            .set_monitor_notifiers(&id, &[])
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     Ok(Json(serde_json::json!(monitor)))
 }
