@@ -87,7 +87,7 @@ export default function HeartbeatCard({ heartbeat, onEdit, onDelete, onRefresh }
   return (
     <Card
       className="monitor-card"
-      size="small"
+      hoverable
       style={{ borderLeft: `4px solid ${cfg.color}` }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>

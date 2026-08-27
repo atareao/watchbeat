@@ -308,48 +308,20 @@ export default function Dashboard() {
         </Row>
       )}
 
-      {/* Heartbeat stats mini-row */}
+      {/* Heartbeat stats inline — same style as monitor stats */}
       {heartbeats.length > 0 && (
         <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-          <Col xs={12} sm={8} lg={6}>
-            <Card size="small">
-              <Statistic
-                title="Heartbeats"
-                value={heartbeats.length}
-                prefix={<HeartOutlined style={{ color: '#ec4899' }} />}
-                valueStyle={{ fontSize: 20 }}
-              />
-            </Card>
+          <Col xs={12} sm={12} lg={3}>
+            <Card><Statistic title="Heartbeats" value={heartbeats.length} prefix={<HeartOutlined style={{ color: '#ec4899' }} />} /></Card>
           </Col>
-          <Col xs={12} sm={8} lg={6}>
-            <Card size="small">
-              <Statistic
-                title="OK"
-                value={heartbeats.filter(h => h.status === 'ok').length}
-                prefix={<CheckCircleOutlined style={{ color: '#22c55e' }} />}
-                valueStyle={{ fontSize: 20, color: '#22c55e' }}
-              />
-            </Card>
+          <Col xs={12} sm={12} lg={3}>
+            <Card><Statistic title="OK" value={heartbeats.filter(h => h.status === 'ok').length} prefix={<CheckCircleOutlined style={{ color: '#22c55e' }} />} valueStyle={{ color: '#22c55e' }} /></Card>
           </Col>
-          <Col xs={12} sm={8} lg={6}>
-            <Card size="small">
-              <Statistic
-                title="Perdidos"
-                value={heartbeats.filter(h => h.status === 'missing').length}
-                prefix={<CloseCircleOutlined style={{ color: '#ef4444' }} />}
-                valueStyle={{ fontSize: 20, color: '#ef4444' }}
-              />
-            </Card>
+          <Col xs={12} sm={12} lg={3}>
+            <Card><Statistic title="Perdidos" value={heartbeats.filter(h => h.status === 'missing').length} prefix={<CloseCircleOutlined style={{ color: '#ef4444' }} />} valueStyle={{ color: '#ef4444' }} /></Card>
           </Col>
-          <Col xs={12} sm={8} lg={6}>
-            <Card size="small">
-              <Statistic
-                title="Pendientes"
-                value={heartbeats.filter(h => h.status === 'pending').length}
-                prefix={<ClockCircleOutlined style={{ color: '#f59e0b' }} />}
-                valueStyle={{ fontSize: 20, color: '#f59e0b' }}
-              />
-            </Card>
+          <Col xs={12} sm={12} lg={3}>
+            <Card><Statistic title="Pendientes" value={heartbeats.filter(h => h.status === 'pending').length} prefix={<ClockCircleOutlined style={{ color: '#f59e0b' }} />} valueStyle={{ color: '#f59e0b' }} /></Card>
           </Col>
         </Row>
       )}
@@ -389,18 +361,7 @@ export default function Dashboard() {
         ))}
       </Row>
 
-      {/* Empty state */}
-      {!loading && monitors.length === 0 && (
-        <Card style={{ marginTop: 16 }}>
-          <Typography.Text type="secondary">
-            {debouncedSearch || typeFilter || statusFilter
-              ? 'No hay monitores que coincidan con los filtros'
-              : 'No hay monitores configurados. Crea tu primer monitor.'}
-          </Typography.Text>
-        </Card>
-      )}
-
-      {/* Heartbeat section */}
+      {/* Heartbeat section — before empty state, after monitors grid */}
       {!hbLoading && heartbeats.length > 0 && (
         <div style={{ marginTop: 24, marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -414,14 +375,10 @@ export default function Dashboard() {
               <Col xs={24} sm={12} lg={8} xl={6} key={hb.id}>
                 <HeartbeatCard
                   heartbeat={hb}
-                  onEdit={(hbData) => {
-                    // Navigate to heartbeats page for editing
-                    navigate('/heartbeats');
-                  }}
+                  onEdit={() => navigate('/heartbeats')}
                   onDelete={() => {
                     fetchHeartbeats().then(hData => {
                       setHeartbeats(hData.heartbeats);
-                      if (hData.heartbeats.length === 0) setHbLoading(false);
                     }).catch(() => {});
                   }}
                   onRefresh={() => {
@@ -432,6 +389,17 @@ export default function Dashboard() {
             ))}
           </Row>
         </div>
+      )}
+
+      {/* Empty state (only after both sections) */}
+      {!loading && monitors.length === 0 && (
+        <Card style={{ marginTop: 16 }}>
+          <Typography.Text type="secondary">
+            {debouncedSearch || typeFilter || statusFilter
+              ? 'No hay monitores que coincidan con los filtros'
+              : 'No hay monitores configurados. Crea tu primer monitor.'}
+          </Typography.Text>
+        </Card>
       )}
 
       {/* Pagination */}
