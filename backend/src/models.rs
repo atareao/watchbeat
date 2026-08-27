@@ -237,6 +237,60 @@ pub struct MonitorRow {
     pub updated_at: String,
 }
 
+/// Like MonitorRow but includes summary fields from a LEFT JOIN with checks
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MonitorWithSummaryRow {
+    pub id: String,
+    pub name: String,
+    pub monitor_type: String,
+    pub target: String,
+    pub config_json: String,
+    pub interval_seconds: i64,
+    pub timeout_seconds: i64,
+    pub enabled: i32,
+    pub notifier_id: Option<String>,
+    pub confirmations_required: i64,
+    pub failed_checks: i64,
+    pub latency_threshold_ms: Option<i64>,
+    pub message_template_down: Option<String>,
+    pub message_template_latency: Option<String>,
+    pub message_template_up: Option<String>,
+    pub message_template_expiry: Option<String>,
+    pub tags: String,
+    pub created_at: String,
+    pub updated_at: String,
+    // Summary fields from LEFT JOIN
+    pub last_status: Option<String>,
+    pub last_response_time_ms: Option<i64>,
+    pub last_checked_at: Option<String>,
+}
+
+impl From<MonitorWithSummaryRow> for Monitor {
+    fn from(row: MonitorWithSummaryRow) -> Self {
+        Monitor {
+            id: row.id,
+            name: row.name,
+            monitor_type: row.monitor_type,
+            target: row.target,
+            config_json: serde_json::from_str(&row.config_json).unwrap_or_default(),
+            interval_seconds: row.interval_seconds,
+            timeout_seconds: row.timeout_seconds,
+            enabled: row.enabled != 0,
+            notifier_id: row.notifier_id,
+            confirmations_required: row.confirmations_required,
+            failed_checks: row.failed_checks,
+            latency_threshold_ms: row.latency_threshold_ms,
+            message_template_down: row.message_template_down,
+            message_template_latency: row.message_template_latency,
+            message_template_up: row.message_template_up,
+            message_template_expiry: row.message_template_expiry,
+            tags: serde_json::from_str(&row.tags).unwrap_or_default(),
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
 impl From<MonitorRow> for Monitor {
     fn from(row: MonitorRow) -> Self {
         Monitor {
