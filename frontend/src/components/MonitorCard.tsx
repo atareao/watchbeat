@@ -7,6 +7,7 @@ import {
 } from '@ant-design/icons';
 import type { MonitorSummary } from '../api/http';
 import { runCheck, toggleMonitor } from '../api/http';
+import { useNavigate } from 'react-router';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import 'dayjs/locale/es';
@@ -39,6 +40,7 @@ interface MonitorCardProps {
 }
 
 export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: MonitorCardProps) {
+  const navigate = useNavigate();
   const isHeartbeat = item.monitor_type === 'heartbeat';
 
   // Heartbeat status uses last_seen_at + grace logic
@@ -60,8 +62,13 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
   const pulseUrl = isHeartbeat ? `${window.location.origin}/api/heartbeat/${item.token}` : '';
   const typeIcon = TYPE_ICONS[item.monitor_type] ?? null;
 
+  // Card click: navigate to detail (monitors) or open edit modal (heartbeats)
   const handleCardClick = () => {
-    onEdit(item);
+    if (isHeartbeat) {
+      onEdit(item);
+    } else {
+      navigate(`/monitors/${item.id}`);
+    }
   };
 
   const handleCheck = async (e: React.MouseEvent) => {
@@ -106,20 +113,22 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
     });
   };
 
+  // Dropdown menu items — the menu overlay is rendered in a portal (outside Card's DOM),
+  // so clicks on menu items don't propagate to the Card. No stopPropagation needed.
   const dropdownItems: any[] = [
-    { key: 'edit', label: 'Editar', onClick: ({ domEvent }: any) => { domEvent?.stopPropagation(); onEdit(item); } },
+    { key: 'edit', label: 'Editar', onClick: () => onEdit(item) },
   ];
 
   if (isHeartbeat) {
     dropdownItems.push(
-      { key: 'copy-token', icon: <CopyOutlined />, label: 'Copiar token', onClick: ({ domEvent }: any) => { domEvent?.stopPropagation(); handleCopyToken(); } },
-      { key: 'copy-url', icon: <CopyOutlined />, label: 'Copiar URL de pulso', onClick: ({ domEvent }: any) => { domEvent?.stopPropagation(); handleCopyUrl(); } },
+      { key: 'copy-token', icon: <CopyOutlined />, label: 'Copiar token', onClick: handleCopyToken },
+      { key: 'copy-url', icon: <CopyOutlined />, label: 'Copiar URL de pulso', onClick: handleCopyUrl },
     );
   }
 
   dropdownItems.push(
     { type: 'divider' },
-    { key: 'delete', label: 'Eliminar', danger: true, onClick: ({ domEvent }: any) => { domEvent?.stopPropagation(); handleDeleteClick(); } },
+    { key: 'delete', label: 'Eliminar', danger: true, onClick: handleDeleteClick },
   );
 
   const statusLabel = isHeartbeat
@@ -156,7 +165,7 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
         {cfg.icon}
       </Space>
 
-      {/* Body — flex-grow wrapper so action bar stays at bottom */}
+      {/* Body */}
       <div style={{ flex: 1, minHeight: 0 }}>
       {isHeartbeat ? (
         <div style={{ marginTop: 8 }}>
@@ -186,7 +195,7 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
 
       </div>
 
-      {/* Actions bar */}
+      {/* Actions bar — stopPropagation in buttons prevents Card onClick from firing */}
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, display: 'flex', justifyContent: 'space-between' }}>
         <Space>
           {!isHeartbeat && (
@@ -195,9 +204,8 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
           <Popconfirm
             title={item.enabled ? '¿Desactivar?' : '¿Activar?'}
             onConfirm={handleToggle}
-            onCancel={(e: any) => e?.stopPropagation()}
           >
-            <Button size="small" onClick={(e) => e.stopPropagation()}>
+            <Button size="small" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
               {item.enabled ? 'Desactivar' : 'Activar'}
             </Button>
           </Popconfirm>
@@ -211,7 +219,7 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
           menu={{ items: dropdownItems }}
           trigger={['click']}
         >
-          <Button size="small" icon={<MoreOutlined />} onClick={(e) => e.stopPropagation()} />
+          <Button size="small" icon={<MoreOutlined />} onClick={(e: React.MouseEvent) => e.stopPropagation()} />
         </Dropdown>
       </div>
     </Card>
