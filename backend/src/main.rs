@@ -526,10 +526,20 @@ async fn run_monitor_check(
 
     // Send notification if we have a rendered message
     if let Some((_notif_type, message)) = notification_type {
-        let notifier_ids = db
+        let mut notifier_ids = db
             .get_monitor_notifier_ids(&monitor.id)
             .await
             .unwrap_or_default();
+
+        // Fallback to the legacy single-notifier field if the many-to-many
+        // monitor_notifiers table is empty (e.g. monitors created before the
+        // table existed, or migration gaps)
+        if notifier_ids.is_empty() {
+            if let Some(ref nid) = monitor.notifier_id {
+                notifier_ids.push(nid.clone());
+            }
+        }
+
         for nid in &notifier_ids {
             if let Some(notifier) = notifiers.get(nid) {
                 if !notifier.enabled {
