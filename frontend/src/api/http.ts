@@ -46,6 +46,9 @@ export interface MonitorSummary {
   last_checked_at: string | null;
   uptime_7d: number | null;
   uptime_30d: number | null;
+  token: string | null;
+  grace_seconds: number | null;
+  last_seen_at: string | null;
 }
 
 export interface DashboardStatus {
@@ -307,8 +310,5 @@ export async function deleteHeartbeat(id: string): Promise<void> {
 }
 
 // ───── Unified Dashboard Item ─────
-// A single item in the dashboard grid — can be a monitor or a heartbeat
 
-export type DashboardItem =
-  | (MonitorSummary & { kind: 'monitor' })
-  | (Heartbeat & { kind: 'heartbeat' });
+export type DashboardItem = MonitorSummary;
