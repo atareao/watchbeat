@@ -198,51 +198,71 @@ export default function Settings() {
 
   const deleteStatusPage = async (id: string) => { try { await deleteStatusPage(id); message.success('Eliminada'); loadStatusPages(); } catch { message.error('Error'); } };
 
-  // ── Tab items ──
+  // ── Tab items (single level) ──
 
   const tabItems = [
     {
-      key: 'general',
-      label: 'General',
+      key: 'retention',
+      label: 'Retención de datos',
       children: (
         <Card>
-          <Tabs>
-            <Tabs.TabPane tab="Retención de datos" key="retention">
-              <Paragraph>Los checks antiguos se eliminan automáticamente. El cambio se aplica en el siguiente ciclo del scheduler (~15s).</Paragraph>
-              <Space>
-                <InputNumber min={1} max={365} value={retentionDays} onChange={(v) => setRetentionDays(v ?? 30)} addonAfter="días" style={{ width: 200 }} />
-                <Button type="primary" icon={<SaveOutlined />} onClick={saveRetention} loading={saving}>Guardar</Button>
-              </Space>
-            </Tabs.TabPane>
-            <Tabs.TabPane tab="Plantillas por defecto" key="templates">
-              <Paragraph>Se usan cuando un monitor no tiene plantilla personalizada. Déjalas en blanco para usar las internas.</Paragraph>
-              <Space direction="vertical" style={{ width: '100%' }} size="middle">
-                <div><Text strong>DOWN</Text><Input.TextArea rows={2} value={defaultTemplates.down} onChange={(e) => setDefaultTemplates(p => ({ ...p, down: e.target.value }))} placeholder="🔴 {{ monitor_name }} — {{ target }}\nError: {{ error_message }}" /></div>
-                <div><Text strong>LATENCIA</Text><Input.TextArea rows={2} value={defaultTemplates.latency} onChange={(e) => setDefaultTemplates(p => ({ ...p, latency: e.target.value }))} placeholder="🟡 {{ monitor_name }} — {{ response_time_ms }}ms" /></div>
-                <div><Text strong>UP</Text><Input.TextArea rows={2} value={defaultTemplates.up} onChange={(e) => setDefaultTemplates(p => ({ ...p, up: e.target.value }))} placeholder="🟢 {{ monitor_name }} — {{ response_time_ms }}ms" /></div>
-                <div><Text strong>EXPIRACIÓN</Text><Input.TextArea rows={2} value={defaultTemplates.expiry} onChange={(e) => setDefaultTemplates(p => ({ ...p, expiry: e.target.value }))} placeholder="🟡 {{ monitor_name }} — {{ days_left }} días" /></div>
-                <Button type="primary" icon={<SaveOutlined />} onClick={saveDefaultTemplates} loading={savingTemplates}>Guardar plantillas</Button>
-              </Space>
-            </Tabs.TabPane>
-            <Tabs.TabPane tab="Backup" key="backup">
-              <Paragraph>Crea una copia del archivo SQLite con checkpoint WAL.</Paragraph>
-              <Button icon={<WarningOutlined />} onClick={doBackup} loading={backingUp}>Crear backup ahora</Button>
-            </Tabs.TabPane>
-            <Tabs.TabPane tab="Exportar" key="export">
-              <Paragraph>Descarga el histórico de checks en CSV o JSON (desde la vista de detalle de un monitor).</Paragraph>
-            </Tabs.TabPane>
-            <Tabs.TabPane tab="Variables de entorno" key="env">
-              <Paragraph>Configuración principal mediante variables. Consulta <code>watchbeat.env.example</code>.</Paragraph>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead><tr style={{ borderBottom: '1px solid #eee' }}><th style={{ padding: 8, textAlign: 'left' }}>Variable</th><th style={{ padding: 8, textAlign: 'left' }}>Descripción</th></tr></thead>
-                <tbody>
-                  {[['HOST', 'Host de escucha (0.0.0.0)'], ['PORT', 'Puerto (3055)'], ['DATA_DIR', 'Directorio de datos'], ['DATABASE_URL', 'Ruta a SQLite'], ['OIDC_ISSUER_URL', 'URL del issuer OIDC'], ['OIDC_CLIENT_ID', 'Client ID OIDC'], ['OIDC_CLIENT_SECRET', 'Client Secret OIDC'], ['TIMEZONE', 'Zona horaria (Europe/Madrid)'], ['RUST_LOG', 'Nivel de log (info)']].map(([v, d]) => (
-                    <tr key={v}><td style={{ padding: 8 }}>{v}</td><td style={{ padding: 8 }}>{d}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            </Tabs.TabPane>
-          </Tabs>
+          <Paragraph>Los checks antiguos se eliminan automáticamente. El cambio se aplica en el siguiente ciclo del scheduler (~15s).</Paragraph>
+          <Space>
+            <InputNumber min={1} max={365} value={retentionDays} onChange={(v) => setRetentionDays(v ?? 30)} addonAfter="días" style={{ width: 200 }} />
+            <Button type="primary" icon={<SaveOutlined />} onClick={saveRetention} loading={saving}>Guardar</Button>
+          </Space>
+        </Card>
+      ),
+    },
+    {
+      key: 'templates',
+      label: 'Plantillas',
+      children: (
+        <Card>
+          <Paragraph>Se usan cuando un monitor no tiene plantilla personalizada. Déjalas en blanco para usar las internas.</Paragraph>
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <div><Text strong>DOWN</Text><Input.TextArea rows={2} value={defaultTemplates.down} onChange={(e) => setDefaultTemplates(p => ({ ...p, down: e.target.value }))} placeholder="🔴 {{ monitor_name }} — {{ target }}\nError: {{ error_message }}" /></div>
+            <div><Text strong>LATENCIA</Text><Input.TextArea rows={2} value={defaultTemplates.latency} onChange={(e) => setDefaultTemplates(p => ({ ...p, latency: e.target.value }))} placeholder="🟡 {{ monitor_name }} — {{ response_time_ms }}ms" /></div>
+            <div><Text strong>UP</Text><Input.TextArea rows={2} value={defaultTemplates.up} onChange={(e) => setDefaultTemplates(p => ({ ...p, up: e.target.value }))} placeholder="🟢 {{ monitor_name }} — {{ response_time_ms }}ms" /></div>
+            <div><Text strong>EXPIRACIÓN</Text><Input.TextArea rows={2} value={defaultTemplates.expiry} onChange={(e) => setDefaultTemplates(p => ({ ...p, expiry: e.target.value }))} placeholder="🟡 {{ monitor_name }} — {{ days_left }} días" /></div>
+            <Button type="primary" icon={<SaveOutlined />} onClick={saveDefaultTemplates} loading={savingTemplates}>Guardar plantillas</Button>
+          </Space>
+        </Card>
+      ),
+    },
+    {
+      key: 'backup',
+      label: 'Backup',
+      children: (
+        <Card>
+          <Paragraph>Crea una copia del archivo SQLite con checkpoint WAL.</Paragraph>
+          <Button icon={<WarningOutlined />} onClick={doBackup} loading={backingUp}>Crear backup ahora</Button>
+        </Card>
+      ),
+    },
+    {
+      key: 'export',
+      label: 'Exportar',
+      children: (
+        <Card>
+          <Paragraph>Descarga el histórico de checks en CSV o JSON (desde la vista de detalle de un monitor).</Paragraph>
+        </Card>
+      ),
+    },
+    {
+      key: 'env',
+      label: 'Variables de entorno',
+      children: (
+        <Card>
+          <Paragraph>Configuración principal mediante variables. Consulta <code>watchbeat.env.example</code>.</Paragraph>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ borderBottom: '1px solid #eee' }}><th style={{ padding: 8, textAlign: 'left' }}>Variable</th><th style={{ padding: 8, textAlign: 'left' }}>Descripción</th></tr></thead>
+            <tbody>
+              {[['HOST', 'Host de escucha (0.0.0.0)'], ['PORT', 'Puerto (3055)'], ['DATA_DIR', 'Directorio de datos'], ['DATABASE_URL', 'Ruta a SQLite'], ['OIDC_ISSUER_URL', 'URL del issuer OIDC'], ['OIDC_CLIENT_ID', 'Client ID OIDC'], ['OIDC_CLIENT_SECRET', 'Client Secret OIDC'], ['TIMEZONE', 'Zona horaria (Europe/Madrid)'], ['RUST_LOG', 'Nivel de log (info)']].map(([v, d]) => (
+                <tr key={v}><td style={{ padding: 8 }}>{v}</td><td style={{ padding: 8 }}>{d}</td></tr>
+              ))}
+            </tbody>
+          </table>
         </Card>
       ),
     },
