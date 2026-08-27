@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Layout, Menu, Typography, Button } from 'antd';
 import {
-  DashboardOutlined, MonitorOutlined, BellOutlined, SettingOutlined, LogoutOutlined,
+  DashboardOutlined, BellOutlined, SettingOutlined, LogoutOutlined,
   ControlOutlined, HeartOutlined, SunOutlined, MoonOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router';
@@ -13,7 +13,6 @@ const { Header, Sider, Content } = Layout;
 
 const menuItems = [
   { key: '/dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
-  { key: '/monitors', icon: <MonitorOutlined />, label: 'Monitores' },
   { key: '/notifiers', icon: <BellOutlined />, label: 'Notificadores' },
   { key: '/status-pages', icon: <ControlOutlined />, label: 'Status Pages' },
   { key: '/heartbeats', icon: <HeartOutlined />, label: 'Heartbeats' },

@@ -7,8 +7,8 @@ use sqlx::SqlitePool;
 
 use crate::models::{
     CheckResult, DashboardStatus, Heartbeat, HeartbeatRow, Monitor, MonitorRow, MonitorSummary,
-    Notifier, NotifierRow, StatusPage, StatusPageRow, TimelineBucket, TimelinePoint,
-    TimelinePointRow,
+    MonitorWithSummaryRow, Notifier, NotifierRow, StatusPage, StatusPageRow, TimelineBucket,
+    TimelinePoint, TimelinePointRow,
 };
 
 #[derive(Clone)]
@@ -173,25 +173,174 @@ impl Database {
         &self,
         page: i64,
         per_page: i64,
-    ) -> Result<(Vec<Monitor>, i64)> {
+        search: Option<&str>,
+        filter_type: Option<&str>,
+        filter_status: Option<&str>,
+    ) -> Result<(Vec<Monitor>, i64, Vec<MonitorSummary>)> {
         let offset = (page - 1) * per_page;
-        let rows = sqlx::query_as::<_, MonitorRow>(
-            "SELECT id, name, monitor_type, target, config_json, interval_seconds, \
-             timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
-             latency_threshold_ms, message_template_down, message_template_latency, \
-             message_template_up, message_template_expiry, created_at, updated_at \
-             FROM monitors ORDER BY name LIMIT ? OFFSET ?",
-        )
-        .bind(per_page)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await
-        .context("Failed to list monitors (paginated)")?;
-        let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM monitors")
+
+        // Build dynamic WHERE clause
+        let mut conditions: Vec<String> = Vec::new();
+        let mut bindings: Vec<String> = Vec::new();
+
+        if let Some(q) = search.filter(|s| !s.is_empty()) {
+            conditions.push("(m.name LIKE ?1 OR m.target LIKE ?1)".to_string());
+            bindings.push(format!("%{}%", q));
+        }
+        if let Some(t) = filter_type.filter(|s| !s.is_empty()) {
+            let idx = bindings.len() + 1;
+            conditions.push(format!("m.monitor_type = ?{}", idx));
+            bindings.push(t.to_string());
+        }
+        if let Some(s) = filter_status.filter(|s| !s.is_empty()) {
+            conditions.push("c.status = ?".to_string());
+            bindings.push(s.to_string());
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        // For status filter we must use the subquery approach for the WHERE
+        // Let's use a simpler approach with raw SQL string building
+        let base_query = format!(
+            "SELECT m.id, m.name, m.monitor_type, m.target, m.config_json, \
+             m.interval_seconds, m.timeout_seconds, m.enabled, m.notifier_id, \
+             m.confirmations_required, m.failed_checks, m.tags, \
+             m.latency_threshold_ms, m.message_template_down, m.message_template_latency, \
+             m.message_template_up, m.message_template_expiry, m.created_at, m.updated_at, \
+             c.status AS last_status, c.response_time_ms AS last_response_time_ms, \
+             c.checked_at AS last_checked_at \
+             FROM monitors m \
+             LEFT JOIN checks c ON c.id = (SELECT id FROM checks WHERE monitor_id = m.id ORDER BY checked_at DESC LIMIT 1) \
+             {}",
+            where_clause
+        );
+
+        let count_query = format!(
+            "SELECT COUNT(*) FROM monitors m \
+             LEFT JOIN checks c ON c.id = (SELECT id FROM checks WHERE monitor_id = m.id ORDER BY checked_at DESC LIMIT 1) \
+             {}",
+            where_clause
+        );
+
+        let order_query = format!("{} ORDER BY m.name LIMIT ? OFFSET ?", base_query);
+
+        // Build and execute the count query
+        let mut count_stmt = sqlx::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(count_query.as_str()));
+        for val in &bindings {
+            count_stmt = count_stmt.bind(val);
+        }
+        let total: (i64,) = count_stmt
             .fetch_one(&self.pool)
             .await
             .context("Failed to count monitors")?;
-        Ok((rows.into_iter().map(Monitor::from).collect(), total.0))
+
+        // Build and execute the data query
+        let mut stmt =
+            sqlx::query_as::<_, MonitorWithSummaryRow>(sqlx::AssertSqlSafe(order_query.as_str()));
+        for val in &bindings {
+            stmt = stmt.bind(val);
+        }
+        stmt = stmt.bind(per_page).bind(offset);
+        let rows = stmt
+            .fetch_all(&self.pool)
+            .await
+            .context("Failed to list monitors (paginated)")?;
+
+        // Convert to Monitor and MonitorSummary, compute uptime for each
+        let mut monitors = Vec::with_capacity(rows.len());
+        let mut summaries = Vec::with_capacity(rows.len());
+
+        for row in rows {
+            let last_status = row.last_status.clone();
+            let last_response_time_ms = row.last_response_time_ms;
+            let last_checked_at = row.last_checked_at.clone();
+            let m: Monitor = row.into();
+            let summary = MonitorSummary {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                monitor_type: m.monitor_type.clone(),
+                target: m.target.clone(),
+                enabled: m.enabled,
+                last_status,
+                last_response_time_ms: last_response_time_ms.map(|v| v as u64),
+                last_checked_at,
+                uptime_7d: None,
+                uptime_30d: None,
+            };
+            monitors.push(m);
+            summaries.push(summary);
+        }
+
+        // Compute uptime for the returned monitors in batch
+        let summary_ids: Vec<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
+        let uptimes = self.batch_calculate_uptime(&summary_ids).await?;
+        for s in &mut summaries {
+            if let Some(u) = uptimes.get(s.id.as_str()) {
+                s.uptime_7d = u.0;
+                s.uptime_30d = u.1;
+            }
+        }
+
+        Ok((monitors, total.0, summaries))
+    }
+
+    /// Calculate uptime for a batch of monitors in a single query per period
+    async fn batch_calculate_uptime(
+        &self,
+        monitor_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, (Option<f64>, Option<f64>)>> {
+        use std::collections::HashMap;
+        let mut result = HashMap::new();
+        if monitor_ids.is_empty() {
+            return Ok(result);
+        }
+
+        let cutoff_7d = (Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+        let cutoff_30d = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+
+        for &id in monitor_ids {
+            // 7d uptime
+            let uptime_7d: Option<(i64, i64)> = sqlx::query_as(
+                "SELECT CAST(COUNT(*) AS INTEGER) as total, \
+                 CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS INTEGER) as up_count \
+                 FROM checks WHERE monitor_id=? AND checked_at>=?",
+            )
+            .bind(id)
+            .bind(&cutoff_7d)
+            .fetch_optional(&self.pool)
+            .await
+            .context("Failed to calculate 7d uptime")?;
+
+            let u7 = match uptime_7d {
+                Some((total, up)) if total > 0 => Some(up as f64 / total as f64 * 100.0),
+                _ => None,
+            };
+
+            // 30d uptime
+            let uptime_30d: Option<(i64, i64)> = sqlx::query_as(
+                "SELECT CAST(COUNT(*) AS INTEGER) as total, \
+                 CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS INTEGER) as up_count \
+                 FROM checks WHERE monitor_id=? AND checked_at>=?",
+            )
+            .bind(id)
+            .bind(&cutoff_30d)
+            .fetch_optional(&self.pool)
+            .await
+            .context("Failed to calculate 30d uptime")?;
+
+            let u30 = match uptime_30d {
+                Some((total, up)) if total > 0 => Some(up as f64 / total as f64 * 100.0),
+                _ => None,
+            };
+
+            result.insert(id.to_string(), (u7, u30));
+        }
+
+        Ok(result)
     }
 
     pub async fn get_monitor(&self, id: &str) -> Result<Option<Monitor>> {

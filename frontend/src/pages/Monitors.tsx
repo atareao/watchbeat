@@ -53,9 +53,9 @@ export default function Monitors() {
     const currentPage = p ?? page;
     const currentPerPage = pp ?? perPage;
     setLoading(true);
-    Promise.all([fetchMonitors(currentPage, currentPerPage), fetchNotifiers()])
+    Promise.all([fetchMonitors({ page: currentPage, perPage: currentPerPage }), fetchNotifiers()])
       .then(([mData, nData]) => {
-        setMonitors(mData.monitors);
+        setMonitors(mData.monitors as unknown as Monitor[]);
         setTotal(mData.total);
         setPage(mData.page);
         setPerPage(mData.per_page);

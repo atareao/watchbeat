@@ -122,8 +122,31 @@ export interface PaginatedResponse<T> {
   total_pages: number;
 }
 
-export async function fetchMonitors(page = 1, perPage = 20): Promise<PaginatedResponse<Monitor>> {
-  return fetcher(`/api/monitors?page=${page}&per_page=${perPage}`);
+export interface UnifiedDashboardResponse {
+  status: DashboardStatus;
+  monitors: MonitorSummary[];
+  scheduler: { last_run_at: string | null; next_run_at: string | null; last_monitors_checked: number };
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
+export async function fetchMonitors(params?: {
+  page?: number;
+  perPage?: number;
+  q?: string;
+  type?: string;
+  status?: string;
+}): Promise<UnifiedDashboardResponse> {
+  const searchParams = new URLSearchParams();
+  if (params?.page) searchParams.set('page', String(params.page));
+  if (params?.perPage) searchParams.set('per_page', String(params.perPage));
+  if (params?.q) searchParams.set('q', params.q);
+  if (params?.type) searchParams.set('type', params.type);
+  if (params?.status) searchParams.set('status', params.status);
+  const qs = searchParams.toString();
+  return fetcher(`/api/monitors${qs ? `?${qs}` : ''}`);
 }
 
 export async function fetchMonitor(id: string): Promise<Monitor> {
@@ -183,12 +206,8 @@ export async function fetchTimelineBuckets(
   return fetcher(`/api/monitors/${id}/timeline?${query}`);
 }
 
-export async function fetchStatus(): Promise<{
-  status: DashboardStatus;
-  monitors: MonitorSummary[];
-  scheduler: { last_run_at: string | null; next_run_at: string | null; last_monitors_checked: number };
-}> {
-  return fetcher('/api/status');
+export async function fetchStatus(): Promise<UnifiedDashboardResponse> {
+  return fetcher('/api/monitors?per_page=100');
 }
 
 export async function fetchNotifiers(): Promise<{ notifiers: Notifier[] }> {
