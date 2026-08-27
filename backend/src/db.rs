@@ -170,7 +170,7 @@ impl Database {
             "SELECT id, name, monitor_type, target, config_json, interval_seconds, \
              timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
              latency_threshold_ms, message_template_down, message_template_latency, \
-             message_template_up, message_template_expiry, created_at, updated_at FROM monitors ORDER BY name",
+             message_template_up, message_template_expiry, token, grace_seconds, last_seen_at, created_at, updated_at FROM monitors ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await
@@ -219,7 +219,7 @@ impl Database {
              m.interval_seconds, m.timeout_seconds, m.enabled, m.notifier_id, \
              m.confirmations_required, m.failed_checks, m.tags, \
              m.latency_threshold_ms, m.message_template_down, m.message_template_latency, \
-             m.message_template_up, m.message_template_expiry, m.created_at, m.updated_at, \
+             m.message_template_up, m.message_template_expiry, m.token, m.grace_seconds, m.last_seen_at, m.created_at, m.updated_at, \
              c.status AS last_status, c.response_time_ms AS last_response_time_ms, \
              c.checked_at AS last_checked_at \
              FROM monitors m \
@@ -279,6 +279,9 @@ impl Database {
                 last_checked_at,
                 uptime_7d: None,
                 uptime_30d: None,
+                token: m.token.clone(),
+                grace_seconds: m.grace_seconds,
+                last_seen_at: m.last_seen_at.clone(),
             };
             monitors.push(m);
             summaries.push(summary);
@@ -357,7 +360,7 @@ impl Database {
             "SELECT id, name, monitor_type, target, config_json, interval_seconds, \
              timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
              latency_threshold_ms, message_template_down, message_template_latency, \
-             message_template_up, message_template_expiry, created_at, updated_at FROM monitors WHERE id = ?",
+             message_template_up, message_template_expiry, token, grace_seconds, last_seen_at, created_at, updated_at FROM monitors WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -432,8 +435,8 @@ impl Database {
             "INSERT INTO monitors (id, name, monitor_type, target, config_json, interval_seconds, \
              timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
              latency_threshold_ms, message_template_down, message_template_latency, \
-             message_template_up, message_template_expiry, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             message_template_up, message_template_expiry, token, grace_seconds, last_seen_at, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&monitor.id)
         .bind(&monitor.name)
@@ -452,6 +455,9 @@ impl Database {
         .bind(&monitor.message_template_latency)
         .bind(&monitor.message_template_up)
         .bind(&monitor.message_template_expiry)
+        .bind(&monitor.token)
+        .bind(monitor.grace_seconds)
+        .bind(&monitor.last_seen_at)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -716,6 +722,9 @@ impl Database {
                 last_checked_at: latest.map(|c| c.checked_at),
                 uptime_7d,
                 uptime_30d,
+                token: m.token,
+                grace_seconds: m.grace_seconds,
+                last_seen_at: m.last_seen_at,
             });
         }
         Ok(summaries)

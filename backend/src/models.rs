@@ -110,6 +110,9 @@ pub struct MonitorSummary {
     pub last_checked_at: Option<String>,
     pub uptime_7d: Option<f64>,
     pub uptime_30d: Option<f64>,
+    pub token: Option<String>,
+    pub grace_seconds: Option<i64>,
+    pub last_seen_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
