@@ -13,6 +13,7 @@ use crate::auth::AppState;
 pub mod auth_routes;
 pub mod backup;
 pub mod checks;
+pub mod export_import;
 pub mod exports;
 pub mod heartbeats;
 pub mod metrics;
@@ -79,6 +80,8 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             routing::get(exports::export),
         )
         .route("/api/backup", routing::post(backup::create_backup))
+        .route("/api/export", routing::get(export_import::export_all))
+        .route("/api/import", routing::post(export_import::import_all))
         .route(
             "/api/settings",
             routing::get(settings::get_setting_query).post(settings::set_setting),

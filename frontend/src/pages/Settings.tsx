@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import {
   Card, Typography, InputNumber, Input, Button, message, Space, Tabs, Table, Modal, Form, Select, Switch, Popconfirm,
 } from 'antd';
@@ -10,7 +10,8 @@ import {
   fetchStatus, fetchSetting, saveSetting, createBackup,
   fetchNotifiers, createNotifier, updateNotifier, deleteNotifier, testNotifier,
   fetchStatusPages, createStatusPage, updateStatusPage, deleteStatusPage, fetchMonitors,
-  type Notifier, type StatusPage,
+  exportConfig, importConfig,
+  type Notifier, type StatusPage, type ExportPayload,
 } from '../api/http';
 
 const { Title, Text, Paragraph } = Typography;
@@ -100,6 +101,12 @@ export default function Settings() {
   const [spModal, setSpModal] = useState(false);
   const [editingSpId, setEditingSpId] = useState<string | null>(null);
   const [spForm] = Form.useForm();
+
+  // ── Export / Import state ──
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Init ──
   useEffect(() => {
@@ -217,6 +224,43 @@ export default function Settings() {
 
   const deleteStatusPage = async (id: string) => { try { await deleteStatusPage(id); message.success('Eliminada'); loadStatusPages(); } catch { message.error('Error'); } };
 
+  // ── Handlers: export / import ──
+
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      const data = await exportConfig();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `watchbeat-export-${data.exported_at.slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      message.success(`Exportados ${data.monitors.length} monitores, ${data.notifiers.length} notificadores, ${data.status_pages.length} status pages, ${data.settings.length} ajustes`);
+    } catch (e: any) { message.error(e.message); } finally { setExporting(false); }
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const text = await file.text();
+      const payload: ExportPayload = JSON.parse(text);
+      if (!payload.version || !payload.monitors) {
+        throw new Error('El archivo no tiene el formato de exportación de WatchBeat');
+      }
+      const result = await importConfig(payload);
+      const msg = `Importados ${result.imported.monitors} monitores, ${result.imported.notifiers} notificadores, ${result.imported.status_pages} status pages, ${result.imported.settings} ajustes`;
+      setImportResult(msg);
+      message.success(msg);
+    } catch (e: any) { message.error('Error al importar: ' + e.message); } finally { setImporting(false); if (fileInputRef.current) fileInputRef.current.value = ''; }
+  };
+
+  const triggerImport = () => { fileInputRef.current?.click(); };
+
   // ── Tab items (single level) ──
 
   const tabItems = [
@@ -261,10 +305,31 @@ export default function Settings() {
     },
     {
       key: 'export',
-      label: 'Exportar',
+      label: 'Exportar / Importar',
       children: (
         <Card>
-          <Paragraph>Descarga el histórico de checks en CSV o JSON (desde la vista de detalle de un monitor).</Paragraph>
+          <Space direction="vertical" style={{ width: '100%' }} size="large">
+            <div>
+              <Title level={4}><DownloadOutlined /> Exportar configuración</Title>
+              <Paragraph>Descarga toda la configuración de WatchBeat (monitores, notificadores, status pages y ajustes) como un archivo JSON.</Paragraph>
+              <Button type="primary" icon={<DownloadOutlined />} onClick={doExport} loading={exporting}>
+                Exportar todo
+              </Button>
+            </div>
+            <div>
+              <Title level={4}><FileTextOutlined /> Importar configuración</Title>
+              <Paragraph>Selecciona un archivo JSON exportado previamente para restaurar la configuración. Los elementos existentes se actualizarán, los nuevos se crearán.</Paragraph>
+              <input ref={fileInputRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleImportFile} />
+              <Button icon={<FileTextOutlined />} onClick={triggerImport} loading={importing}>
+                Importar desde archivo
+              </Button>
+              {importResult && (
+                <div style={{ marginTop: 12 }}>
+                  <Text type="success">{importResult}</Text>
+                </div>
+              )}
+            </div>
+          </Space>
         </Card>
       ),
     },

@@ -125,7 +125,13 @@ async fn main() {
     let event_tx_for_sched = event_tx.clone();
     let retention_days = config.retention_days;
     tokio::spawn(async move {
-        scheduler_loop(db_for_scheduler, sched_status, event_tx_for_sched, retention_days).await;
+        scheduler_loop(
+            db_for_scheduler,
+            sched_status,
+            event_tx_for_sched,
+            retention_days,
+        )
+        .await;
     });
 
     // ───── Consolidation Loop ─────
@@ -751,8 +757,9 @@ async fn consolidation_loop(db: Database) {
                 let period_end = now;
                 let period_start = now - chrono::Duration::seconds(period_secs);
                 let total_span_secs = (period_end - period_start).num_seconds().max(1);
-                let bucket_size_secs =
-                    (total_span_secs as f64 / TARGET_BLOCKS as f64).ceil().max(1.0) as i64;
+                let bucket_size_secs = (total_span_secs as f64 / TARGET_BLOCKS as f64)
+                    .ceil()
+                    .max(1.0) as i64;
 
                 let period_start_ts = period_start.timestamp();
 
@@ -769,7 +776,9 @@ async fn consolidation_loop(db: Database) {
 
                     let bucket_points: Vec<_> = checks
                         .iter()
-                        .filter(|p| p.checked_at >= bucket_start_str && p.checked_at < bucket_end_str)
+                        .filter(|p| {
+                            p.checked_at >= bucket_start_str && p.checked_at < bucket_end_str
+                        })
                         .collect();
 
                     let count = bucket_points.len() as i64;

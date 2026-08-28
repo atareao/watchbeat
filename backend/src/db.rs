@@ -1046,14 +1046,13 @@ impl Database {
     }
 
     pub async fn delete_old_consolidated(&self, period: &str, older_than: &str) -> Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM consolidated_metrics WHERE period=? AND bucket_start<?",
-        )
-        .bind(period)
-        .bind(older_than)
-        .execute(&self.pool)
-        .await
-        .context("Failed to delete old consolidated metrics")?;
+        let result =
+            sqlx::query("DELETE FROM consolidated_metrics WHERE period=? AND bucket_start<?")
+                .bind(period)
+                .bind(older_than)
+                .execute(&self.pool)
+                .await
+                .context("Failed to delete old consolidated metrics")?;
         Ok(result.rows_affected())
     }
 

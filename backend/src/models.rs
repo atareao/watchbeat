@@ -299,7 +299,7 @@ impl From<MonitorRow> for Monitor {
 pub struct ConsolidatedMetricRow {
     pub id: i64,
     pub monitor_id: String,
-    pub period: String,       // '6h', '12h', '24h', '7d', '15d', '30d', '3m', '6m', '1a'
+    pub period: String, // '6h', '12h', '24h', '7d', '15d', '30d', '3m', '6m', '1a'
     pub bucket_start: String, // RFC 3339
     pub up_pct: f64,
     pub avg_response_time_ms: f64,

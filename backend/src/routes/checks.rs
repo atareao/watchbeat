@@ -69,9 +69,9 @@ pub async fn timeline(
     // 6h+ → consolidated_metrics (precomputed)
     let use_consolidated = match (query.hours, query.days) {
         (Some(h), _) if h <= 1 => false, // 1h → real-time
-        (Some(_), _) => true,             // 6h, 12h, 24h → consolidated
-        (_, Some(_)) => true,             // any days → consolidated
-        (None, None) => false,            // default → real-time
+        (Some(_), _) => true,            // 6h, 12h, 24h → consolidated
+        (_, Some(_)) => true,            // any days → consolidated
+        (None, None) => false,           // default → real-time
     };
 
     if use_consolidated {
