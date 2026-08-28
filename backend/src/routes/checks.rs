@@ -109,6 +109,9 @@ pub async fn timeline(
             .await
             .map_err(|e| e.to_string())?;
 
+        // Take only the last 60 buckets (consolidation creates 60 per period per run)
+        let rows: Vec<_> = rows.into_iter().rev().take(60).rev().collect();
+
         // Add dominant_status derived from up_pct (same logic as TimelineBucket)
         let buckets: Vec<serde_json::Value> = rows
             .iter()
