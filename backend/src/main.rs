@@ -123,8 +123,9 @@ async fn main() {
     let db_for_scheduler = db.clone();
     let sched_status = scheduler_status.clone();
     let event_tx_for_sched = event_tx.clone();
+    let retention_days = config.retention_days;
     tokio::spawn(async move {
-        scheduler_loop(db_for_scheduler, sched_status, event_tx_for_sched).await;
+        scheduler_loop(db_for_scheduler, sched_status, event_tx_for_sched, retention_days).await;
     });
 
     // ───── Consolidation Loop ─────
@@ -176,6 +177,7 @@ async fn scheduler_loop(
     db: Database,
     sched_status: Arc<Mutex<SchedulerStatus>>,
     event_tx: tokio::sync::broadcast::Sender<String>,
+    retention_days: i64,
 ) {
     // Small delay to let the server start
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
@@ -189,7 +191,7 @@ async fn scheduler_loop(
         let sched_status = sched_status.clone();
         let event_tx = event_tx.clone();
         let handle = tokio::spawn(async move {
-            scheduler_iteration(&db, &sched_status, &event_tx).await;
+            scheduler_iteration(&db, &sched_status, &event_tx, retention_days).await;
         });
 
         match handle.await {
@@ -218,6 +220,7 @@ async fn scheduler_iteration(
     db: &Database,
     sched_status: &Arc<Mutex<SchedulerStatus>>,
     event_tx: &tokio::sync::broadcast::Sender<String>,
+    retention_days: i64,
 ) {
     let monitors = match db.list_monitors().await {
         Ok(m) => m,
@@ -284,13 +287,6 @@ async fn scheduler_iteration(
     }
 
     // Cleanup old checks (configurable retention, default 30 days)
-    let retention_days = db
-        .get_setting("retention_days")
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(30);
     if let Err(e) = db.cleanup_old_checks(retention_days).await {
         tracing::warn!("Scheduler: cleanup failed: {}", e);
     }
