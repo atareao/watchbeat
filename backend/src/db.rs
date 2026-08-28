@@ -947,8 +947,10 @@ impl Database {
 
     pub async fn get_dashboard_status(&self) -> Result<DashboardStatus> {
         // Single query: LEFT JOIN with subquery for latest check — no N+1
-        let rows = sqlx::query_as::<_, (i32, Option<String>, Option<i64>)>(
-            "SELECT m.enabled, c.status, c.response_time_ms \
+        // For heartbeats, compute effective status from last_seen_at + grace_seconds
+        let rows = sqlx::query_as::<_, (i32, Option<String>, Option<i64>, String, Option<String>, Option<i64>)>(
+            "SELECT m.enabled, c.status, c.response_time_ms, \
+             m.monitor_type, m.last_seen_at, m.grace_seconds \
              FROM monitors m \
              LEFT JOIN checks c ON c.id = (SELECT id FROM checks WHERE monitor_id = m.id ORDER BY checked_at DESC LIMIT 1)",
         )
@@ -963,11 +965,39 @@ impl Database {
         let mut total_rt = 0u64;
         let mut rt_count = 0u64;
 
-        for (_enabled, status, rt) in &rows {
-            match status.as_deref() {
-                Some("up") => up += 1,
-                Some(_) => down += 1,
-                None => {} // no checks yet
+        for (_enabled, status, rt, monitor_type, last_seen_at, grace_seconds) in &rows {
+            // Heartbeat: effective status from last_seen_at + grace_seconds
+            if monitor_type == "heartbeat" {
+                let effective = match last_seen_at {
+                    Some(seen) => {
+                        let grace = grace_seconds.unwrap_or(3600);
+                        let seen_dt = match chrono::DateTime::parse_from_rfc3339(seen) {
+                            Ok(dt) => dt.with_timezone(&chrono::Utc),
+                            Err(_) => {
+                                down += 1;
+                                continue;
+                            }
+                        };
+                        let elapsed = (chrono::Utc::now() - seen_dt).num_seconds();
+                        if elapsed < grace {
+                            "up"
+                        } else {
+                            "down"
+                        }
+                    }
+                    None => "down", // never seen
+                };
+                if effective == "up" {
+                    up += 1;
+                } else {
+                    down += 1;
+                }
+            } else {
+                match status.as_deref() {
+                    Some("up") => up += 1,
+                    Some(_) => down += 1,
+                    None => {} // no checks yet
+                }
             }
             if let Some(rt_val) = rt {
                 total_rt += *rt_val as u64;
