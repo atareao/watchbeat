@@ -103,11 +103,32 @@ pub async fn timeline(
             }
         };
 
-        let buckets = state
+        let rows = state
             .db
             .get_consolidated_buckets(&id, period, &since)
             .await
             .map_err(|e| e.to_string())?;
+
+        // Add dominant_status derived from up_pct (same logic as TimelineBucket)
+        let buckets: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                let dominant_status = if r.count == 0 {
+                    "no_data"
+                } else if r.up_pct >= 50.0 {
+                    "up"
+                } else {
+                    "down"
+                };
+                serde_json::json!({
+                    "bucket_start": r.bucket_start,
+                    "up_pct": r.up_pct,
+                    "avg_response_time_ms": r.avg_response_time_ms,
+                    "count": r.count,
+                    "dominant_status": dominant_status,
+                })
+            })
+            .collect();
 
         return Ok(Json(serde_json::json!({ "buckets": buckets })));
     }
