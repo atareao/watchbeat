@@ -4,7 +4,7 @@ import {
 } from 'antd';
 import {
   RocketOutlined, CheckCircleOutlined, CloseCircleOutlined,
-  FieldTimeOutlined, DashboardOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, SettingOutlined,
+  FieldTimeOutlined, DashboardOutlined, PlusOutlined, SearchOutlined, SettingOutlined,
   HeartOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router';
@@ -287,7 +287,6 @@ export default function Dashboard() {
             onChange={setStatusFilter}
             style={{ width: 150 }}
           />
-          <Button icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading}>Recargar</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>Añadir</Button>
         </Space>
       </div>

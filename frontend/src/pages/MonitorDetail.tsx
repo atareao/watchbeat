@@ -5,7 +5,7 @@ import {
   Modal, Form, Input, InputNumber, Select, Switch, Tabs,
 } from 'antd';
 import {
-  ReloadOutlined, BarChartOutlined,
+  BarChartOutlined, HeartOutlined,
   ClockCircleOutlined, EditOutlined, SettingOutlined,
 } from '@ant-design/icons';
 import {
@@ -92,16 +92,17 @@ function formatBucketTime(bucketStart: string, bucketSeconds: number): string {
 
 // ── Monitor Stats Card (latency, uptime 24h/30d/1y, cert expiry) ──
 function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck: CheckResult | null }) {
+  const isHeartbeat = monitor.type === 'heartbeat';
   const [stats, setStats] = useState<{
     latency24h: number | null;
     uptime24h: number | null;
     uptime30d: number | null;
     uptime1y: number | null;
   }>({ latency24h: null, uptime24h: null, uptime30d: null, uptime1y: null });
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!isHeartbeat);
 
   useEffect(() => {
-    if (monitor.type === 'heartbeat') return;
+    if (isHeartbeat) return;
     setLoading(true);
 
     // Fetch 24h, 30d, and 1y buckets in parallel
@@ -129,10 +130,60 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
     }).catch(() => {
       // ignore
     }).finally(() => setLoading(false));
-  }, [monitor.id, monitor.type]);
+  }, [monitor.id, isHeartbeat]);
 
   const certExpiry = latestCheck?.tls_cert_expires_at ?? null;
   const certDaysLeft = latestCheck?.tls_cert_days_left ?? null;
+
+  // Heartbeat stats
+  if (isHeartbeat) {
+    const hbStatus = monitor.last_seen_at
+      ? (() => {
+          const elapsed = Date.now() - new Date(monitor.last_seen_at).getTime();
+          return elapsed < (monitor.grace_seconds ?? 3600) * 1000 ? 'ok' : 'missing';
+        })()
+      : 'pending';
+    const pulseUrl = `${window.location.origin}/api/heartbeat/${monitor.token}`;
+    return (
+      <Card title="Heartbeat" style={{ marginTop: 16 }}>
+        <Row gutter={[16, 16]}>
+          <Col xs={12} sm={8} md={4}>
+            <Statistic
+              title="Último pulso"
+              value={monitor.last_seen_at ? dayjs(monitor.last_seen_at).fromNow() : 'Nunca'}
+              valueStyle={{ fontSize: 18, color: hbStatus === 'ok' ? '#22c55e' : '#ef4444' }}
+            />
+          </Col>
+          <Col xs={12} sm={8} md={4}>
+            <Statistic
+              title="Periodo de gracia"
+              value={`${monitor.grace_seconds ?? 3600}s`}
+              valueStyle={{ fontSize: 18 }}
+            />
+          </Col>
+          <Col xs={12} sm={8} md={4}>
+            <Statistic
+              title="Estado"
+              value={hbStatus === 'ok' ? 'OK' : hbStatus === 'missing' ? 'Perdido' : 'Pendiente'}
+              valueStyle={{ fontSize: 18, color: hbStatus === 'ok' ? '#22c55e' : hbStatus === 'missing' ? '#ef4444' : '#f59e0b' }}
+            />
+          </Col>
+          <Col xs={12} sm={8} md={4}>
+            <Statistic
+              title="Token"
+              value={monitor.token ? `${monitor.token.slice(0, 12)}...` : '—'}
+              valueStyle={{ fontSize: 14, color: '#888' }}
+            />
+          </Col>
+        </Row>
+        <div style={{ marginTop: 8 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            URL de pulso: <Typography.Text code style={{ fontSize: 12 }}>{pulseUrl}</Typography.Text>
+          </Typography.Text>
+        </div>
+      </Card>
+    );
+  }
 
   return (
     <Card title="Estadísticas" style={{ marginTop: 16 }} loading={loading}>
@@ -194,6 +245,71 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
         )}
       </Row>
     </Card>
+  );
+}
+
+function HeartbeatChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; rangeKey: number }) {
+  const range = RANGE_OPTIONS[rangeKey];
+
+  const pulses = buckets.filter(b => b.count > 0);
+  const totalPulses = pulses.reduce((sum, b) => sum + b.count, 0);
+
+  if (buckets.length === 0) return <Text type="secondary">Sin datos en {range.labelLong.toLowerCase()}</Text>;
+
+  const MAX_BARS = 150;
+  const bars = buckets.length > MAX_BARS ? buckets.slice(-MAX_BARS) : buckets;
+  const labelInterval = Math.max(1, Math.floor(bars.length / 6));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 1, alignItems: 'flex-end', height: 60 }}>
+        {bars.map((b, i) => {
+          const hasPulse = b.count > 0;
+          const color = hasPulse ? '#22c55e' : '#e5e7eb';
+          const tooltipTitle = hasPulse
+            ? `Pulso recibido · ${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
+            : `Sin pulso · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`;
+          return (
+            <Tooltip key={i} title={tooltipTitle}>
+              <div
+                style={{
+                  flex: '1 1 0',
+                  minWidth: 2,
+                  height: hasPulse ? '100%' : '20%',
+                  background: color,
+                  borderRadius: '1px 1px 0 0',
+                  cursor: 'pointer',
+                }}
+              />
+            </Tooltip>
+          );
+        })}
+      </div>
+      {/* Time axis labels */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 10, color: '#888' }}>
+        {bars.length > 0 && (
+          <>
+            <span>{formatBucketTime(bars[0].bucket_start, range.bucketSeconds)}</span>
+            {Array.from({ length: Math.min(5, Math.floor(bars.length / labelInterval)) }, (_, i) => {
+              const idx = Math.min((i + 1) * labelInterval, bars.length - 1);
+              return <span key={i}>{formatBucketTime(bars[idx].bucket_start, range.bucketSeconds)}</span>;
+            })}
+            <span>{formatBucketTime(bars[bars.length - 1].bucket_start, range.bucketSeconds)}</span>
+          </>
+        )}
+      </div>
+      {/* Stats row */}
+      <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: '#888' }}>
+        <span><HeartOutlined /> {totalPulses} pulsos recibidos</span>
+        <span><ClockCircleOutlined /> {range.labelLong.toLowerCase()}</span>
+      </div>
+      {/* Legend */}
+      <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, color: '#888', alignItems: 'center' }}>
+        <span style={{ fontWeight: 500, color: '#555' }}>Pulso:</span>
+        <span style={{ color: '#22c55e' }}>■ Recibido</span>
+        <span style={{ color: '#e5e7eb' }}>■ Sin pulso</span>
+      </div>
+    </div>
   );
 }
 
@@ -427,19 +543,23 @@ export default function MonitorDetail() {
 
   // ── Common view for all monitor types (including heartbeat) ──
 
+  const isHeartbeat = monitor.type === 'heartbeat';
+
   const checksColumns = [
     { title: 'Estado', dataIndex: 'status', key: 'status',
       render: (s: string) => <Tag color={STATUS_TAG[s]?.color}>{STATUS_TAG[s]?.text ?? s}</Tag>,
     },
-    { title: 'Código', dataIndex: 'status_code', key: 'code', width: 80,
-      render: (v: number | null) => v ?? '—',
-    },
-    { title: 'Latencia', dataIndex: 'response_time_ms', key: 'latency', width: 100,
-      render: (v: number) => `${v} ms`,
-    },
-    { title: 'Error', dataIndex: 'error_message', key: 'error', ellipsis: true,
-      render: (v: string | null) => v ?? '—',
-    },
+    ...(isHeartbeat ? [] : [
+      { title: 'Código', dataIndex: 'status_code', key: 'code', width: 80,
+        render: (v: number | null) => v ?? '—',
+      },
+      { title: 'Latencia', dataIndex: 'response_time_ms', key: 'latency', width: 100,
+        render: (v: number) => `${v} ms`,
+      },
+      { title: 'Error', dataIndex: 'error_message', key: 'error', ellipsis: true,
+        render: (v: string | null) => v ?? '—',
+      },
+    ]),
     { title: 'Fecha', dataIndex: 'checked_at', key: 'date', width: 160,
       render: (v: string) => dayjs(v).format('DD/MM/YYYY HH:mm:ss'),
     },
@@ -458,19 +578,32 @@ export default function MonitorDetail() {
         <Descriptions.Item label="Tipo">{monitor.type}</Descriptions.Item>
         <Descriptions.Item label="Target">{monitor.target}</Descriptions.Item>
         <Descriptions.Item label="Estado">
-          <Tag color={checks[0] ? STATUS_TAG[checks[0].status]?.color : 'default'}>
-            {checks[0] ? STATUS_TAG[checks[0].status]?.text ?? '—' : 'Sin datos'}
-          </Tag>
+          {monitor.type === 'heartbeat' ? (
+            (() => {
+              const hbStatus = monitor.last_seen_at
+                ? (Date.now() - new Date(monitor.last_seen_at).getTime()) < (monitor.grace_seconds ?? 3600) * 1000
+                  ? 'ok' : 'missing'
+                : 'pending';
+              const cfg = hbStatus === 'ok' ? { color: 'green', text: 'OK' }
+                : hbStatus === 'missing' ? { color: 'red', text: 'Perdido' }
+                : { color: 'orange', text: 'Pendiente' };
+              return <Tag color={cfg.color}>{cfg.text}</Tag>;
+            })()
+          ) : (
+            <Tag color={checks[0] ? STATUS_TAG[checks[0].status]?.color : 'default'}>
+              {checks[0] ? STATUS_TAG[checks[0].status]?.text ?? '—' : 'Sin datos'}
+            </Tag>
+          )}
         </Descriptions.Item>
       </Descriptions>
 
       {/* Stats card */}
       <MonitorStats monitor={monitor} latestCheck={checks[0] ?? null} />
 
-      {/* Health & Latency Chart */}
+      {/* Health Chart */}
       <Card style={{ marginTop: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <Text strong><BarChartOutlined /> Health & Latency</Text>
+          <Text strong><BarChartOutlined /> {monitor.type === 'heartbeat' ? 'Health' : 'Health & Latency'}</Text>
           <Space size={4} wrap>
             {RANGE_OPTIONS.map((opt, i) => (
               <Tooltip key={opt.label} title={opt.labelLong}>
@@ -485,7 +618,10 @@ export default function MonitorDetail() {
             ))}
           </Space>
         </div>
-        <HealthLatencyChart buckets={buckets} rangeKey={rangeKey} />
+        {monitor.type === 'heartbeat'
+          ? <HeartbeatChart buckets={buckets} rangeKey={rangeKey} />
+          : <HealthLatencyChart buckets={buckets} rangeKey={rangeKey} />
+        }
       </Card>
 
       {/* History table */}
