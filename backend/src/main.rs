@@ -136,8 +136,9 @@ async fn main() {
 
     // ───── Consolidation Loop ─────
     let db_for_consolidation = db.clone();
+    let retention_for_consolidation = config.retention_days;
     tokio::spawn(async move {
-        consolidation_loop(db_for_consolidation).await;
+        consolidation_loop(db_for_consolidation, retention_for_consolidation).await;
     });
 
     // ───── Router (como populates) ─────
@@ -293,6 +294,7 @@ async fn scheduler_iteration(
     }
 
     // Cleanup old checks (configurable retention, default 30 days)
+    // Note: heavy cleanup is done in the hourly consolidation_loop to avoid slowing down the scheduler
     if let Err(e) = db.cleanup_old_checks(retention_days).await {
         tracing::warn!("Scheduler: cleanup failed: {}", e);
     }
@@ -717,12 +719,17 @@ const PERIODS: &[(&str, i64)] = &[
 
 const TARGET_BLOCKS: usize = 60;
 
-async fn consolidation_loop(db: Database) {
+async fn consolidation_loop(db: Database, retention_days: i64) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
     // First run immediately on startup to populate all periods from existing data
     loop {
         ticker.tick().await;
         tracing::info!("Starting metric consolidation cycle");
+
+        // Cleanup old checks once per hour instead of every scheduler iteration
+        if let Err(e) = db.cleanup_old_checks(retention_days).await {
+            tracing::warn!("Consolidation: cleanup failed: {e}");
+        }
 
         let monitors = match db.list_monitors().await {
             Ok(m) => m,
