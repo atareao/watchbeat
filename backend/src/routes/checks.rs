@@ -64,6 +64,55 @@ pub async fn timeline(
         (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339()
     };
 
+    // Determine if we should use consolidated metrics or real-time checks
+    // 1h → real-time from checks (few rows, fast)
+    // 6h+ → consolidated_metrics (precomputed)
+    let use_consolidated = match (query.hours, query.days) {
+        (Some(h), _) if h <= 1 => false, // 1h → real-time
+        (Some(_), _) => true,             // 6h, 12h, 24h → consolidated
+        (_, Some(_)) => true,             // any days → consolidated
+        (None, None) => false,            // default → real-time
+    };
+
+    if use_consolidated {
+        // Map the range to a period string
+        let period = match (query.hours, query.days) {
+            (Some(6), _) => "6h",
+            (Some(12), _) => "12h",
+            (Some(24), _) => "24h",
+            (_, Some(7)) => "7d",
+            (_, Some(15)) => "15d",
+            (_, Some(30)) => "30d",
+            (_, Some(90)) => "3m",
+            (_, Some(180)) => "6m",
+            (_, Some(365)) => "1a",
+            // Fallback: derive from bucket_seconds
+            _ => {
+                let bs = query.bucket_seconds.unwrap_or(900);
+                match bs {
+                    0..=300 => "6h",
+                    301..=600 => "12h",
+                    601..=900 => "24h",
+                    901..=7200 => "7d",
+                    7201..=14400 => "15d",
+                    14401..=28800 => "30d",
+                    28801..=86400 => "3m",
+                    86401..=172800 => "6m",
+                    _ => "1a",
+                }
+            }
+        };
+
+        let buckets = state
+            .db
+            .get_consolidated_buckets(&id, period, &since)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        return Ok(Json(serde_json::json!({ "buckets": buckets })));
+    }
+
+    // 1h or default: real-time from checks (existing behavior)
     if let Some(bucket_seconds) = query.bucket_seconds {
         let bucket_seconds = bucket_seconds.clamp(60, 86400 * 7); // 1 min to 7 days
         let buckets = state
