@@ -127,6 +127,12 @@ async fn main() {
         scheduler_loop(db_for_scheduler, sched_status, event_tx_for_sched).await;
     });
 
+    // ───── Consolidation Loop ─────
+    let db_for_consolidation = db.clone();
+    tokio::spawn(async move {
+        consolidation_loop(db_for_consolidation).await;
+    });
+
     // ───── Router (como populates) ─────
     let state_for_middleware = app_state.clone();
     let app = routes::api_routes()
@@ -687,6 +693,132 @@ async fn run_monitor_check(
                 }
             }
         }
+    }
+}
+
+// ───── Consolidation Loop ─────
+// Runs every hour, grouping checks into 80 buckets per period (6h, 12h, 24h, 7d, 15d, 30d, 3m, 6m, 1a)
+// and upserts them into consolidated_metrics for fast timeline queries.
+
+const PERIODS: &[(&str, i64)] = &[
+    ("6h", 6 * 3600),
+    ("12h", 12 * 3600),
+    ("24h", 24 * 3600),
+    ("7d", 7 * 86400),
+    ("15d", 15 * 86400),
+    ("30d", 30 * 86400),
+    ("3m", 90 * 86400),
+    ("6m", 180 * 86400),
+    ("1a", 365 * 86400),
+];
+
+const TARGET_BLOCKS: usize = 80;
+
+async fn consolidation_loop(db: Database) {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+    // Skip the immediate first tick — no data yet on startup
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        tracing::info!("Starting metric consolidation cycle");
+
+        let monitors = match db.list_monitors().await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!("Failed to list monitors for consolidation: {e}");
+                continue;
+            }
+        };
+
+        let now = chrono::Utc::now();
+        let one_hour_ago = (now - chrono::Duration::hours(1)).to_rfc3339();
+        let mut total_buckets = 0usize;
+
+        for monitor in &monitors {
+            // Get checks from the last hour
+            let checks = match db.get_timeline(&monitor.id, &one_hour_ago).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        "Consolidation: failed to get timeline for monitor {}: {e}",
+                        monitor.id
+                    );
+                    continue;
+                }
+            };
+
+            if checks.is_empty() {
+                continue;
+            }
+
+            for &(period_label, period_secs) in PERIODS {
+                let period_end = now;
+                let period_start = now - chrono::Duration::seconds(period_secs);
+                let total_span_secs = (period_end - period_start).num_seconds().max(1);
+                let bucket_size_secs =
+                    (total_span_secs as f64 / TARGET_BLOCKS as f64).ceil().max(1.0) as i64;
+
+                let period_start_ts = period_start.timestamp();
+
+                for i in 0..TARGET_BLOCKS {
+                    let bucket_start_ts = period_start_ts + (i as i64 * bucket_size_secs);
+                    let bucket_end_ts = bucket_start_ts + bucket_size_secs;
+
+                    let bucket_start_str = chrono::DateTime::from_timestamp(bucket_start_ts, 0)
+                        .map(|dt| dt.to_rfc3339())
+                        .unwrap_or_default();
+                    let bucket_end_str = chrono::DateTime::from_timestamp(bucket_end_ts, 0)
+                        .map(|dt| dt.to_rfc3339())
+                        .unwrap_or_default();
+
+                    let bucket_points: Vec<_> = checks
+                        .iter()
+                        .filter(|p| p.checked_at >= bucket_start_str && p.checked_at < bucket_end_str)
+                        .collect();
+
+                    let count = bucket_points.len() as i64;
+
+                    let (up_pct, avg_rt) = if count > 0 {
+                        let up_count =
+                            bucket_points.iter().filter(|p| p.status == "up").count() as i64;
+                        let up = (up_count as f64 / count as f64) * 100.0;
+                        let avg = bucket_points
+                            .iter()
+                            .filter_map(|p| p.response_time_ms)
+                            .map(|v| v as f64)
+                            .sum::<f64>()
+                            / count as f64;
+                        (up, avg)
+                    } else {
+                        (0.0, 0.0)
+                    };
+
+                    let bucket = watchbeat::models::ConsolidatedBucket {
+                        monitor_id: monitor.id.clone(),
+                        period: period_label.to_string(),
+                        bucket_start: bucket_start_str,
+                        up_pct,
+                        avg_response_time_ms: avg_rt,
+                        count,
+                    };
+
+                    if let Err(e) = db.insert_consolidated_bucket(&bucket).await {
+                        tracing::warn!(
+                            "Consolidation: failed to insert bucket for monitor {}: {e}",
+                            monitor.id
+                        );
+                    } else {
+                        total_buckets += 1;
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            "Consolidation complete: {} monitors processed, {} buckets written",
+            monitors.len(),
+            total_buckets
+        );
     }
 }
 
