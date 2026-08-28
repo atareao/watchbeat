@@ -836,6 +836,18 @@ async fn consolidation_loop(db: Database, retention_days: i64) {
                         total_buckets += 1;
                     }
                 }
+
+                // Prune old buckets for this period — keep only the latest 60
+                let prune_cutoff = period_start_str.clone();
+                if let Err(e) = db
+                    .delete_old_consolidated(period_label, &prune_cutoff)
+                    .await
+                {
+                    tracing::warn!(
+                        "Consolidation: failed to prune old buckets for monitor {}: {e}",
+                        monitor.id
+                    );
+                }
             }
         }
 
