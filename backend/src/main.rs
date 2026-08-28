@@ -699,8 +699,9 @@ async fn run_monitor_check(
 }
 
 // ───── Consolidation Loop ─────
-// Runs every hour, grouping checks into 80 buckets per period (6h, 12h, 24h, 7d, 15d, 30d, 3m, 6m, 1a)
+// Runs every hour, grouping checks into 60 buckets per period (6h, 12h, 24h, 7d, 15d, 30d, 3m, 6m, 1a)
 // and upserts them into consolidated_metrics for fast timeline queries.
+// Reads checks once for the longest period (1a) and reuses in-memory for shorter periods.
 
 const PERIODS: &[(&str, i64)] = &[
     ("6h", 6 * 3600),
@@ -718,8 +719,7 @@ const TARGET_BLOCKS: usize = 60;
 
 async fn consolidation_loop(db: Database) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
-    // Skip the immediate first tick — no data yet on startup
-    ticker.tick().await;
+    // First run immediately on startup to populate all periods from existing data
     loop {
         ticker.tick().await;
         tracing::info!("Starting metric consolidation cycle");
@@ -733,12 +733,15 @@ async fn consolidation_loop(db: Database) {
         };
 
         let now = chrono::Utc::now();
-        let one_hour_ago = (now - chrono::Duration::hours(1)).to_rfc3339();
         let mut total_buckets = 0usize;
 
+        // Longest period we consolidate: 1 year
+        let longest_period_secs = 365 * 86400;
+        let since_longest = (now - chrono::Duration::seconds(longest_period_secs)).to_rfc3339();
+
         for monitor in &monitors {
-            // Get checks from the last hour
-            let checks = match db.get_timeline(&monitor.id, &one_hour_ago).await {
+            // Read checks once for the longest period (1a), reuse for all shorter periods
+            let all_checks = match db.get_timeline(&monitor.id, &since_longest).await {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!(
@@ -749,19 +752,29 @@ async fn consolidation_loop(db: Database) {
                 }
             };
 
-            if checks.is_empty() {
+            if all_checks.is_empty() {
                 continue;
             }
 
             for &(period_label, period_secs) in PERIODS {
-                let period_end = now;
                 let period_start = now - chrono::Duration::seconds(period_secs);
-                let total_span_secs = (period_end - period_start).num_seconds().max(1);
+                let period_start_str = period_start.to_rfc3339();
+                let total_span_secs = period_secs.max(1);
                 let bucket_size_secs = (total_span_secs as f64 / TARGET_BLOCKS as f64)
                     .ceil()
                     .max(1.0) as i64;
 
                 let period_start_ts = period_start.timestamp();
+
+                // Filter checks to only those within this period
+                let period_checks: Vec<_> = all_checks
+                    .iter()
+                    .filter(|p| p.checked_at >= period_start_str)
+                    .collect();
+
+                if period_checks.is_empty() {
+                    continue;
+                }
 
                 for i in 0..TARGET_BLOCKS {
                     let bucket_start_ts = period_start_ts + (i as i64 * bucket_size_secs);
@@ -774,7 +787,7 @@ async fn consolidation_loop(db: Database) {
                         .map(|dt| dt.to_rfc3339())
                         .unwrap_or_default();
 
-                    let bucket_points: Vec<_> = checks
+                    let bucket_points: Vec<_> = period_checks
                         .iter()
                         .filter(|p| {
                             p.checked_at >= bucket_start_str && p.checked_at < bucket_end_str
