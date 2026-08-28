@@ -6,9 +6,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
 use crate::models::{
-    CheckResult, DashboardStatus, Monitor, MonitorRow, MonitorSummary, MonitorWithSummaryRow,
-    Notifier, NotifierRow, StatusPage, StatusPageRow, TimelineBucket, TimelinePoint,
-    TimelinePointRow,
+    CheckResult, ConsolidatedBucket, ConsolidatedMetricRow, DashboardStatus, Monitor, MonitorRow,
+    MonitorSummary, MonitorWithSummaryRow, Notifier, NotifierRow, StatusPage, StatusPageRow,
+    TimelineBucket, TimelinePoint, TimelinePointRow,
 };
 
 #[derive(Clone)]
@@ -1004,6 +1004,57 @@ impl Database {
             .await
             .context("Failed to cleanup old checks")?;
         Ok(())
+    }
+
+    // ───── Consolidated Metrics ─────
+
+    pub async fn insert_consolidated_bucket(&self, bucket: &ConsolidatedBucket) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO consolidated_metrics (monitor_id, period, bucket_start, up_pct, avg_response_time_ms, count) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&bucket.monitor_id)
+        .bind(&bucket.period)
+        .bind(&bucket.bucket_start)
+        .bind(bucket.up_pct)
+        .bind(bucket.avg_response_time_ms)
+        .bind(bucket.count)
+        .execute(&self.pool)
+        .await
+        .context("Failed to insert consolidated bucket")?;
+        Ok(())
+    }
+
+    pub async fn get_consolidated_buckets(
+        &self,
+        monitor_id: &str,
+        period: &str,
+        since: &str,
+    ) -> Result<Vec<ConsolidatedMetricRow>> {
+        sqlx::query_as::<_, ConsolidatedMetricRow>(
+            "SELECT id, monitor_id, period, bucket_start, up_pct, avg_response_time_ms, count \
+             FROM consolidated_metrics \
+             WHERE monitor_id=? AND period=? AND bucket_start>=? \
+             ORDER BY bucket_start ASC",
+        )
+        .bind(monitor_id)
+        .bind(period)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to get consolidated buckets")
+    }
+
+    pub async fn delete_old_consolidated(&self, period: &str, older_than: &str) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM consolidated_metrics WHERE period=? AND bucket_start<?",
+        )
+        .bind(period)
+        .bind(older_than)
+        .execute(&self.pool)
+        .await
+        .context("Failed to delete old consolidated metrics")?;
+        Ok(result.rows_affected())
     }
 
     // ───── Notifiers ─────
