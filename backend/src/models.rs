@@ -293,6 +293,29 @@ impl From<MonitorRow> for Monitor {
     }
 }
 
+// ───── Consolidated Metrics ─────
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct ConsolidatedMetricRow {
+    pub id: i64,
+    pub monitor_id: String,
+    pub period: String,       // '6h', '12h', '24h', '7d', '15d', '30d', '3m', '6m', '1a'
+    pub bucket_start: String, // RFC 3339
+    pub up_pct: f64,
+    pub avg_response_time_ms: f64,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConsolidatedBucket {
+    pub monitor_id: String,
+    pub period: String,
+    pub bucket_start: String,
+    pub up_pct: f64,
+    pub avg_response_time_ms: f64,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct NotifierRow {
     pub id: String,
@@ -407,6 +430,9 @@ mod tests {
             message_template_up: None,
             message_template_expiry: None,
             tags: "[\"web\",\"api\"]".into(),
+            token: None,
+            grace_seconds: None,
+            last_seen_at: None,
             created_at: "2026-07-03T08:00:00+00:00".into(),
             updated_at: "2026-07-03T08:00:00+00:00".into(),
         };
@@ -445,6 +471,9 @@ mod tests {
             message_template_up: None,
             message_template_expiry: None,
             tags: "[]".into(),
+            token: None,
+            grace_seconds: None,
+            last_seen_at: None,
             created_at: "2026-07-03T08:00:00+00:00".into(),
             updated_at: "2026-07-03T08:00:00+00:00".into(),
         };
@@ -474,6 +503,9 @@ mod tests {
             message_template_up: None,
             message_template_expiry: None,
             tags: "[]".into(),
+            token: None,
+            grace_seconds: None,
+            last_seen_at: None,
             created_at: "2026-07-03T08:00:00+00:00".into(),
             updated_at: "2026-07-03T08:00:00+00:00".into(),
         };
@@ -574,6 +606,9 @@ mod tests {
             message_template_up: None,
             message_template_expiry: None,
             tags: vec![],
+            token: None,
+            grace_seconds: None,
+            last_seen_at: None,
             created_at: "now".into(),
             updated_at: "now".into(),
         };

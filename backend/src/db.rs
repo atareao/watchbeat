@@ -196,6 +196,28 @@ impl Database {
             .execute(&pool)
             .await;
 
+        // Consolidated metrics table for pre-aggregated uptime/response data
+        let _ = sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS consolidated_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                monitor_id TEXT NOT NULL,
+                period TEXT NOT NULL,
+                bucket_start TEXT NOT NULL,
+                up_pct REAL NOT NULL DEFAULT 0.0,
+                avg_response_time_ms REAL NOT NULL DEFAULT 0.0,
+                count INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(monitor_id, period, bucket_start)
+            )",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "CREATE INDEX IF NOT EXISTS idx_consolidated_lookup
+             ON consolidated_metrics(monitor_id, period, bucket_start)",
+        )
+        .execute(&pool)
+        .await;
+
         Ok(Self {
             pool,
             db_path: path.to_string_lossy().to_string(),
@@ -545,6 +567,130 @@ impl Database {
         .await
         .context("Failed to update monitor")?;
         Ok(rows.rows_affected() > 0)
+    }
+
+    /// Field-level update monitor (for import — matches export_import handler signature)
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_monitor_fieldwise(
+        &self,
+        id: &str,
+        name: &str,
+        monitor_type: &str,
+        target: &str,
+        config_json: &serde_json::Value,
+        interval_seconds: i64,
+        timeout_seconds: i64,
+        enabled: bool,
+        notifier_id: Option<String>,
+        confirmations_required: i64,
+        latency_threshold_ms: Option<i64>,
+        message_template_down: Option<String>,
+        message_template_latency: Option<String>,
+        message_template_up: Option<String>,
+        message_template_expiry: Option<String>,
+        tags: &[String],
+        token: Option<String>,
+        grace_seconds: Option<i64>,
+        last_seen_at: Option<String>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let config = serde_json::to_string(config_json).context("Failed to serialize config")?;
+        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+        sqlx::query(
+            "UPDATE monitors SET name=?, monitor_type=?, target=?, config_json=?, \
+             interval_seconds=?, timeout_seconds=?, enabled=?, notifier_id=?, \
+             confirmations_required=?, tags=?, \
+             latency_threshold_ms=?, message_template_down=?, message_template_latency=?, \
+             message_template_up=?, message_template_expiry=?, \
+             token=?, grace_seconds=?, last_seen_at=?, updated_at=? WHERE id=?",
+        )
+        .bind(name)
+        .bind(monitor_type)
+        .bind(target)
+        .bind(&config)
+        .bind(interval_seconds)
+        .bind(timeout_seconds)
+        .bind(enabled as i32)
+        .bind(&notifier_id)
+        .bind(confirmations_required)
+        .bind(&tags_json)
+        .bind(latency_threshold_ms)
+        .bind(&message_template_down)
+        .bind(&message_template_latency)
+        .bind(&message_template_up)
+        .bind(&message_template_expiry)
+        .bind(&token)
+        .bind(grace_seconds)
+        .bind(&last_seen_at)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .context("Failed to update monitor (fieldwise)")?;
+        Ok(())
+    }
+
+    /// Field-level create monitor (for import)
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_monitor_full(
+        &self,
+        id: &str,
+        name: &str,
+        monitor_type: &str,
+        target: &str,
+        config_json: &serde_json::Value,
+        interval_seconds: i64,
+        timeout_seconds: i64,
+        enabled: bool,
+        notifier_id: Option<String>,
+        confirmations_required: i64,
+        latency_threshold_ms: Option<i64>,
+        message_template_down: Option<String>,
+        message_template_latency: Option<String>,
+        message_template_up: Option<String>,
+        message_template_expiry: Option<String>,
+        tags: &[String],
+        token: Option<String>,
+        grace_seconds: Option<i64>,
+        last_seen_at: Option<String>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let config = serde_json::to_string(config_json).context("Failed to serialize config")?;
+        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+        sqlx::query(
+            "INSERT INTO monitors (id, name, monitor_type, target, config_json, \
+             interval_seconds, timeout_seconds, enabled, notifier_id, \
+             confirmations_required, failed_checks, tags, \
+             latency_threshold_ms, message_template_down, message_template_latency, \
+             message_template_up, message_template_expiry, \
+             token, grace_seconds, last_seen_at, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(monitor_type)
+        .bind(target)
+        .bind(&config)
+        .bind(interval_seconds)
+        .bind(timeout_seconds)
+        .bind(enabled as i32)
+        .bind(&notifier_id)
+        .bind(confirmations_required)
+        .bind(&tags_json)
+        .bind(latency_threshold_ms)
+        .bind(&message_template_down)
+        .bind(&message_template_latency)
+        .bind(&message_template_up)
+        .bind(&message_template_expiry)
+        .bind(&token)
+        .bind(grace_seconds)
+        .bind(&last_seen_at)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .context("Failed to create monitor (full)")?;
+        Ok(())
     }
 
     pub async fn delete_monitor(&self, id: &str) -> Result<bool> {
@@ -900,6 +1046,42 @@ impl Database {
         Ok(rows.rows_affected() > 0)
     }
 
+    pub async fn create_notifier(
+        &self,
+        id: &str,
+        name: &str,
+        notifier_type: &str,
+        config_json: &serde_json::Value,
+        enabled: bool,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let config = serde_json::to_string(config_json).context("Failed to serialize config")?;
+        sqlx::query(
+            "INSERT INTO notifiers (id, name, notifier_type, config_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id).bind(name).bind(notifier_type).bind(&config).bind(enabled as i32).bind(&now).bind(&now)
+        .execute(&self.pool).await.context("Failed to create notifier")?;
+        Ok(())
+    }
+
+    pub async fn update_notifier(
+        &self,
+        id: &str,
+        name: &str,
+        notifier_type: &str,
+        config_json: &serde_json::Value,
+        enabled: bool,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let config = serde_json::to_string(config_json).context("Failed to serialize config")?;
+        sqlx::query(
+            "UPDATE notifiers SET name=?, notifier_type=?, config_json=?, enabled=?, updated_at=? WHERE id=?",
+        )
+        .bind(name).bind(notifier_type).bind(&config).bind(enabled as i32).bind(&now).bind(id)
+        .execute(&self.pool).await.context("Failed to update notifier")?;
+        Ok(())
+    }
+
     // ───── Settings ─────
 
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
@@ -908,6 +1090,15 @@ impl Database {
             .fetch_optional(&self.pool)
             .await
             .context("Failed to get setting")
+    }
+
+    pub async fn get_all_settings(&self) -> Result<Vec<(String, String)>> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT key, value FROM settings ORDER BY key")
+                .fetch_all(&self.pool)
+                .await
+                .context("Failed to list all settings")?;
+        Ok(rows)
     }
 
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
@@ -985,6 +1176,44 @@ impl Database {
         ).bind(id).bind(&page.slug).bind(&page.title).bind(&page.description).bind(&monitors)
         .bind(page.public as i32).bind(&now).bind(&now)
         .execute(&self.pool).await.context("Failed to upsert status page")?;
+        Ok(())
+    }
+
+    pub async fn create_status_page(
+        &self,
+        id: &str,
+        slug: &str,
+        title: &str,
+        description: Option<&str>,
+        monitors: &[String],
+        public_page: bool,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let monitors_json = serde_json::to_string(monitors).unwrap_or_else(|_| "[]".into());
+        sqlx::query(
+            "INSERT INTO status_pages (id, slug, title, description, monitors, public, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ).bind(id).bind(slug).bind(title).bind(description).bind(&monitors_json)
+        .bind(public_page as i32).bind(&now).bind(&now)
+        .execute(&self.pool).await.context("Failed to create status page")?;
+        Ok(())
+    }
+
+    pub async fn update_status_page(
+        &self,
+        id: &str,
+        slug: &str,
+        title: &str,
+        description: Option<&str>,
+        monitors: &[String],
+        public_page: bool,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let monitors_json = serde_json::to_string(monitors).unwrap_or_else(|_| "[]".into());
+        sqlx::query(
+            "UPDATE status_pages SET slug=?, title=?, description=?, monitors=?, public=?, updated_at=? WHERE id=?",
+        ).bind(slug).bind(title).bind(description).bind(&monitors_json)
+        .bind(public_page as i32).bind(&now).bind(id)
+        .execute(&self.pool).await.context("Failed to update status page")?;
         Ok(())
     }
 
