@@ -21,6 +21,9 @@ export interface Monitor {
   message_template_latency: string | null;
   message_template_up: string | null;
   message_template_expiry: string | null;
+  token: string | null;
+  grace_seconds: number | null;
+  last_seen_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -33,6 +36,8 @@ export interface CheckResult {
   response_time_ms: number;
   error_message: string | null;
   checked_at: string;
+  tls_cert_expires_at: string | null;
+  tls_cert_days_left: number | null;
 }
 
 export interface MonitorSummary {

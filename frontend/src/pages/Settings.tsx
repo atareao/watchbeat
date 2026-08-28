@@ -178,14 +178,33 @@ export default function Settings() {
   // ── Handlers: status pages ──
   const loadStatusPages = () => {
     setSpLoading(true);
-    Promise.all([fetchStatusPages(), fetchMonitors()])
-      .then(([pData, mData]) => { setPages(pData.status_pages); setMonitorOptions(mData.monitors.map(m => ({ id: m.id, name: m.name }))); })
+    fetchStatusPages()
+      .then(pData => { setPages(pData.status_pages); })
       .catch(() => {}).finally(() => setSpLoading(false));
   };
   useEffect(() => { loadStatusPages(); }, []);
 
-  const openSpCreate = () => { setEditingSpId(null); spForm.resetFields(); spForm.setFieldsValue({ public: true, slug: '', description: '', monitors: [] }); setSpModal(true); };
-  const openSpEdit = (p: StatusPage) => { setEditingSpId(p.id); spForm.setFieldsValue({ slug: p.slug, title: p.title, description: p.description ?? '', monitors: p.monitors, public: p.public }); setSpModal(true); };
+  // Lazy-load monitors only when status page modal opens
+  const loadMonitorOptions = async () => {
+    try {
+      const mData = await fetchMonitors();
+      setMonitorOptions(mData.monitors.map(m => ({ id: m.id, name: m.name })));
+    } catch { /* ignore */ }
+  };
+
+  const openSpCreate = () => {
+    setEditingSpId(null);
+    spForm.resetFields();
+    spForm.setFieldsValue({ public: true, slug: '', description: '', monitors: [] });
+    loadMonitorOptions();
+    setSpModal(true);
+  };
+  const openSpEdit = (p: StatusPage) => {
+    setEditingSpId(p.id);
+    spForm.setFieldsValue({ slug: p.slug, title: p.title, description: p.description ?? '', monitors: p.monitors, public: p.public });
+    loadMonitorOptions();
+    setSpModal(true);
+  };
 
   const saveStatusPage = async () => {
     try {
@@ -326,7 +345,7 @@ export default function Settings() {
   const currentNotifFields = CONFIG_FIELDS[notifType] || [];
 
   return (
-    <div className="fade-in-up">
+    <div>
       <Title level={3}><SettingOutlined /> Ajustes</Title>
       <Tabs items={tabItems} />
 

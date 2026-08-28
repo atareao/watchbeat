@@ -237,7 +237,7 @@ async fn scheduler_iteration(
     // Run each monitor check in its own task so one slow monitor doesn't block others
     let check_handles: Vec<_> = monitors
         .iter()
-        .filter(|m| m.enabled)
+        .filter(|m| m.enabled && m.monitor_type != "heartbeat")
         .map(|monitor| {
             let db = db.clone();
             let notifiers = notifiers.clone();
@@ -389,6 +389,8 @@ async fn run_monitor_check(
         response_time_ms: outcome.response_time_ms as i64,
         error_message: outcome.error_message,
         checked_at: now_str,
+        tls_cert_expires_at: outcome.tls.as_ref().and_then(|t| t.cert_expires_at.clone()),
+        tls_cert_days_left: outcome.tls.as_ref().and_then(|t| t.cert_days_left),
     };
 
     if let Err(e) = db.insert_check(&check).await {

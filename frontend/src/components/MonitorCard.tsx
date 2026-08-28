@@ -62,13 +62,9 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
   const pulseUrl = isHeartbeat ? `${window.location.origin}/api/heartbeat/${item.token}` : '';
   const typeIcon = TYPE_ICONS[item.monitor_type] ?? null;
 
-  // Card click: navigate to detail (monitors) or open edit modal (heartbeats)
+  // Card click: always navigate to detail — edit is only from the ⋮ menu
   const handleCardClick = () => {
-    if (isHeartbeat) {
-      onEdit(item);
-    } else {
-      navigate(`/monitors/${item.id}`);
-    }
+    navigate(`/monitors/${item.id}`);
   };
 
   const handleCheck = async (e: React.MouseEvent) => {
@@ -82,7 +78,8 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
     }
   };
 
-  const handleToggle = async () => {
+  const handleToggle = async (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     try {
       await toggleMonitor(item.id);
       message.success('Estado cambiado');
@@ -92,12 +89,14 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
     }
   };
 
-  const handleCopyToken = () => {
+  const handleCopyToken = (e: React.MouseEvent) => {
+    e.stopPropagation();
     navigator.clipboard.writeText(item.token ?? '');
     message.success('Token copiado');
   };
 
-  const handleCopyUrl = () => {
+  const handleCopyUrl = (e: React.MouseEvent) => {
+    e.stopPropagation();
     navigator.clipboard.writeText(pulseUrl);
     message.success('URL de pulso copiada');
   };
@@ -113,8 +112,7 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
     });
   };
 
-  // Dropdown menu items — the menu overlay is rendered in a portal (outside Card's DOM),
-  // so clicks on menu items don't propagate to the Card. No stopPropagation needed.
+  // Dropdown menu items — rendered in a portal, no propagation to worry about
   const dropdownItems: any[] = [
     { key: 'edit', label: 'Editar', onClick: () => onEdit(item) },
   ];
@@ -139,73 +137,77 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
     <Card
       className="monitor-card"
       hoverable
-      onClick={handleCardClick}
       style={{ borderLeft: `4px solid ${cfg.color}`, height: '100%', cursor: 'pointer' }}
-      styles={{ body: { padding: 16, display: 'flex', flexDirection: 'column', height: '100%' } }}
+      styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column', height: '100%' } }}
     >
-      {/* Header */}
-      <Space align="start" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <div>
-          <Space>
-            {typeIcon}
-            <Typography.Text strong style={{ fontSize: 16 }}>{item.name}</Typography.Text>
-          </Space>
-          <div style={{ marginTop: 4 }}>
-            <Tag color={cfg.color}>{statusLabel}</Tag>
-            {isHeartbeat ? (
-              <Typography.Text code style={{ fontSize: 12 }}>Grace: {item.grace_seconds ?? 3600}s</Typography.Text>
-            ) : (
-              <>
-                <Tag>{item.monitor_type}</Tag>
-                <Typography.Text code style={{ fontSize: 12 }}>{item.target}</Typography.Text>
-              </>
-            )}
+      {/* Clickable content area — wrapping non-interactive content */}
+      <div onClick={handleCardClick} style={{ flex: 1, padding: 16, cursor: 'pointer' }}>
+        {/* Header */}
+        <Space align="start" style={{ justifyContent: 'space-between', width: '100%' }}>
+          <div>
+            <Space>
+              {typeIcon}
+              <Typography.Text strong style={{ fontSize: 16 }}>{item.name}</Typography.Text>
+            </Space>
+            <div style={{ marginTop: 4 }}>
+              <Tag color={cfg.color}>{statusLabel}</Tag>
+              {isHeartbeat ? (
+                <Typography.Text code style={{ fontSize: 12 }}>Grace: {item.grace_seconds ?? 3600}s</Typography.Text>
+              ) : (
+                <>
+                  <Tag>{item.monitor_type}</Tag>
+                  <Typography.Text code style={{ fontSize: 12 }}>{item.target}</Typography.Text>
+                </>
+              )}
+            </div>
           </div>
-        </div>
-        {cfg.icon}
-      </Space>
+          {cfg.icon}
+        </Space>
 
-      {/* Body */}
-      <div style={{ flex: 1, minHeight: 0 }}>
-      {isHeartbeat ? (
-        <div style={{ marginTop: 8 }}>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {item.last_seen_at ? `Último pulso: ${dayjs(item.last_seen_at).fromNow()}` : 'Sin pulsos recibidos'}
-          </Typography.Text>
-        </div>
-      ) : (
-        <>
-          <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between' }}>
-            <div>
-              <Typography.Text type="secondary">Latencia: </Typography.Text>
-              <Typography.Text>{item.last_response_time_ms ? `${item.last_response_time_ms}ms` : '—'}</Typography.Text>
-            </div>
-            <div>
-              <Typography.Text type="secondary">Uptime 7d: </Typography.Text>
-              <Typography.Text>{item.uptime_7d !== null ? `${Math.round(item.uptime_7d)}%` : '—'}</Typography.Text>
-            </div>
-          </div>
-          <div style={{ marginTop: 4, marginBottom: 8 }}>
+        {/* Body */}
+        <div style={{ flex: 1, minHeight: 0 }}>
+        {isHeartbeat ? (
+          <div style={{ marginTop: 8 }}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {item.last_checked_at ? dayjs(item.last_checked_at).fromNow() : 'Sin datos'}
+              {item.last_seen_at ? `Último pulso: ${dayjs(item.last_seen_at).fromNow()}` : 'Sin pulsos recibidos'}
             </Typography.Text>
           </div>
-        </>
-      )}
-
+        ) : (
+          <>
+            <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between' }}>
+              <div>
+                <Typography.Text type="secondary">Latencia: </Typography.Text>
+                <Typography.Text>{item.last_response_time_ms ? `${item.last_response_time_ms}ms` : '—'}</Typography.Text>
+              </div>
+              <div>
+                <Typography.Text type="secondary">Uptime 7d: </Typography.Text>
+                <Typography.Text>{item.uptime_7d !== null ? `${Math.round(item.uptime_7d)}%` : '—'}</Typography.Text>
+              </div>
+            </div>
+            <div style={{ marginTop: 4, marginBottom: 8 }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {item.last_checked_at ? dayjs(item.last_checked_at).fromNow() : 'Sin datos'}
+              </Typography.Text>
+            </div>
+          </>
+        )}
+        </div>
       </div>
 
-      {/* Actions bar — stopPropagation in buttons prevents Card onClick from firing */}
-      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, display: 'flex', justifyContent: 'space-between' }}>
+      {/* Actions bar — OUTSIDE the clickable area, no stopPropagation needed */}
+      <div
+        style={{ borderTop: '1px solid #f0f0f0', padding: '8px 16px', display: 'flex', justifyContent: 'space-between' }}
+        onClick={(e) => e.stopPropagation()}
+      >
         <Space>
           {!isHeartbeat && (
             <Button size="small" icon={<PlayCircleOutlined />} onClick={handleCheck} />
           )}
           <Popconfirm
             title={item.enabled ? '¿Desactivar?' : '¿Activar?'}
-            onConfirm={handleToggle}
+            onConfirm={() => handleToggle()}
           >
-            <Button size="small" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+            <Button size="small">
               {item.enabled ? 'Desactivar' : 'Activar'}
             </Button>
           </Popconfirm>
@@ -219,7 +221,7 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
           menu={{ items: dropdownItems }}
           trigger={['click']}
         >
-          <Button size="small" icon={<MoreOutlined />} onClick={(e: React.MouseEvent) => e.stopPropagation()} />
+          <Button size="small" icon={<MoreOutlined />} />
         </Dropdown>
       </div>
     </Card>

@@ -156,9 +156,11 @@ export default function Dashboard() {
   const handleCreate = () => {
     setEditingMonitor(null);
     form.resetFields();
-    form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true, confirmations_required: 0, config: {} });
     setSelectedType('http');
-    setModalOpen(true);
+    setTimeout(() => {
+      form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true, confirmations_required: 0, config: {} });
+      setModalOpen(true);
+    }, 0);
   };
 
   const handleEdit = (item: MonitorSummary) => {
@@ -185,9 +187,11 @@ export default function Dashboard() {
         if (full.type === 'heartbeat') {
           vals.grace_seconds = (full as any).grace_seconds ?? 3600;
         }
-        form.setFieldsValue(vals);
         setSelectedType(full.type);
-        setModalOpen(true);
+        setTimeout(() => {
+          form.setFieldsValue(vals);
+          setModalOpen(true);
+        }, 0);
       }).catch(() => message.error('Error al cargar monitor'));
     }).catch(() => message.error('Error al cargar monitor'));
   };
@@ -258,7 +262,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="fade-in-up">
+    <div>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
         <Title level={3} style={{ margin: 0 }}><DashboardOutlined /> Dashboard</Title>

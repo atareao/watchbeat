@@ -37,7 +37,7 @@ impl Database {
             .await
             .context("Failed to open SQLite database")?;
 
-        // Tables
+        // Tables (individual statements for SQLite compatibility)
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS monitors (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, monitor_type TEXT NOT NULL,
@@ -51,38 +51,69 @@ impl Database {
                  message_template_latency TEXT,
                  message_template_up TEXT,
                  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS checks (
+            )",
+        )
+        .execute(&pool)
+        .await
+        .context("Failed to create monitors table")?;
+
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS checks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
                 status TEXT NOT NULL, status_code INTEGER,
-                response_time_ms INTEGER NOT NULL DEFAULT 0, error_message TEXT, checked_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_checks_monitor ON checks(monitor_id, checked_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_checks_checked_at ON checks(checked_at);
-            CREATE TABLE IF NOT EXISTS notifiers (
+                response_time_ms INTEGER NOT NULL DEFAULT 0, error_message TEXT, checked_at TEXT NOT NULL,
+                tls_cert_expires_at TEXT, tls_cert_days_left INTEGER
+            )",
+        )
+        .execute(&pool)
+        .await
+        .context("Failed to create checks table")?;
+
+        let _ = sqlx::raw_sql(
+            "CREATE INDEX IF NOT EXISTS idx_checks_monitor ON checks(monitor_id, checked_at DESC)",
+        )
+        .execute(&pool)
+        .await;
+        let _ =
+            sqlx::raw_sql("CREATE INDEX IF NOT EXISTS idx_checks_checked_at ON checks(checked_at)")
+                .execute(&pool)
+                .await;
+        let _ = sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS notifiers (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, notifier_type TEXT NOT NULL,
                 config_json TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS settings (
+            )",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS status_pages (
+            )",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS status_pages (
                 id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
                 description TEXT, monitors TEXT NOT NULL DEFAULT '[]',
                 public INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS monitor_notifiers (
+            )",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS monitor_notifiers (
                 monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
                 notifier_id TEXT NOT NULL REFERENCES notifiers(id) ON DELETE CASCADE,
                 PRIMARY KEY (monitor_id, notifier_id)
-            );",
+            )",
         )
         .execute(&pool)
-        .await
-        .context("Failed to run migrations")?;
+        .await;
 
         // ALTER TABLE for existing DBs (ignore errors if columns already exist)
         let _ = sqlx::raw_sql(
@@ -156,6 +187,14 @@ impl Database {
         )
         .execute(&pool)
         .await;
+
+        // TLS certificate info for checks
+        let _ = sqlx::raw_sql("ALTER TABLE checks ADD COLUMN tls_cert_expires_at TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::raw_sql("ALTER TABLE checks ADD COLUMN tls_cert_days_left INTEGER")
+            .execute(&pool)
+            .await;
 
         Ok(Self {
             pool,
@@ -436,7 +475,7 @@ impl Database {
              timeout_seconds, enabled, notifier_id, confirmations_required, failed_checks, tags, \
              latency_threshold_ms, message_template_down, message_template_latency, \
              message_template_up, message_template_expiry, token, grace_seconds, last_seen_at, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&monitor.id)
         .bind(&monitor.name)
@@ -462,6 +501,13 @@ impl Database {
         .bind(&now)
         .execute(&self.pool)
         .await
+        .inspect_err(|e| {
+            tracing::error!(
+                name = %monitor.name,
+                sqlx_error = %e,
+                "create_monitor sqlx error"
+            );
+        })
         .context("Failed to insert monitor")?;
         Ok(())
     }
@@ -559,12 +605,14 @@ impl Database {
 
     pub async fn insert_check(&self, check: &CheckResult) -> Result<i64> {
         let result = sqlx::query(
-            "INSERT INTO checks (monitor_id, status, status_code, response_time_ms, error_message, checked_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO checks (monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
+             tls_cert_expires_at, tls_cert_days_left) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&check.monitor_id).bind(&check.status)
         .bind(check.status_code.map(|v| v as i64))
         .bind(check.response_time_ms).bind(&check.error_message).bind(&check.checked_at)
+        .bind(&check.tls_cert_expires_at).bind(check.tls_cert_days_left)
         .execute(&self.pool).await
         .context("Failed to insert check")?;
         Ok(result.last_insert_rowid() as i64)
@@ -577,7 +625,8 @@ impl Database {
         offset: i64,
     ) -> Result<Vec<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
-            "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at \
+            "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
+             tls_cert_expires_at, tls_cert_days_left \
              FROM checks WHERE monitor_id=? ORDER BY checked_at DESC LIMIT ? OFFSET ?",
         )
         .bind(monitor_id).bind(limit).bind(offset)
@@ -596,7 +645,8 @@ impl Database {
 
     pub async fn get_latest_check(&self, monitor_id: &str) -> Result<Option<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
-            "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at \
+            "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
+             tls_cert_expires_at, tls_cert_days_left \
              FROM checks WHERE monitor_id=? ORDER BY checked_at DESC LIMIT 1",
         )
         .bind(monitor_id).fetch_optional(&self.pool).await
@@ -694,7 +744,8 @@ impl Database {
 
     pub async fn get_recent_checks_global(&self, limit: i64) -> Result<Vec<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
-            "SELECT c.id, c.monitor_id, c.status, c.status_code, c.response_time_ms, c.error_message, c.checked_at \
+            "SELECT c.id, c.monitor_id, c.status, c.status_code, c.response_time_ms, c.error_message, c.checked_at, \
+             c.tls_cert_expires_at, c.tls_cert_days_left \
              FROM checks c \
              INNER JOIN (SELECT monitor_id, MAX(checked_at) as max_checked FROM checks GROUP BY monitor_id) latest \
              ON c.monitor_id = latest.monitor_id AND c.checked_at = latest.max_checked \
@@ -749,29 +800,42 @@ impl Database {
     }
 
     pub async fn get_dashboard_status(&self) -> Result<DashboardStatus> {
-        let monitors = self.list_monitors().await?;
-        let total = monitors.len() as u64;
-        let enabled = monitors.iter().filter(|m| m.enabled).count() as u64;
+        // Single query: LEFT JOIN with subquery for latest check — no N+1
+        let rows = sqlx::query_as::<_, (i32, Option<String>, Option<i64>)>(
+            "SELECT m.enabled, c.status, c.response_time_ms \
+             FROM monitors m \
+             LEFT JOIN checks c ON c.id = (SELECT id FROM checks WHERE monitor_id = m.id ORDER BY checked_at DESC LIMIT 1)",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch dashboard data")?;
+
+        let total = rows.len() as u64;
+        let enabled = rows.iter().filter(|r| r.0 != 0).count() as u64;
         let mut up = 0u64;
         let mut down = 0u64;
         let mut total_rt = 0u64;
         let mut rt_count = 0u64;
-        for m in &monitors {
-            if let Ok(Some(latest)) = self.get_latest_check(&m.id).await {
-                match latest.status.as_str() {
-                    "up" => up += 1,
-                    _ => down += 1,
-                }
-                total_rt += latest.response_time_ms as u64;
+
+        for (_enabled, status, rt) in &rows {
+            match status.as_deref() {
+                Some("up") => up += 1,
+                Some(_) => down += 1,
+                None => {} // no checks yet
+            }
+            if let Some(rt_val) = rt {
+                total_rt += *rt_val as u64;
                 rt_count += 1;
             }
         }
+
         let cutoff_24h = (Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
         let checks_24h: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checks WHERE checked_at>=?")
             .bind(&cutoff_24h)
             .fetch_one(&self.pool)
             .await
             .unwrap_or(0);
+
         Ok(DashboardStatus {
             total_monitors: total,
             enabled_monitors: enabled,
@@ -955,14 +1019,17 @@ impl Database {
         let check = CheckResult {
             id: 0,
             monitor_id: monitor.id.clone(),
-            status: "ok".into(),
+            status: "up".into(),
             status_code: None,
             response_time_ms: 0,
             error_message: None,
             checked_at: now.clone(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
         };
         sqlx::query(
-            "INSERT INTO checks (monitor_id, status, status_code, response_time_ms, error_message, checked_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO checks (monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
+             tls_cert_expires_at, tls_cert_days_left) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&check.monitor_id)
         .bind(&check.status)
@@ -970,6 +1037,8 @@ impl Database {
         .bind(check.response_time_ms)
         .bind(&check.error_message)
         .bind(&check.checked_at)
+        .bind(&check.tls_cert_expires_at)
+        .bind(check.tls_cert_days_left)
         .execute(&self.pool)
         .await
         .context("Failed to insert heartbeat check")?;

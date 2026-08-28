@@ -21,6 +21,9 @@ fn sample_monitor(id: &str) -> Monitor {
         message_template_up: None,
         message_template_expiry: None,
         tags: vec![],
+        token: None,
+        grace_seconds: None,
+        last_seen_at: None,
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -103,6 +106,8 @@ async fn test_insert_and_get_checks() {
         response_time_ms: 42,
         error_message: None,
         checked_at: chrono::Utc::now().to_rfc3339(),
+        tls_cert_expires_at: None,
+        tls_cert_days_left: None,
     };
     let id = db.insert_check(&check).await.unwrap();
     assert!(id > 0);
@@ -125,6 +130,8 @@ async fn test_get_latest_check() {
             response_time_ms: 10 * i,
             error_message: None,
             checked_at: chrono::Utc::now().to_rfc3339(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -176,6 +183,8 @@ async fn test_dashboard_status() {
         response_time_ms: 50,
         error_message: None,
         checked_at: chrono::Utc::now().to_rfc3339(),
+        tls_cert_expires_at: None,
+        tls_cert_days_left: None,
     };
     db.insert_check(&check).await.unwrap();
     let status = db.get_dashboard_status().await.unwrap();
@@ -199,6 +208,8 @@ async fn test_calculate_uptime() {
             response_time_ms: 10,
             error_message: None,
             checked_at: (now - chrono::Duration::hours(i)).to_rfc3339(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -248,6 +259,8 @@ async fn test_get_timeline() {
             response_time_ms: 10 * (i + 1),
             error_message: if i == 3 { Some("timeout".into()) } else { None },
             checked_at: (now - chrono::Duration::hours(4 - i)).to_rfc3339(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -284,6 +297,8 @@ async fn test_get_timeline_since() {
             response_time_ms: 10,
             error_message: None,
             checked_at: (now - chrono::Duration::hours(10 + i * 2)).to_rfc3339(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -297,6 +312,8 @@ async fn test_get_timeline_since() {
             response_time_ms: 20,
             error_message: None,
             checked_at: (now - chrono::Duration::hours(i)).to_rfc3339(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -325,6 +342,8 @@ async fn test_get_monitor_summaries() {
             response_time_ms: 10,
             error_message: None,
             checked_at: (now - chrono::Duration::hours(i)).to_rfc3339(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -339,6 +358,8 @@ async fn test_get_monitor_summaries() {
             response_time_ms: 20,
             error_message: None,
             checked_at: (now - chrono::Duration::hours(i)).to_rfc3339(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -369,6 +390,8 @@ async fn test_calculate_uptime_50_percent() {
             response_time_ms: 10,
             error_message: None,
             checked_at: (now - chrono::Duration::hours(i)).to_rfc3339(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -391,6 +414,8 @@ async fn test_get_dashboard_status_with_mixed() {
         response_time_ms: 50,
         error_message: None,
         checked_at: now.to_rfc3339(),
+        tls_cert_expires_at: None,
+        tls_cert_days_left: None,
     };
     db.insert_check(&check).await.unwrap();
     // Monitor 2: down
@@ -405,6 +430,8 @@ async fn test_get_dashboard_status_with_mixed() {
         response_time_ms: 1000,
         error_message: Some("timeout".into()),
         checked_at: now.to_rfc3339(),
+        tls_cert_expires_at: None,
+        tls_cert_days_left: None,
     };
     db.insert_check(&check).await.unwrap();
     // Monitor 3: disabled (no checks)
@@ -435,6 +462,8 @@ async fn test_cleanup_old_checks() {
         response_time_ms: 10,
         error_message: None,
         checked_at: (now - chrono::Duration::days(10)).to_rfc3339(),
+        tls_cert_expires_at: None,
+        tls_cert_days_left: None,
     };
     db.insert_check(&old_check).await.unwrap();
     // Insert a recent check
@@ -446,6 +475,8 @@ async fn test_cleanup_old_checks() {
         response_time_ms: 20,
         error_message: None,
         checked_at: now.to_rfc3339(),
+        tls_cert_expires_at: None,
+        tls_cert_days_left: None,
     };
     db.insert_check(&recent_check).await.unwrap();
     // Verify both exist before cleanup

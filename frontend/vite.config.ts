@@ -14,5 +14,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (id.includes('node_modules/antd')) return 'antd';
+          if (id.includes('node_modules/react')) return 'vendor';
+          if (id.includes('node_modules/dayjs')) return 'vendor';
+          if (id.includes('node_modules/@ant-design')) return 'antd';
+        },
+      },
+    },
   },
 });

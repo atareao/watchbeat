@@ -43,6 +43,8 @@ pub struct CheckResult {
     pub response_time_ms: i64, // SQLite integer
     pub error_message: Option<String>,
     pub checked_at: String,
+    pub tls_cert_expires_at: Option<String>,
+    pub tls_cert_days_left: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

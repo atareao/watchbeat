@@ -35,7 +35,7 @@ function SuspenseWrapper({ children }: { children: React.ReactNode }) {
         <Spin />
       </div>
     }>
-      <div className="fade-in-up">{children}</div>
+      <div>{children}</div>
     </Suspense>
   );
 }
