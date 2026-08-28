@@ -714,7 +714,7 @@ const PERIODS: &[(&str, i64)] = &[
     ("1a", 365 * 86400),
 ];
 
-const TARGET_BLOCKS: usize = 80;
+const TARGET_BLOCKS: usize = 60;
 
 async fn consolidation_loop(db: Database) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));

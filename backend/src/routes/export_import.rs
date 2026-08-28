@@ -137,7 +137,8 @@ pub async fn import_all(
         let interval_seconds = monitor
             .get("interval_seconds")
             .and_then(|v| v.as_i64())
-            .unwrap_or(300);
+            .unwrap_or(300)
+            .max(60);
         let timeout_seconds = monitor
             .get("timeout_seconds")
             .and_then(|v| v.as_i64())

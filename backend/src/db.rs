@@ -826,7 +826,7 @@ impl Database {
         let now = chrono::Utc::now();
         let total_span_secs = (now - since_dt).num_seconds().max(1);
 
-        const TARGET_BLOCKS: usize = 80;
+        const TARGET_BLOCKS: usize = 60;
         let bucket_size_secs = (total_span_secs as f64 / TARGET_BLOCKS as f64)
             .ceil()
             .max(1.0) as i64;

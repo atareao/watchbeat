@@ -546,7 +546,7 @@ export default function MonitorDetail() {
               </Form.Item>
               <Space style={{ width: '100%' }} size="large">
                 <Form.Item name="interval_seconds" label="Intervalo (s)">
-                  <InputNumber min={10} max={86400} />
+                  <InputNumber min={60} max={86400} />
                 </Form.Item>
                 <Form.Item name="timeout_seconds" label="Timeout (s)">
                   <InputNumber min={1} max={120} />
