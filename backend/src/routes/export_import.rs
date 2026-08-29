@@ -83,6 +83,7 @@ pub async fn import_all(
             .ok_or("Notifier missing name")?;
         let notifier_type = notifier
             .get("notifier_type")
+            .or_else(|| notifier.get("type"))
             .and_then(|v| v.as_str())
             .ok_or("Notifier missing notifier_type")?;
         let config_json = notifier
@@ -91,7 +92,7 @@ pub async fn import_all(
             .unwrap_or(serde_json::json!({}));
         let enabled = notifier
             .get("enabled")
-            .and_then(|v| v.as_i64())
+            .and_then(|v| v.as_i64().or_else(|| v.as_bool().map(|b| b as i64)))
             .unwrap_or(1);
 
         let existing = state
@@ -143,7 +144,10 @@ pub async fn import_all(
             .get("timeout_seconds")
             .and_then(|v| v.as_i64())
             .unwrap_or(30);
-        let enabled = monitor.get("enabled").and_then(|v| v.as_i64()).unwrap_or(1);
+        let enabled = monitor
+            .get("enabled")
+            .and_then(|v| v.as_i64().or_else(|| v.as_bool().map(|b| b as i64)))
+            .unwrap_or(1);
         let notifier_id = monitor
             .get("notifier_id")
             .and_then(|v| v.as_str())
@@ -275,7 +279,10 @@ pub async fn import_all(
                     .collect()
             })
             .unwrap_or_default();
-        let public = page.get("public").and_then(|v| v.as_i64()).unwrap_or(1);
+        let public = page
+            .get("public")
+            .and_then(|v| v.as_i64().or_else(|| v.as_bool().map(|b| b as i64)))
+            .unwrap_or(1);
 
         let existing = state
             .db
