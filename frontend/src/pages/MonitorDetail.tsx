@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import {
   Card, Typography, Spin, Table, Tag, Button, Descriptions, Space, Tooltip, message, Statistic, Row, Col,
-  Modal, Form, Input, InputNumber, Select, Switch, Tabs,
+  Modal, Form, Input, InputNumber, Slider, Select, Switch, Tabs,
 } from 'antd';
 import {
   BarChartOutlined, HeartOutlined,
@@ -35,16 +35,55 @@ const MONITOR_TYPES = [
   { value: 'tls', label: 'TLS/SSL' },
 ];
 
-const CONFIG_FIELDS: Record<string, { name: string; label: string; type: string; defaultValue?: unknown }[]> = {
+interface ConfigField {
+  name: string;
+  label: string;
+  type: 'select' | 'number' | 'boolean' | 'text';
+  defaultValue?: unknown;
+  tooltip?: string;
+  options?: { value: string | number; label: string }[];
+}
+
+const CONFIG_FIELDS: Record<string, ConfigField[]> = {
   http: [
-    { name: 'method', label: 'Método HTTP', type: 'select', defaultValue: 'GET' },
-    { name: 'expected_status', label: 'Status esperado', type: 'number', defaultValue: 200 },
-    { name: 'expected_body', label: 'Body esperado', type: 'text' },
-    { name: 'body_is_regex', label: 'Body es regex', type: 'boolean', defaultValue: false },
-    { name: 'expiry_days', label: 'Días para expiry del certificado', type: 'number', defaultValue: 14 },
+    {
+      name: 'method', label: 'Método HTTP', type: 'select', defaultValue: 'GET',
+      tooltip: 'HEAD es el más rápido y eficiente (no descarga el body). GET descarga la página completa. POST envía datos en el body. Para monitorización de uptime, HEAD es la opción recomendada.',
+    },
+    {
+      name: 'expected_status', label: 'Status esperado', type: 'select', defaultValue: 200,
+      tooltip: 'Código HTTP que el servidor debe devolver para considerar el monitor UP. Por defecto se acepta cualquier código 2xx o 3xx, pero puedes exigir uno concreto.',
+      options: [
+        { value: 200, label: '200 OK' },
+        { value: 201, label: '201 Created' },
+        { value: 204, label: '204 No Content' },
+        { value: 301, label: '301 Moved Permanently' },
+        { value: 302, label: '302 Found' },
+        { value: 304, label: '304 Not Modified' },
+        { value: 400, label: '400 Bad Request' },
+        { value: 401, label: '401 Unauthorized' },
+        { value: 403, label: '403 Forbidden' },
+        { value: 404, label: '404 Not Found' },
+        { value: 500, label: '500 Internal Server Error' },
+        { value: 502, label: '502 Bad Gateway' },
+        { value: 503, label: '503 Service Unavailable' },
+      ],
+    },
+    {
+      name: 'expected_body', label: 'Body esperado', type: 'text',
+      tooltip: 'Texto o patrón regex que debe aparecer en la respuesta del servidor. Si se marca "Body es regex", se interpreta como expresión regular.',
+    },
+    {
+      name: 'body_is_regex', label: 'Body es regex', type: 'boolean', defaultValue: false,
+      tooltip: 'Si está activado, el campo "Body esperado" se interpreta como una expresión regular en lugar de una búsqueda de texto exacta.',
+    },
+    {
+      name: 'expiry_days', label: 'Días para expiry del certificado', type: 'number', defaultValue: 14,
+      tooltip: 'Número de días antes de la expiración del certificado TLS para enviar una notificación de advertencia. Ej: con 14 días recibirás una alerta cuando queden 14 días o menos.',
+    },
   ],
   tls: [
-    { name: 'expiry_days', label: 'Días para expiry', type: 'number', defaultValue: 14 },
+    { name: 'expiry_days', label: 'Días para expiry', type: 'number', defaultValue: 14, tooltip: 'Número de días antes de la expiración del certificado TLS para enviar una notificación de advertencia.' },
   ],
   tcp: [],
   ping: [],
@@ -516,7 +555,7 @@ export default function MonitorDetail() {
       name: monitor.name,
       type: monitor.type,
       target: monitor.target,
-      interval_seconds: monitor.interval_seconds,
+      interval_minutes: Math.round(monitor.interval_seconds / 60),
       timeout_seconds: monitor.timeout_seconds,
       enabled: monitor.enabled,
       notifier_id: monitor.notifier_id ?? null,
@@ -539,7 +578,7 @@ export default function MonitorDetail() {
         name: values.name,
         type: values.type,
         target: values.target,
-        interval_seconds: values.interval_seconds,
+        interval_seconds: values.interval_minutes * 60,
         timeout_seconds: values.timeout_seconds,
         enabled: values.enabled,
         notifier_id: values.notifier_id || null,
@@ -706,8 +745,8 @@ export default function MonitorDetail() {
                 })()} />
               </Form.Item>
               <Space style={{ width: '100%' }} size="large">
-                <Form.Item name="interval_seconds" label="Intervalo (s)">
-                  <InputNumber min={60} max={86400} />
+                <Form.Item name="interval_minutes" label="Intervalo (min)">
+                  <Slider min={1} max={1440} marks={{ 1: '1m', 5: '5m', 15: '15m', 30: '30m', 60: '1h', 360: '6h', 720: '12h', 1440: '24h' }} />
                 </Form.Item>
                 <Form.Item name="timeout_seconds" label="Timeout (s)">
                   <InputNumber min={1} max={120} />
@@ -732,9 +771,11 @@ export default function MonitorDetail() {
             <Tabs.TabPane tab="Específico" key="specific">
               {CONFIG_FIELDS[selectedType]?.length > 0 ? (
                 CONFIG_FIELDS[selectedType].map(field => (
-                  <Form.Item key={field.name} name={['config', field.name]} label={field.label} valuePropName={field.type === 'boolean' ? 'checked' : undefined}>
+                  <Form.Item key={field.name} name={['config', field.name]} label={field.label}
+                    valuePropName={field.type === 'boolean' ? 'checked' : undefined}
+                    tooltip={field.tooltip}>
                     {field.type === 'select' ? (
-                      <Select options={['GET', 'HEAD', 'POST'].map(v => ({ value: v, label: v }))} />
+                      <Select options={field.options ?? ['GET', 'HEAD', 'POST'].map(v => ({ value: v, label: v }))} />
                     ) : field.type === 'number' ? (
                       <InputNumber style={{ width: '100%' }} />
                     ) : field.type === 'boolean' ? (
