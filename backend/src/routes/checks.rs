@@ -57,13 +57,14 @@ pub async fn timeline(
     Query(query): Query<TimelineQuery>,
 ) -> Result<Json<serde_json::Value>, String> {
     let since = if let Some(h) = query.hours {
-        let h = h.clamp(1, 24 * 180); // max ~6 months in hours
+        let h = h.clamp(1, 24 * 30); // max ~30 days in hours
         (chrono::Utc::now() - chrono::Duration::hours(h)).to_rfc3339()
     } else {
-        let days = query.days.unwrap_or(1).clamp(1, 180);
+        let days = query.days.unwrap_or(1).clamp(1, 30);
         (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339()
     };
 
+    // All ranges use real-time from checks (no consolidated_metrics)
     if let Some(bucket_seconds) = query.bucket_seconds {
         let bucket_seconds = bucket_seconds.clamp(60, 86400 * 7); // 1 min to 7 days
         let buckets = state
@@ -126,12 +127,12 @@ mod tests {
     #[test]
     fn test_timeline_query_days_clamp() {
         let query = TimelineQuery {
-            days: Some(200),
+            days: Some(400),
             hours: None,
             bucket_seconds: None,
         };
-        let days = query.days.unwrap_or(1).clamp(1, 180);
-        assert_eq!(days, 180);
+        let days = query.days.unwrap_or(1).clamp(1, 30);
+        assert_eq!(days, 30);
     }
 
     #[test]
@@ -141,7 +142,7 @@ mod tests {
             hours: Some(6),
             bucket_seconds: None,
         };
-        let h = query.hours.unwrap().clamp(1, 24 * 180);
+        let h = query.hours.unwrap().clamp(1, 24 * 30);
         assert_eq!(h, 6);
     }
 
@@ -149,10 +150,10 @@ mod tests {
     fn test_timeline_query_hours_clamp() {
         let query = TimelineQuery {
             days: None,
-            hours: Some(5000),
+            hours: Some(9000),
             bucket_seconds: None,
         };
-        let h = query.hours.unwrap().clamp(1, 24 * 180);
-        assert_eq!(h, 24 * 180);
+        let h = query.hours.unwrap().clamp(1, 24 * 30);
+        assert_eq!(h, 24 * 30);
     }
 }

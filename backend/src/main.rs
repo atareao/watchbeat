@@ -123,8 +123,27 @@ async fn main() {
     let db_for_scheduler = db.clone();
     let sched_status = scheduler_status.clone();
     let event_tx_for_sched = event_tx.clone();
+    let retention_days = config.retention_days;
     tokio::spawn(async move {
         scheduler_loop(db_for_scheduler, sched_status, event_tx_for_sched).await;
+    });
+
+    // ───── Daily Cleanup Loop ─────
+    let db_for_cleanup = db.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
+        // First run after 1h to let scheduler populate data
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        loop {
+            interval.tick().await;
+            tracing::info!(
+                "Running daily cleanup of old checks (retention={}d)",
+                retention_days
+            );
+            if let Err(e) = db_for_cleanup.cleanup_old_checks(retention_days).await {
+                tracing::warn!("Cleanup: failed: {}", e);
+            }
+        }
     });
 
     // ───── Router (como populates) ─────
@@ -237,7 +256,7 @@ async fn scheduler_iteration(
     // Run each monitor check in its own task so one slow monitor doesn't block others
     let check_handles: Vec<_> = monitors
         .iter()
-        .filter(|m| m.enabled)
+        .filter(|m| m.enabled && m.monitor_type != "heartbeat")
         .map(|monitor| {
             let db = db.clone();
             let notifiers = notifiers.clone();
@@ -254,61 +273,6 @@ async fn scheduler_iteration(
         match handle.await {
             Ok(()) => checks_done += 1,
             Err(e) => tracing::warn!("Scheduler: monitor check task failed: {}", e),
-        }
-    }
-
-    // ── Heartbeat monitoring ──
-    if let Ok(hbs) = db.list_heartbeats().await {
-        let now = chrono::Utc::now();
-        for hb in &hbs {
-            let hb_status_ok = hb.status == "ok" || hb.status == "pending";
-            let grace_expired = match &hb.last_seen_at {
-                Some(ts) => chrono::DateTime::parse_from_rfc3339(ts)
-                    .map(|t| {
-                        now - t.with_timezone(&chrono::Utc)
-                            > chrono::Duration::seconds(hb.grace_seconds)
-                    })
-                    .unwrap_or(false),
-                None => true,
-            };
-
-            if hb_status_ok && grace_expired {
-                tracing::info!("Heartbeat '{}' missed — grace period expired", hb.name);
-                if let Some(nid) = &hb.notifier_id {
-                    if let Some(notifier) = notifiers.get(nid) {
-                        if notifier.enabled && notifier.notifier_type == "telegram" {
-                            let bot_token = notifier
-                                .config_json
-                                .get("bot_token")
-                                .and_then(|v| v.as_str());
-                            let chat_id =
-                                notifier.config_json.get("chat_id").and_then(|v| v.as_str());
-                            if let (Some(token), Some(chat)) = (bot_token, chat_id) {
-                                let msg = format!(
-                                    "🔴 Heartbeat '{}' no ha latido en {}s — posible fallo de cron/backup",
-                                    hb.name, hb.grace_seconds
-                                );
-                                let url =
-                                    format!("https://api.telegram.org/bot{}/sendMessage", token);
-                                let _ = reqwest::Client::new()
-                                    .post(&url)
-                                    .json(&serde_json::json!({"chat_id": chat, "text": msg}))
-                                    .send()
-                                    .await;
-                            }
-                        }
-                    }
-                }
-                let _ = db
-                    .upsert_heartbeat(
-                        &hb.id,
-                        &watchbeat::models::Heartbeat {
-                            status: "missing".into(),
-                            ..hb.clone()
-                        },
-                    )
-                    .await;
-            }
         }
     }
 
@@ -330,18 +294,6 @@ async fn scheduler_iteration(
             .filter(|s| s.last_status.as_deref() == Some("down"))
             .count() as u64;
         metrics::set_monitor_counts(up, down);
-    }
-
-    // Cleanup old checks (configurable retention, default 30 days)
-    let retention_days = db
-        .get_setting("retention_days")
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(30);
-    if let Err(e) = db.cleanup_old_checks(retention_days).await {
-        tracing::warn!("Scheduler: cleanup failed: {}", e);
     }
 }
 
@@ -444,6 +396,8 @@ async fn run_monitor_check(
         response_time_ms: outcome.response_time_ms as i64,
         error_message: outcome.error_message,
         checked_at: now_str,
+        tls_cert_expires_at: outcome.tls.as_ref().and_then(|t| t.cert_expires_at.clone()),
+        tls_cert_days_left: outcome.tls.as_ref().and_then(|t| t.cert_days_left),
     };
 
     if let Err(e) = db.insert_check(&check).await {

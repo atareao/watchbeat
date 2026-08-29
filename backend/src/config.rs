@@ -13,6 +13,7 @@ pub struct Config {
     pub oidc_client_id: String,
     pub oidc_client_secret: String,
     pub oidc_redirect_url: String,
+    pub retention_days: i64,
 }
 
 impl Config {
@@ -29,6 +30,7 @@ impl Config {
             oidc_client_id: env_required("OIDC_CLIENT_ID"),
             oidc_client_secret: env_required("OIDC_CLIENT_SECRET"),
             oidc_redirect_url: env_or("OIDC_REDIRECT_URL", "http://localhost:3055/auth/callback"),
+            retention_days: env_or_parsed("WATCHBEAT_RETENTION_DAYS", 30),
         }
     }
 }

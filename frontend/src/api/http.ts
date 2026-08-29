@@ -21,6 +21,9 @@ export interface Monitor {
   message_template_latency: string | null;
   message_template_up: string | null;
   message_template_expiry: string | null;
+  token: string | null;
+  grace_seconds: number | null;
+  last_seen_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -33,6 +36,8 @@ export interface CheckResult {
   response_time_ms: number;
   error_message: string | null;
   checked_at: string;
+  tls_cert_expires_at: string | null;
+  tls_cert_days_left: number | null;
 }
 
 export interface MonitorSummary {
@@ -46,6 +51,9 @@ export interface MonitorSummary {
   last_checked_at: string | null;
   uptime_7d: number | null;
   uptime_30d: number | null;
+  token: string | null;
+  grace_seconds: number | null;
+  last_seen_at: string | null;
 }
 
 export interface DashboardStatus {
@@ -276,6 +284,25 @@ export async function createBackup(): Promise<{ path: string }> {
   return fetcher('/api/backup', { method: 'POST' });
 }
 
+// ───── Export / Import ─────
+
+export interface ExportPayload {
+  version: string;
+  exported_at: string;
+  monitors: Record<string, unknown>[];
+  notifiers: Record<string, unknown>[];
+  status_pages: Record<string, unknown>[];
+  settings: { key: string; value: string }[];
+}
+
+export async function exportConfig(): Promise<ExportPayload> {
+  return fetcher<ExportPayload>('/api/export');
+}
+
+export async function importConfig(payload: ExportPayload): Promise<{ ok: boolean; imported: { monitors: number; notifiers: number; status_pages: number; settings: number } }> {
+  return fetcher('/api/import', { method: 'POST', body: payload });
+}
+
 // ───── Heartbeats ─────
 
 export interface Heartbeat {
@@ -305,3 +332,7 @@ export async function updateHeartbeat(id: string, data: Partial<Heartbeat>): Pro
 export async function deleteHeartbeat(id: string): Promise<void> {
   return fetcher(`/api/heartbeats/${id}`, { method: 'DELETE' });
 }
+
+// ───── Unified Dashboard Item ─────
+
+export type DashboardItem = MonitorSummary;

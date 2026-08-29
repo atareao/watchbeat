@@ -38,6 +38,7 @@ pub struct CreateMonitorRequest {
     pub message_template_latency: Option<String>,
     pub message_template_up: Option<String>,
     pub message_template_expiry: Option<String>,
+    pub grace_seconds: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -55,6 +56,7 @@ pub struct UpdateMonitorRequest {
     pub message_template_latency: Option<String>,
     pub message_template_up: Option<String>,
     pub message_template_expiry: Option<String>,
+    pub grace_seconds: Option<i64>,
 }
 
 // ───── Handlers ─────
@@ -125,19 +127,28 @@ pub async fn create(
         .db
         .check_name_unique("monitors", "name", &req.name, None)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| {
+            tracing::error!(name = %req.name, error = %e, "check_name_unique failed");
+            e.to_string()
+        })?
     {
         return Err(format!("Ya existe un monitor con el nombre '{}'", req.name));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
+    let is_heartbeat = req.monitor_type == "heartbeat";
+    let token = if is_heartbeat {
+        Some(Uuid::new_v4().to_string().replace('-', ""))
+    } else {
+        None
+    };
     let monitor = Monitor {
         id: Uuid::new_v4().to_string(),
         name: req.name,
         monitor_type: req.monitor_type,
         target: req.target,
         config_json: req.config.unwrap_or(serde_json::json!({})),
-        interval_seconds: req.interval_seconds.unwrap_or(300),
+        interval_seconds: req.interval_seconds.unwrap_or(300).max(60),
         timeout_seconds: req.timeout_seconds.unwrap_or(30),
         enabled: req.enabled.unwrap_or(true),
         notifier_id: req.notifier_id,
@@ -149,15 +160,21 @@ pub async fn create(
         message_template_up: req.message_template_up,
         message_template_expiry: req.message_template_expiry,
         tags: vec![],
+        token,
+        grace_seconds: if is_heartbeat {
+            Some(req.grace_seconds.unwrap_or(3600))
+        } else {
+            None
+        },
+        last_seen_at: None,
         created_at: now.clone(),
         updated_at: now,
     };
 
-    state
-        .db
-        .create_monitor(&monitor)
-        .await
-        .map_err(|e| e.to_string())?;
+    state.db.create_monitor(&monitor).await.map_err(|e| {
+        tracing::error!(name = %monitor.name, error = %e, "create_monitor failed");
+        e.to_string()
+    })?;
 
     // Sync the many-to-many monitor_notifiers table
     if let Some(ref nid) = monitor.notifier_id {
@@ -165,7 +182,10 @@ pub async fn create(
             .db
             .set_monitor_notifiers(&monitor.id, std::slice::from_ref(nid))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                tracing::error!(monitor_id = %monitor.id, notifier_id = %nid, error = %e, "set_monitor_notifiers failed");
+                e.to_string()
+            })?;
     }
 
     Ok(Json(serde_json::json!(monitor)))
@@ -203,7 +223,10 @@ pub async fn update(
         monitor_type: existing.monitor_type,
         target: req.target.unwrap_or(existing.target),
         config_json: req.config.unwrap_or(existing.config_json),
-        interval_seconds: req.interval_seconds.unwrap_or(existing.interval_seconds),
+        interval_seconds: req
+            .interval_seconds
+            .unwrap_or(existing.interval_seconds)
+            .max(60),
         timeout_seconds: req.timeout_seconds.unwrap_or(existing.timeout_seconds),
         enabled: req.enabled.unwrap_or(existing.enabled),
         notifier_id: req.notifier_id.or(existing.notifier_id),
@@ -221,6 +244,9 @@ pub async fn update(
             .message_template_expiry
             .or(existing.message_template_expiry),
         tags: existing.tags,
+        token: existing.token,
+        grace_seconds: req.grace_seconds.or(existing.grace_seconds),
+        last_seen_at: existing.last_seen_at,
         created_at: existing.created_at,
         updated_at: now,
     };
@@ -303,6 +329,8 @@ pub async fn run_check(
         response_time_ms: outcome.response_time_ms as i64,
         error_message: outcome.error_message,
         checked_at: now,
+        tls_cert_expires_at: outcome.tls.as_ref().and_then(|t| t.cert_expires_at.clone()),
+        tls_cert_days_left: outcome.tls.as_ref().and_then(|t| t.cert_days_left),
     };
 
     let check_id = state

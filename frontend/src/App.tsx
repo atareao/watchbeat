@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+
 import { Routes, Route, Navigate } from "react-router";
 import { useAuth } from "./hooks/useAuth";
 import AppLayout from "./components/AppLayout";
@@ -7,9 +8,6 @@ import { Spin } from "antd";
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const MonitorDetail = lazy(() => import("./pages/MonitorDetail"));
-const Notifiers = lazy(() => import("./pages/Notifiers"));
-const StatusPages = lazy(() => import("./pages/StatusPages"));
-const Heartbeats = lazy(() => import("./pages/Heartbeats"));
 const Settings = lazy(() => import("./pages/Settings"));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -37,7 +35,7 @@ function SuspenseWrapper({ children }: { children: React.ReactNode }) {
         <Spin />
       </div>
     }>
-      <div className="fade-in-up">{children}</div>
+      <div>{children}</div>
     </Suspense>
   );
 }
@@ -57,9 +55,6 @@ export default function App() {
         <Route index element={<SuspenseWrapper><Dashboard /></SuspenseWrapper>} />
         <Route path="dashboard" element={<SuspenseWrapper><Dashboard /></SuspenseWrapper>} />
         <Route path="monitors/:id" element={<SuspenseWrapper><MonitorDetail /></SuspenseWrapper>} />
-        <Route path="notifiers" element={<SuspenseWrapper><Notifiers /></SuspenseWrapper>} />
-        <Route path="status-pages" element={<SuspenseWrapper><StatusPages /></SuspenseWrapper>} />
-        <Route path="heartbeats" element={<SuspenseWrapper><Heartbeats /></SuspenseWrapper>} />
         <Route path="settings" element={<SuspenseWrapper><Settings /></SuspenseWrapper>} />
       </Route>
     </Routes>

@@ -71,31 +71,36 @@ export default function Monitors() {
   const handleCreate = () => {
     setEditingId(null);
     form.resetFields();
-    form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true, confirmations_required: 0, config: {} });
     setSelectedType('http');
-    setModalOpen(true);
+    setTimeout(() => {
+      form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true, confirmations_required: 0, config: {} });
+      setModalOpen(true);
+    }, 0);
   };
 
   const handleEdit = (m: Monitor) => {
     setEditingId(m.id);
-    form.setFieldsValue({
-      name: m.name,
-      type: m.type,
-      target: m.target,
-      interval_seconds: m.interval_seconds,
-      timeout_seconds: m.timeout_seconds,
-      enabled: m.enabled,
-      notifier_id: m.notifier_id ?? null,
-      confirmations_required: (m as any).confirmations_required ?? 0,
-      config: m.config_json ?? {},
-      latency_threshold_ms: m.latency_threshold_ms,
-      message_template_down: m.message_template_down,
-      message_template_latency: m.message_template_latency,
-      message_template_up: m.message_template_up,
-      message_template_expiry: m.message_template_expiry,
-    });
+    form.resetFields();
     setSelectedType(m.type);
-    setModalOpen(true);
+    setTimeout(() => {
+      form.setFieldsValue({
+        name: m.name,
+        type: m.type,
+        target: m.target,
+        interval_seconds: m.interval_seconds,
+        timeout_seconds: m.timeout_seconds,
+        enabled: m.enabled,
+        notifier_id: m.notifier_id ?? null,
+        confirmations_required: (m as any).confirmations_required ?? 0,
+        config: m.config_json ?? {},
+        latency_threshold_ms: m.latency_threshold_ms,
+        message_template_down: m.message_template_down,
+        message_template_latency: m.message_template_latency,
+        message_template_up: m.message_template_up,
+        message_template_expiry: m.message_template_expiry,
+      });
+      setModalOpen(true);
+    }, 0);
   };
 
   const handleSave = async () => {
@@ -249,7 +254,7 @@ export default function Monitors() {
               </Form.Item>
               <Space style={{ width: '100%' }} size="large">
                 <Form.Item name="interval_seconds" label="Intervalo (s)">
-                  <InputNumber min={10} max={86400} />
+                  <InputNumber min={60} max={86400} />
                 </Form.Item>
                 <Form.Item name="timeout_seconds" label="Timeout (s)">
                   <InputNumber min={1} max={120} />
