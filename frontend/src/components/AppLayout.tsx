@@ -1,6 +1,6 @@
 import { Layout, Typography, Button } from 'antd';
 import {
-  DashboardOutlined, SettingOutlined, LogoutOutlined,
+  SettingOutlined, LogoutOutlined,
   SunOutlined, MoonOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router';
@@ -31,12 +31,15 @@ export default function AppLayout() {
       }}>
         {/* Left: brand + navigation */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <span
-            style={{ fontWeight: 'bold', fontSize: 18, cursor: 'pointer' }}
+          <img
+            src="/icon-32.png"
+            alt="WatchBeat"
+            style={{ height: 28, cursor: 'pointer' }}
             onClick={() => navigate('/dashboard')}
-          >
-            💓 WatchBeat
-          </span>
+          />
+          <Typography.Title level={4} style={{ margin: 0, cursor: 'pointer' }} onClick={() => navigate('/dashboard')}>
+            WatchBeat
+          </Typography.Title>
           {isDashboard && (
             <Button
               type="text"
