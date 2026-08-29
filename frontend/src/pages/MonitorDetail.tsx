@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import {
   Card, Typography, Spin, Table, Tag, Button, Descriptions, Space, Tooltip, message, Statistic, Row, Col,
@@ -9,7 +9,7 @@ import {
   ClockCircleOutlined, EditOutlined, SettingOutlined,
 } from '@ant-design/icons';
 import {
-  fetchMonitor, fetchChecks, fetchTimelineBuckets, fetchNotifiers,
+  fetchMonitor, fetchChecks, fetchTimelineBuckets, fetchNotifiers, fetchSetting,
   updateMonitor,
   type Monitor, type CheckResult, type TimelineBucket,
 } from '../api/http';
@@ -96,21 +96,21 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
   const [stats, setStats] = useState<{
     latency24h: number | null;
     uptime24h: number | null;
+    uptime7d: number | null;
     uptime30d: number | null;
-    uptime1y: number | null;
-  }>({ latency24h: null, uptime24h: null, uptime30d: null, uptime1y: null });
+  }>({ latency24h: null, uptime24h: null, uptime7d: null, uptime30d: null });
   const [loading, setLoading] = useState(!isHeartbeat);
 
   useEffect(() => {
     if (isHeartbeat) return;
     setLoading(true);
 
-    // Fetch 24h, 30d, and 1y buckets in parallel
+    // Fetch 24h, 7d, and 30d buckets in parallel
     Promise.all([
       fetchTimelineBuckets(monitor.id, { hours: 24, bucket_seconds: 900 }),
+      fetchTimelineBuckets(monitor.id, { days: 7, bucket_seconds: 10080 }),
       fetchTimelineBuckets(monitor.id, { days: 30, bucket_seconds: 28800 }),
-      fetchTimelineBuckets(monitor.id, { days: 365, bucket_seconds: 86400 }),
-    ]).then(([b24h, b30d, b1y]) => {
+    ]).then(([b24h, b7d, b30d]) => {
       const calcUptime = (buckets: TimelineBucket[]) => {
         const withData = buckets.filter(b => b.dominant_status !== 'no_data');
         if (withData.length === 0) return null;
@@ -124,8 +124,8 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
       setStats({
         latency24h: calcLatency(b24h.buckets),
         uptime24h: calcUptime(b24h.buckets),
+        uptime7d: calcUptime(b7d.buckets),
         uptime30d: calcUptime(b30d.buckets),
-        uptime1y: calcUptime(b1y.buckets),
       });
     }).catch(() => {
       // ignore
@@ -217,11 +217,11 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
         </Col>
         <Col xs={12} sm={8} md={4}>
           <Statistic
-            title="Uptime 1a"
-            value={stats.uptime1y ?? 0}
+            title="Uptime 7d"
+            value={stats.uptime7d ?? 0}
             suffix="%"
             precision={2}
-            valueStyle={{ color: stats.uptime1y !== null && stats.uptime1y < 99 ? '#ef4444' : '#22c55e', fontSize: 22 }}
+            valueStyle={{ color: stats.uptime7d !== null && stats.uptime7d < 99 ? '#ef4444' : '#22c55e', fontSize: 22 }}
           />
         </Col>
         <Col xs={12} sm={8} md={4}>
@@ -416,6 +416,31 @@ export default function MonitorDetail() {
   const [buckets, setBuckets] = useState<TimelineBucket[]>([]);
   const [loading, setLoading] = useState(true);
   const [rangeKey, setRangeKey] = useState(3); // default: 24h
+  const [retentionDays, setRetentionDays] = useState<number | null>(null);
+
+  // Load retention setting
+  useEffect(() => {
+    fetchSetting('retention_days').then(d => {
+      setRetentionDays(d.value ? parseInt(d.value) : 30);
+    }).catch(() => setRetentionDays(30));
+  }, []);
+
+  // Filter range options based on retention
+  const availableRanges = useMemo(() => {
+    if (!retentionDays) return RANGE_OPTIONS;
+    return RANGE_OPTIONS.filter(opt => {
+      if (opt.days && opt.days > retentionDays) return false;
+      if (opt.hours && opt.hours > retentionDays * 24) return false;
+      return true;
+    });
+  }, [retentionDays]);
+
+  // Reset rangeKey if current selection exceeds available
+  useEffect(() => {
+    if (retentionDays && rangeKey >= availableRanges.length) {
+      setRangeKey(3); // fallback to 24h
+    }
+  }, [retentionDays, rangeKey, availableRanges.length]);
 
   // Pagination state for checks table
   const [checksPage, setChecksPage] = useState(1);
@@ -429,7 +454,7 @@ export default function MonitorDetail() {
   const [notifiers, setNotifiers] = useState<{ id: string; name: string }[]>([]);
   const [editForm] = Form.useForm();
 
-  const range = RANGE_OPTIONS[rangeKey];
+  const range = availableRanges[rangeKey] ?? RANGE_OPTIONS[3];
 
   // ── Load monitor data ──
   useEffect(() => {
@@ -605,7 +630,7 @@ export default function MonitorDetail() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <Text strong><BarChartOutlined /> {monitor.type === 'heartbeat' ? 'Health' : 'Health & Latency'}</Text>
           <Space size={4} wrap>
-            {RANGE_OPTIONS.map((opt, i) => (
+            {availableRanges.map((opt, i) => (
               <Tooltip key={opt.label} title={opt.labelLong}>
                 <Button
                   size="small"

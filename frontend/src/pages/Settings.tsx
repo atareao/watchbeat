@@ -111,7 +111,7 @@ export default function Settings() {
   // ── Init ──
   useEffect(() => {
     fetchSetting('retention_days')
-      .then(d => { if (d.value) setRetentionDays(parseInt(d.value, 10)); })
+      .then(d => { if (d?.value) setRetentionDays(parseInt(d.value, 10)); })
       .catch(() => {});
     Promise.all([
       fetchSetting('default_template_down'),
@@ -119,7 +119,7 @@ export default function Settings() {
       fetchSetting('default_template_up'),
       fetchSetting('default_template_expiry'),
     ]).then(([down, latency, up, expiry]) => {
-      setDefaultTemplates({ down: down.value || '', latency: latency.value || '', up: up.value || '', expiry: expiry.value || '' });
+      setDefaultTemplates({ down: down?.value || '', latency: latency?.value || '', up: up?.value || '', expiry: expiry?.value || '' });
     }).catch(() => {});
   }, []);
 
@@ -271,7 +271,11 @@ export default function Settings() {
         <Card>
           <Paragraph>Los checks antiguos se eliminan automáticamente. El cambio se aplica en el siguiente ciclo del scheduler (~15s).</Paragraph>
           <Space>
-            <InputNumber min={1} max={365} value={retentionDays} onChange={(v) => setRetentionDays(v ?? 30)} addonAfter="días" style={{ width: 200 }} />
+            <Select value={retentionDays} onChange={(v) => setRetentionDays(v ?? 30)} style={{ width: 200 }}>
+              <Select.Option value={7}>7 días</Select.Option>
+              <Select.Option value={15}>15 días</Select.Option>
+              <Select.Option value={30}>30 días</Select.Option>
+            </Select>
             <Button type="primary" icon={<SaveOutlined />} onClick={saveRetention} loading={saving}>Guardar</Button>
           </Space>
         </Card>
