@@ -123,8 +123,27 @@ async fn main() {
     let db_for_scheduler = db.clone();
     let sched_status = scheduler_status.clone();
     let event_tx_for_sched = event_tx.clone();
+    let retention_days = config.retention_days;
     tokio::spawn(async move {
         scheduler_loop(db_for_scheduler, sched_status, event_tx_for_sched).await;
+    });
+
+    // ───── Daily Cleanup Loop ─────
+    let db_for_cleanup = db.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
+        // First run after 1h to let scheduler populate data
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        loop {
+            interval.tick().await;
+            tracing::info!(
+                "Running daily cleanup of old checks (retention={}d)",
+                retention_days
+            );
+            if let Err(e) = db_for_cleanup.cleanup_old_checks(retention_days).await {
+                tracing::warn!("Cleanup: failed: {}", e);
+            }
+        }
     });
 
     // ───── Router (como populates) ─────
@@ -275,18 +294,6 @@ async fn scheduler_iteration(
             .filter(|s| s.last_status.as_deref() == Some("down"))
             .count() as u64;
         metrics::set_monitor_counts(up, down);
-    }
-
-    // Cleanup old checks (configurable retention, default 30 days)
-    let retention_days = db
-        .get_setting("retention_days")
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(30);
-    if let Err(e) = db.cleanup_old_checks(retention_days).await {
-        tracing::warn!("Scheduler: cleanup failed: {}", e);
     }
 }
 

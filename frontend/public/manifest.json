@@ -1,0 +1,13 @@
+{
+  "name": "WatchBeat",
+  "short_name": "WatchBeat",
+  "description": "Monitor de uptime auto-hosteado",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#1677ff",
+  "background_color": "#ffffff",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

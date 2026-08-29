@@ -148,7 +148,7 @@ pub async fn create(
         monitor_type: req.monitor_type,
         target: req.target,
         config_json: req.config.unwrap_or(serde_json::json!({})),
-        interval_seconds: req.interval_seconds.unwrap_or(300),
+        interval_seconds: req.interval_seconds.unwrap_or(300).max(60),
         timeout_seconds: req.timeout_seconds.unwrap_or(30),
         enabled: req.enabled.unwrap_or(true),
         notifier_id: req.notifier_id,
@@ -223,7 +223,10 @@ pub async fn update(
         monitor_type: existing.monitor_type,
         target: req.target.unwrap_or(existing.target),
         config_json: req.config.unwrap_or(existing.config_json),
-        interval_seconds: req.interval_seconds.unwrap_or(existing.interval_seconds),
+        interval_seconds: req
+            .interval_seconds
+            .unwrap_or(existing.interval_seconds)
+            .max(60),
         timeout_seconds: req.timeout_seconds.unwrap_or(existing.timeout_seconds),
         enabled: req.enabled.unwrap_or(existing.enabled),
         notifier_id: req.notifier_id.or(existing.notifier_id),

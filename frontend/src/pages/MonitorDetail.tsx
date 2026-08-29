@@ -1,11 +1,18 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useParams } from 'react-router';
-import { Card, Typography, Spin, Table, Tag, Button, Descriptions, Space, Tooltip, message, Statistic, Row, Col } from 'antd';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useParams, useNavigate } from 'react-router';
 import {
-  ReloadOutlined, PlayCircleOutlined, ClockCircleOutlined, BarChartOutlined,
-  HeartOutlined, CopyOutlined, CheckCircleOutlined, CloseCircleOutlined,
+  Card, Typography, Spin, Table, Tag, Button, Descriptions, Space, Tooltip, message, Statistic, Row, Col,
+  Modal, Form, Input, InputNumber, Select, Switch, Tabs,
+} from 'antd';
+import {
+  BarChartOutlined, HeartOutlined,
+  ClockCircleOutlined, EditOutlined, SettingOutlined,
 } from '@ant-design/icons';
-import { fetchMonitor, fetchChecks, fetchTimelineBuckets, runCheck, type Monitor, type CheckResult, type TimelineBucket } from '../api/http';
+import {
+  fetchMonitor, fetchChecks, fetchTimelineBuckets, fetchNotifiers, fetchSetting,
+  updateMonitor,
+  type Monitor, type CheckResult, type TimelineBucket,
+} from '../api/http';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import 'dayjs/locale/es';
@@ -19,6 +26,28 @@ const STATUS_TAG: Record<string, { color: string; text: string }> = {
   up: { color: 'green', text: 'UP' },
   down: { color: 'red', text: 'DOWN' },
   error: { color: 'orange', text: 'ERROR' },
+};
+
+const MONITOR_TYPES = [
+  { value: 'http', label: 'HTTP(S)' },
+  { value: 'tcp', label: 'TCP' },
+  { value: 'ping', label: 'Ping' },
+  { value: 'tls', label: 'TLS/SSL' },
+];
+
+const CONFIG_FIELDS: Record<string, { name: string; label: string; type: string; defaultValue?: unknown }[]> = {
+  http: [
+    { name: 'method', label: 'Método HTTP', type: 'select', defaultValue: 'GET' },
+    { name: 'expected_status', label: 'Status esperado', type: 'number', defaultValue: 200 },
+    { name: 'expected_body', label: 'Body esperado', type: 'text' },
+    { name: 'body_is_regex', label: 'Body es regex', type: 'boolean', defaultValue: false },
+    { name: 'expiry_days', label: 'Días para expiry del certificado', type: 'number', defaultValue: 14 },
+  ],
+  tls: [
+    { name: 'expiry_days', label: 'Días para expiry', type: 'number', defaultValue: 14 },
+  ],
+  tcp: [],
+  ping: [],
 };
 
 // ── Range options with bucket sizes ──
@@ -61,130 +90,27 @@ function formatBucketTime(bucketStart: string, bucketSeconds: number): string {
   return d.format('HH:mm');
 }
 
-// ── Heartbeat status logic ──
-function heartbeatStatus(monitor: Monitor): { label: string; color: string; icon: React.ReactNode } {
-  if (!monitor.last_seen_at) {
-    return { label: 'Pendiente', color: 'orange', icon: <ClockCircleOutlined style={{ color: '#f59e0b', fontSize: 24 }} /> };
-  }
-  const elapsed = Date.now() - new Date(monitor.last_seen_at).getTime();
-  const grace = (monitor.grace_seconds ?? 3600) * 1000;
-  if (elapsed < grace) {
-    return { label: 'OK', color: '#22c55e', icon: <CheckCircleOutlined style={{ color: '#22c55e', fontSize: 24 }} /> };
-  }
-  return { label: 'Perdido', color: '#ef4444', icon: <CloseCircleOutlined style={{ color: '#ef4444', fontSize: 24 }} /> };
-}
-
-// ── Heartbeat view ──
-function HeartbeatView({ monitor, checks, loading, loadChecks, checksPerPage }: {
-  monitor: Monitor;
-  checks: CheckResult[];
-  loading: boolean;
-  loadChecks: (p: number, pp: number) => void;
-  checksPerPage: number;
-}) {
-  const status = heartbeatStatus(monitor);
-  const pulseUrl = `${window.location.origin}/api/heartbeat/${monitor.token}`;
-
-  const checksColumns = [
-    { title: 'Estado', dataIndex: 'status', key: 'status', width: 80,
-      render: (s: string) => <Tag color={s === 'up' ? 'green' : 'red'}>{s === 'up' ? 'OK' : 'DOWN'}</Tag>,
-    },
-    { title: 'Fecha', dataIndex: 'checked_at', key: 'date',
-      render: (v: string) => dayjs(v).format('DD/MM/YYYY HH:mm:ss'),
-    },
-  ];
-
-  return (
-    <div>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Space>
-          <HeartOutlined style={{ color: '#ec4899', fontSize: 28 }} />
-          <Title level={3} style={{ margin: 0 }}>{monitor.name}</Title>
-        </Space>
-        <Button icon={<ReloadOutlined />} onClick={() => loadChecks(1, checksPerPage)}>Recargar</Button>
-      </div>
-
-      {/* Status card */}
-      <Card style={{ marginTop: 16, borderLeft: `4px solid ${status.color}` }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          {status.icon}
-          <div>
-            <Text strong style={{ fontSize: 18, color: status.color }}>{status.label}</Text>
-            <br />
-            <Text type="secondary">
-              {monitor.last_seen_at
-                ? `Último pulso: ${dayjs(monitor.last_seen_at).fromNow()}`
-                : 'Sin pulsos recibidos'}
-            </Text>
-          </div>
-        </div>
-      </Card>
-
-      {/* Details */}
-      <Descriptions column={2} style={{ marginTop: 16 }} bordered size="small">
-        <Descriptions.Item label="Tipo">Heartbeat</Descriptions.Item>
-        <Descriptions.Item label="Grace period">{monitor.grace_seconds ?? 3600}s</Descriptions.Item>
-        <Descriptions.Item label="Token" span={2}>
-          <Space>
-            <Text code style={{ fontSize: 12 }}>{monitor.token}</Text>
-            <Button size="small" icon={<CopyOutlined />} onClick={() => {
-              navigator.clipboard.writeText(monitor.token ?? '');
-              message.success('Token copiado');
-            }} />
-          </Space>
-        </Descriptions.Item>
-        <Descriptions.Item label="URL de pulso" span={2}>
-          <Space>
-            <Text code style={{ fontSize: 12 }}>{pulseUrl}</Text>
-            <Button size="small" icon={<CopyOutlined />} onClick={() => {
-              navigator.clipboard.writeText(pulseUrl);
-              message.success('URL copiada');
-            }} />
-          </Space>
-        </Descriptions.Item>
-      </Descriptions>
-
-      {/* Pulse history */}
-      <Card title="Histórico de pulsos" style={{ marginTop: 16 }}>
-        <Table
-          dataSource={checks}
-          columns={checksColumns}
-          rowKey="id"
-          loading={loading}
-          pagination={{
-            pageSize: checksPerPage,
-            showSizeChanger: true,
-            pageSizeOptions: ['10', '20', '50', '100'],
-            onChange: (p, ps) => loadChecks(p, ps),
-          }}
-          size="small"
-        />
-      </Card>
-    </div>
-  );
-}
-
 // ── Monitor Stats Card (latency, uptime 24h/30d/1y, cert expiry) ──
 function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck: CheckResult | null }) {
+  const isHeartbeat = monitor.type === 'heartbeat';
   const [stats, setStats] = useState<{
     latency24h: number | null;
     uptime24h: number | null;
+    uptime7d: number | null;
     uptime30d: number | null;
-    uptime1y: number | null;
-  }>({ latency24h: null, uptime24h: null, uptime30d: null, uptime1y: null });
-  const [loading, setLoading] = useState(true);
+  }>({ latency24h: null, uptime24h: null, uptime7d: null, uptime30d: null });
+  const [loading, setLoading] = useState(!isHeartbeat);
 
   useEffect(() => {
-    if (monitor.type === 'heartbeat') return;
+    if (isHeartbeat) return;
     setLoading(true);
 
-    // Fetch 24h, 30d, and 1y buckets in parallel
+    // Fetch 24h, 7d, and 30d buckets in parallel
     Promise.all([
       fetchTimelineBuckets(monitor.id, { hours: 24, bucket_seconds: 900 }),
+      fetchTimelineBuckets(monitor.id, { days: 7, bucket_seconds: 10080 }),
       fetchTimelineBuckets(monitor.id, { days: 30, bucket_seconds: 28800 }),
-      fetchTimelineBuckets(monitor.id, { days: 365, bucket_seconds: 86400 }),
-    ]).then(([b24h, b30d, b1y]) => {
+    ]).then(([b24h, b7d, b30d]) => {
       const calcUptime = (buckets: TimelineBucket[]) => {
         const withData = buckets.filter(b => b.dominant_status !== 'no_data');
         if (withData.length === 0) return null;
@@ -198,16 +124,66 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
       setStats({
         latency24h: calcLatency(b24h.buckets),
         uptime24h: calcUptime(b24h.buckets),
+        uptime7d: calcUptime(b7d.buckets),
         uptime30d: calcUptime(b30d.buckets),
-        uptime1y: calcUptime(b1y.buckets),
       });
     }).catch(() => {
       // ignore
     }).finally(() => setLoading(false));
-  }, [monitor.id, monitor.type]);
+  }, [monitor.id, isHeartbeat]);
 
   const certExpiry = latestCheck?.tls_cert_expires_at ?? null;
   const certDaysLeft = latestCheck?.tls_cert_days_left ?? null;
+
+  // Heartbeat stats
+  if (isHeartbeat) {
+    const hbStatus = monitor.last_seen_at
+      ? (() => {
+          const elapsed = Date.now() - new Date(monitor.last_seen_at).getTime();
+          return elapsed < (monitor.grace_seconds ?? 3600) * 1000 ? 'ok' : 'missing';
+        })()
+      : 'pending';
+    const pulseUrl = `${window.location.origin}/api/heartbeat/${monitor.token}`;
+    return (
+      <Card title="Heartbeat" style={{ marginTop: 16 }}>
+        <Row gutter={[16, 16]}>
+          <Col xs={12} sm={8} md={4}>
+            <Statistic
+              title="Último pulso"
+              value={monitor.last_seen_at ? dayjs(monitor.last_seen_at).fromNow() : 'Nunca'}
+              valueStyle={{ fontSize: 18, color: hbStatus === 'ok' ? '#22c55e' : '#ef4444' }}
+            />
+          </Col>
+          <Col xs={12} sm={8} md={4}>
+            <Statistic
+              title="Periodo de gracia"
+              value={`${monitor.grace_seconds ?? 3600}s`}
+              valueStyle={{ fontSize: 18 }}
+            />
+          </Col>
+          <Col xs={12} sm={8} md={4}>
+            <Statistic
+              title="Estado"
+              value={hbStatus === 'ok' ? 'OK' : hbStatus === 'missing' ? 'Perdido' : 'Pendiente'}
+              valueStyle={{ fontSize: 18, color: hbStatus === 'ok' ? '#22c55e' : hbStatus === 'missing' ? '#ef4444' : '#f59e0b' }}
+            />
+          </Col>
+          <Col xs={12} sm={8} md={4}>
+            <Statistic
+              title="Token"
+              value={monitor.token ? `${monitor.token.slice(0, 12)}...` : '—'}
+              valueStyle={{ fontSize: 14, color: '#888' }}
+            />
+          </Col>
+        </Row>
+        <div style={{ marginTop: 8 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            URL de pulso: <Typography.Text code style={{ fontSize: 12 }}>{pulseUrl}</Typography.Text>
+          </Typography.Text>
+        </div>
+      </Card>
+    );
+  }
 
   return (
     <Card title="Estadísticas" style={{ marginTop: 16 }} loading={loading}>
@@ -241,11 +217,11 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
         </Col>
         <Col xs={12} sm={8} md={4}>
           <Statistic
-            title="Uptime 1a"
-            value={stats.uptime1y ?? 0}
+            title="Uptime 7d"
+            value={stats.uptime7d ?? 0}
             suffix="%"
             precision={2}
-            valueStyle={{ color: stats.uptime1y !== null && stats.uptime1y < 99 ? '#ef4444' : '#22c55e', fontSize: 22 }}
+            valueStyle={{ color: stats.uptime7d !== null && stats.uptime7d < 99 ? '#ef4444' : '#22c55e', fontSize: 22 }}
           />
         </Col>
         <Col xs={12} sm={8} md={4}>
@@ -271,6 +247,72 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
     </Card>
   );
 }
+
+function HeartbeatChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; rangeKey: number }) {
+  const range = RANGE_OPTIONS[rangeKey];
+
+  const pulses = buckets.filter(b => b.count > 0);
+  const totalPulses = pulses.reduce((sum, b) => sum + b.count, 0);
+
+  if (buckets.length === 0) return <Text type="secondary">Sin datos en {range.labelLong.toLowerCase()}</Text>;
+
+  const MAX_BARS = 150;
+  const bars = buckets.length > MAX_BARS ? buckets.slice(-MAX_BARS) : buckets;
+  const labelInterval = Math.max(1, Math.floor(bars.length / 6));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 1, alignItems: 'flex-end', height: 60 }}>
+        {bars.map((b, i) => {
+          const hasPulse = b.count > 0;
+          const color = hasPulse ? '#22c55e' : '#e5e7eb';
+          const tooltipTitle = hasPulse
+            ? `Pulso recibido · ${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
+            : `Sin pulso · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`;
+          return (
+            <Tooltip key={i} title={tooltipTitle}>
+              <div
+                style={{
+                  flex: '1 1 0',
+                  minWidth: 2,
+                  height: hasPulse ? '100%' : '20%',
+                  background: color,
+                  borderRadius: '1px 1px 0 0',
+                  cursor: 'pointer',
+                }}
+              />
+            </Tooltip>
+          );
+        })}
+      </div>
+      {/* Time axis labels */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 10, color: '#888' }}>
+        {bars.length > 0 && (
+          <>
+            <span>{formatBucketTime(bars[0].bucket_start, range.bucketSeconds)}</span>
+            {Array.from({ length: Math.min(5, Math.floor(bars.length / labelInterval)) }, (_, i) => {
+              const idx = Math.min((i + 1) * labelInterval, bars.length - 1);
+              return <span key={i}>{formatBucketTime(bars[idx].bucket_start, range.bucketSeconds)}</span>;
+            })}
+            <span>{formatBucketTime(bars[bars.length - 1].bucket_start, range.bucketSeconds)}</span>
+          </>
+        )}
+      </div>
+      {/* Stats row */}
+      <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: '#888' }}>
+        <span><HeartOutlined /> {totalPulses} pulsos recibidos</span>
+        <span><ClockCircleOutlined /> {range.labelLong.toLowerCase()}</span>
+      </div>
+      {/* Legend */}
+      <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, color: '#888', alignItems: 'center' }}>
+        <span style={{ fontWeight: 500, color: '#555' }}>Pulso:</span>
+        <span style={{ color: '#22c55e' }}>■ Recibido</span>
+        <span style={{ color: '#e5e7eb' }}>■ Sin pulso</span>
+      </div>
+    </div>
+  );
+}
+
 function HealthLatencyChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; rangeKey: number }) {
   const range = RANGE_OPTIONS[rangeKey];
 
@@ -367,12 +409,38 @@ function HealthLatencyChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; 
 
 export default function MonitorDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [monitor, setMonitor] = useState<Monitor | null>(null);
   const [monitorLoading, setMonitorLoading] = useState(true);
   const [checks, setChecks] = useState<CheckResult[]>([]);
   const [buckets, setBuckets] = useState<TimelineBucket[]>([]);
   const [loading, setLoading] = useState(true);
   const [rangeKey, setRangeKey] = useState(3); // default: 24h
+  const [retentionDays, setRetentionDays] = useState<number | null>(null);
+
+  // Load retention setting
+  useEffect(() => {
+    fetchSetting('retention_days').then(d => {
+      setRetentionDays(d.value ? parseInt(d.value) : 30);
+    }).catch(() => setRetentionDays(30));
+  }, []);
+
+  // Filter range options based on retention
+  const availableRanges = useMemo(() => {
+    if (!retentionDays) return RANGE_OPTIONS;
+    return RANGE_OPTIONS.filter(opt => {
+      if (opt.days && opt.days > retentionDays) return false;
+      if (opt.hours && opt.hours > retentionDays * 24) return false;
+      return true;
+    });
+  }, [retentionDays]);
+
+  // Reset rangeKey if current selection exceeds available
+  useEffect(() => {
+    if (retentionDays && rangeKey >= availableRanges.length) {
+      setRangeKey(3); // fallback to 24h
+    }
+  }, [retentionDays, rangeKey, availableRanges.length]);
 
   // Pagination state for checks table
   const [checksPage, setChecksPage] = useState(1);
@@ -380,7 +448,13 @@ export default function MonitorDetail() {
   const [checksTotal, setChecksTotal] = useState(0);
   const [checksTotalPages, setChecksTotalPages] = useState(0);
 
-  const range = RANGE_OPTIONS[rangeKey];
+  // Edit modal state
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [selectedType, setSelectedType] = useState<string>('http');
+  const [notifiers, setNotifiers] = useState<{ id: string; name: string }[]>([]);
+  const [editForm] = Form.useForm();
+
+  const range = availableRanges[rangeKey] ?? RANGE_OPTIONS[3];
 
   // ── Load monitor data ──
   useEffect(() => {
@@ -392,9 +466,9 @@ export default function MonitorDetail() {
       .finally(() => setMonitorLoading(false));
   }, [id]);
 
-  // ── Load timeline buckets (only for non-heartbeat monitors) ──
+  // ── Load timeline buckets ──
   useEffect(() => {
-    if (!id || (monitor && monitor.type === 'heartbeat')) return;
+    if (!id) return;
     const params: Record<string, number> = { bucket_seconds: range.bucketSeconds };
     if (range.hours != null) {
       (params as { hours: number; bucket_seconds: number }).hours = range.hours;
@@ -407,7 +481,7 @@ export default function MonitorDetail() {
     )
       .then(({ buckets: b }) => setBuckets(b))
       .catch(() => setBuckets([]));
-  }, [id, rangeKey, range.bucketSeconds, range.hours, range.days, monitor?.type]);
+  }, [id, rangeKey, range.bucketSeconds, range.hours, range.days]);
 
   // ── Load checks ──
   const loadChecks = useCallback(async (cp: number, cpp: number) => {
@@ -431,45 +505,86 @@ export default function MonitorDetail() {
     loadChecks(checksPage, checksPerPage);
   }, [loadChecks]);
 
-  const handleCheck = async () => {
+  // ── Edit handlers ──
+  const openEdit = () => {
+    if (!monitor) return;
+    fetchNotifiers().then(nData => {
+      setNotifiers(nData.notifiers.map(n => ({ id: n.id, name: n.name })));
+    }).catch(() => {});
+    setSelectedType(monitor.type);
+    editForm.setFieldsValue({
+      name: monitor.name,
+      type: monitor.type,
+      target: monitor.target,
+      interval_seconds: monitor.interval_seconds,
+      timeout_seconds: monitor.timeout_seconds,
+      enabled: monitor.enabled,
+      notifier_id: monitor.notifier_id ?? null,
+      confirmations_required: (monitor as any).confirmations_required ?? 0,
+      config: monitor.config_json ?? {},
+      latency_threshold_ms: monitor.latency_threshold_ms,
+      message_template_down: monitor.message_template_down,
+      message_template_latency: monitor.message_template_latency,
+      message_template_up: monitor.message_template_up,
+      message_template_expiry: monitor.message_template_expiry,
+    });
+    setEditModalOpen(true);
+  };
+
+  const handleSave = async () => {
     if (!id) return;
     try {
-      await runCheck(id);
-      loadChecks(1, checksPerPage);
-    } catch { /* ignore */ }
+      const values = await editForm.validateFields();
+      const payload = {
+        name: values.name,
+        type: values.type,
+        target: values.target,
+        interval_seconds: values.interval_seconds,
+        timeout_seconds: values.timeout_seconds,
+        enabled: values.enabled,
+        notifier_id: values.notifier_id || null,
+        confirmations_required: values.confirmations_required ?? 0,
+        config: (values.config ?? {}) as any,
+        latency_threshold_ms: values.latency_threshold_ms ?? null,
+        message_template_down: values.message_template_down || null,
+        message_template_latency: values.message_template_latency || null,
+        message_template_up: values.message_template_up || null,
+        message_template_expiry: values.message_template_expiry || null,
+      };
+      await updateMonitor(id, payload);
+      message.success('Monitor actualizado');
+      setEditModalOpen(false);
+      // Reload monitor data
+      const updated = await fetchMonitor(id);
+      setMonitor(updated);
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error('Error al guardar');
+    }
   };
 
   if (monitorLoading) return <div style={{ textAlign: 'center', padding: 40 }}><Spin size="large" /></div>;
   if (!monitor) return <Typography.Text type="danger">Monitor no encontrado</Typography.Text>;
 
-  // ── Heartbeat branch ──
-  if (monitor.type === 'heartbeat') {
-    return (
-      <HeartbeatView
-        monitor={monitor}
-        checks={checks}
-        loading={loading}
-        loadChecks={loadChecks}
-        checksPerPage={checksPerPage}
-      />
-    );
-  }
+  // ── Common view for all monitor types (including heartbeat) ──
 
-  // ── Regular monitor view ──
+  const isHeartbeat = monitor.type === 'heartbeat';
 
   const checksColumns = [
     { title: 'Estado', dataIndex: 'status', key: 'status',
       render: (s: string) => <Tag color={STATUS_TAG[s]?.color}>{STATUS_TAG[s]?.text ?? s}</Tag>,
     },
-    { title: 'Código', dataIndex: 'status_code', key: 'code', width: 80,
-      render: (v: number | null) => v ?? '—',
-    },
-    { title: 'Latencia', dataIndex: 'response_time_ms', key: 'latency', width: 100,
-      render: (v: number) => `${v} ms`,
-    },
-    { title: 'Error', dataIndex: 'error_message', key: 'error', ellipsis: true,
-      render: (v: string | null) => v ?? '—',
-    },
+    ...(isHeartbeat ? [] : [
+      { title: 'Código', dataIndex: 'status_code', key: 'code', width: 80,
+        render: (v: number | null) => v ?? '—',
+      },
+      { title: 'Latencia', dataIndex: 'response_time_ms', key: 'latency', width: 100,
+        render: (v: number) => `${v} ms`,
+      },
+      { title: 'Error', dataIndex: 'error_message', key: 'error', ellipsis: true,
+        render: (v: string | null) => v ?? '—',
+      },
+    ]),
     { title: 'Fecha', dataIndex: 'checked_at', key: 'date', width: 160,
       render: (v: string) => dayjs(v).format('DD/MM/YYYY HH:mm:ss'),
     },
@@ -480,8 +595,7 @@ export default function MonitorDetail() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Title level={3} style={{ margin: 0 }}>{monitor.name}</Title>
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => loadChecks(1, checksPerPage)}>Recargar</Button>
-          <Button icon={<PlayCircleOutlined />} onClick={handleCheck}>Check ahora</Button>
+          <Button icon={<EditOutlined />} onClick={openEdit}>Editar</Button>
         </Space>
       </div>
 
@@ -489,34 +603,34 @@ export default function MonitorDetail() {
         <Descriptions.Item label="Tipo">{monitor.type}</Descriptions.Item>
         <Descriptions.Item label="Target">{monitor.target}</Descriptions.Item>
         <Descriptions.Item label="Estado">
-          <Tag color={checks[0] ? STATUS_TAG[checks[0].status]?.color : 'default'}>
-            {checks[0] ? STATUS_TAG[checks[0].status]?.text ?? '—' : 'Sin datos'}
-          </Tag>
+          {monitor.type === 'heartbeat' ? (
+            (() => {
+              const hbStatus = monitor.last_seen_at
+                ? (Date.now() - new Date(monitor.last_seen_at).getTime()) < (monitor.grace_seconds ?? 3600) * 1000
+                  ? 'ok' : 'missing'
+                : 'pending';
+              const cfg = hbStatus === 'ok' ? { color: 'green', text: 'OK' }
+                : hbStatus === 'missing' ? { color: 'red', text: 'Perdido' }
+                : { color: 'orange', text: 'Pendiente' };
+              return <Tag color={cfg.color}>{cfg.text}</Tag>;
+            })()
+          ) : (
+            <Tag color={checks[0] ? STATUS_TAG[checks[0].status]?.color : 'default'}>
+              {checks[0] ? STATUS_TAG[checks[0].status]?.text ?? '—' : 'Sin datos'}
+            </Tag>
+          )}
         </Descriptions.Item>
-        <Descriptions.Item label="Intervalo">{monitor.interval_seconds}s</Descriptions.Item>
-        <Descriptions.Item label="Timeout">{monitor.timeout_seconds}s</Descriptions.Item>
-        <Descriptions.Item label="Umbral latencia">
-          {monitor.latency_threshold_ms != null ? `>${monitor.latency_threshold_ms}ms` : '—'}
-        </Descriptions.Item>
-        <Descriptions.Item label="Plantilla expiry">
-          {monitor.message_template_expiry ? 'Personalizada' : 'Por defecto'}
-        </Descriptions.Item>
-        {monitor.config_json && Object.keys(monitor.config_json).length > 0 && (
-          <Descriptions.Item label="Config">
-            <Typography.Text code>{JSON.stringify(monitor.config_json)}</Typography.Text>
-          </Descriptions.Item>
-        )}
       </Descriptions>
 
       {/* Stats card */}
       <MonitorStats monitor={monitor} latestCheck={checks[0] ?? null} />
 
-      {/* Health & Latency Chart */}
+      {/* Health Chart */}
       <Card style={{ marginTop: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <Text strong><BarChartOutlined /> Health & Latency</Text>
+          <Text strong><BarChartOutlined /> {monitor.type === 'heartbeat' ? 'Health' : 'Health & Latency'}</Text>
           <Space size={4} wrap>
-            {RANGE_OPTIONS.map((opt, i) => (
+            {availableRanges.map((opt, i) => (
               <Tooltip key={opt.label} title={opt.labelLong}>
                 <Button
                   size="small"
@@ -529,7 +643,10 @@ export default function MonitorDetail() {
             ))}
           </Space>
         </div>
-        <HealthLatencyChart buckets={buckets} rangeKey={rangeKey} />
+        {monitor.type === 'heartbeat'
+          ? <HeartbeatChart buckets={buckets} rangeKey={rangeKey} />
+          : <HealthLatencyChart buckets={buckets} rangeKey={rangeKey} />
+        }
       </Card>
 
       {/* History table */}
@@ -550,6 +667,130 @@ export default function MonitorDetail() {
           size="small"
         />
       </Card>
+
+      {/* Edit modal */}
+      <Modal
+        title="Editar monitor"
+        open={editModalOpen}
+        onOk={handleSave}
+        onCancel={() => setEditModalOpen(false)}
+        width={600}
+      >
+        <Form form={editForm} layout="vertical" onValuesChange={(changedValues) => {
+          if ('type' in changedValues) {
+            setSelectedType(changedValues.type);
+          }
+        }}>
+          <Tabs>
+            <Tabs.TabPane tab="General" key="general">
+              <Form.Item name="name" label="Nombre" rules={[{ required: true }]}>
+                <Input />
+              </Form.Item>
+              <Form.Item name="type" label="Tipo" rules={[{ required: true }]}>
+                <Select options={MONITOR_TYPES} />
+              </Form.Item>
+              <Form.Item name="target" label="Target" rules={[{ required: true }]}
+                extra={(() => {
+                  if (selectedType === 'http') return 'URL completa, ej: https://ejemplo.com';
+                  if (selectedType === 'tls') return 'host o host:puerto (sin https://), ej: atareao.es';
+                  if (selectedType === 'tcp') return 'host:puerto, ej: ejemplo.com:443';
+                  if (selectedType === 'ping') return 'IP o dominio, ej: 8.8.8.8';
+                  return 'URL, host:puerto, o IP';
+                })()}
+              >
+                <Input placeholder={(() => {
+                  if (selectedType === 'tls') return 'atareao.es';
+                  if (selectedType === 'tcp') return 'ejemplo.com:443';
+                  if (selectedType === 'ping') return '8.8.8.8';
+                  return 'https://ejemplo.com';
+                })()} />
+              </Form.Item>
+              <Space style={{ width: '100%' }} size="large">
+                <Form.Item name="interval_seconds" label="Intervalo (s)">
+                  <InputNumber min={60} max={86400} />
+                </Form.Item>
+                <Form.Item name="timeout_seconds" label="Timeout (s)">
+                  <InputNumber min={1} max={120} />
+                </Form.Item>
+                <Form.Item name="confirmations_required" label="Confirmaciones">
+                  <InputNumber min={0} max={10} />
+                </Form.Item>
+              </Space>
+              <Space style={{ width: '100%' }} size="large">
+                <Form.Item name="enabled" label="Habilitado" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item name="notifier_id" label="Notificador" style={{ minWidth: 200 }}>
+                  <Select allowClear placeholder="Ninguno" options={notifiers.map(n => ({ value: n.id, label: n.name }))} />
+                </Form.Item>
+              </Space>
+              <Form.Item name="latency_threshold_ms" label="Umbral de latencia (ms)"
+                tooltip="Si la latencia supera este valor estando UP, se envía una notificación de latencia alta">
+                <InputNumber min={0} max={60000} style={{ width: '100%' }} placeholder="Ej: 500" />
+              </Form.Item>
+            </Tabs.TabPane>
+            <Tabs.TabPane tab="Específico" key="specific">
+              {CONFIG_FIELDS[selectedType]?.length > 0 ? (
+                CONFIG_FIELDS[selectedType].map(field => (
+                  <Form.Item key={field.name} name={['config', field.name]} label={field.label} valuePropName={field.type === 'boolean' ? 'checked' : undefined}>
+                    {field.type === 'select' ? (
+                      <Select options={['GET', 'HEAD', 'POST'].map(v => ({ value: v, label: v }))} />
+                    ) : field.type === 'number' ? (
+                      <InputNumber style={{ width: '100%' }} />
+                    ) : field.type === 'boolean' ? (
+                      <Switch />
+                    ) : (
+                      <Input />
+                    )}
+                  </Form.Item>
+                ))
+              ) : (
+                <Typography.Text type="secondary">No hay opciones específicas para este tipo de monitor.</Typography.Text>
+              )}
+            </Tabs.TabPane>
+            <Tabs.TabPane tab="Plantillas" key="templates">
+              <div style={{ marginBottom: 16 }}>
+                <Typography.Text type="secondary">
+                  Las plantillas usan sintaxis Jinja2. Variables disponibles:{' '}
+                  <code>{'{{ monitor_name }}'}</code>, <code>{'{{ target }}'}</code>,{' '}
+                  <code>{'{{ response_time_ms }}'}</code>, <code>{'{{ error_message }}'}</code>,{' '}
+                  <code>{'{{ status_code }}'}</code>, <code>{'{{ days_left }}'}</code>,{' '}
+                  <code>{'{{ expiry_threshold_days }}'}</code>
+                </Typography.Text>
+                <br />
+                <Button type="link" icon={<SettingOutlined />} onClick={() => navigate('/settings')}>
+                  Configurar plantillas por defecto
+                </Button>
+              </div>
+              <Tabs>
+                <Tabs.TabPane tab="DOWN" key="template-down">
+                  <Form.Item name="message_template_down" label="Plantilla DOWN">
+                    <Input.TextArea rows={6} placeholder={'⚠️ DOWN: {{ monitor_name }} — {{ target }} — Error: {{ error_message }}'} />
+                  </Form.Item>
+                </Tabs.TabPane>
+                <Tabs.TabPane tab="LATENCIA" key="template-latency">
+                  <Form.Item name="message_template_latency" label="Plantilla LATENCIA">
+                    <Input.TextArea rows={6} placeholder={'⚠️ Latencia alta: {{ monitor_name }} — {{ response_time_ms }}ms (umbral: {{ latency_threshold_ms }}ms)'} />
+                  </Form.Item>
+                </Tabs.TabPane>
+                <Tabs.TabPane tab="UP" key="template-up">
+                  <Form.Item name="message_template_up" label="Plantilla UP">
+                    <Input.TextArea rows={6} placeholder={'✅ UP: {{ monitor_name }} — {{ target }} — {{ response_time_ms }}ms'} />
+                  </Form.Item>
+                </Tabs.TabPane>
+                <Tabs.TabPane tab="EXPIRACIÓN" key="template-expiry">
+                  <Form.Item name="message_template_expiry" label="Plantilla EXPIRACIÓN">
+                    <Input.TextArea
+                      rows={6}
+                      placeholder={'🟡 {{ monitor_name }} — {{ target }}\nCertificate expires in {{ days_left }} days (threshold: {{ expiry_threshold_days }} days)'}
+                    />
+                  </Form.Item>
+                </Tabs.TabPane>
+              </Tabs>
+            </Tabs.TabPane>
+          </Tabs>
+        </Form>
+      </Modal>
     </div>
   );
 }

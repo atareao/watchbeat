@@ -181,7 +181,7 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
               </div>
               <div>
                 <Typography.Text type="secondary">Uptime 7d: </Typography.Text>
-                <Typography.Text>{item.uptime_7d !== null ? `${Math.round(item.uptime_7d)}%` : '—'}</Typography.Text>
+                <Typography.Text>{item.uptime_7d !== null ? `${item.uptime_7d.toFixed(1)}%` : '—'}</Typography.Text>
               </div>
             </div>
             <div style={{ marginTop: 4, marginBottom: 8 }}>

@@ -305,6 +305,9 @@ mod tests {
             message_template_up: None,
             message_template_expiry: None,
             tags: vec![],
+            token: None,
+            grace_seconds: None,
+            last_seen_at: None,
             created_at: String::new(),
             updated_at: String::new(),
         }

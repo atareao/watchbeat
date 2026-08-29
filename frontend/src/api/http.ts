@@ -284,6 +284,25 @@ export async function createBackup(): Promise<{ path: string }> {
   return fetcher('/api/backup', { method: 'POST' });
 }
 
+// ───── Export / Import ─────
+
+export interface ExportPayload {
+  version: string;
+  exported_at: string;
+  monitors: Record<string, unknown>[];
+  notifiers: Record<string, unknown>[];
+  status_pages: Record<string, unknown>[];
+  settings: { key: string; value: string }[];
+}
+
+export async function exportConfig(): Promise<ExportPayload> {
+  return fetcher<ExportPayload>('/api/export');
+}
+
+export async function importConfig(payload: ExportPayload): Promise<{ ok: boolean; imported: { monitors: number; notifiers: number; status_pages: number; settings: number } }> {
+  return fetcher('/api/import', { method: 'POST', body: payload });
+}
+
 // ───── Heartbeats ─────
 
 export interface Heartbeat {
