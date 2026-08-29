@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  Card, Col, Row, Statistic, Typography, Spin, Tag, Button, Input, Select, Pagination, Space, Modal, Form, InputNumber, Slider, Switch, Tabs, message,
+  Card, Col, Row, Statistic, Typography, Spin, Tag, Button, Input, Select, Pagination, Space, Modal, Form, InputNumber, Switch, Tabs, message,
 } from 'antd';
 import {
   RocketOutlined, CheckCircleOutlined, CloseCircleOutlined,
@@ -472,7 +472,7 @@ export default function Dashboard() {
               {!isHeartbeatSelected && (
                 <Space style={{ width: '100%' }} size="large">
                   <Form.Item name="interval_minutes" label="Intervalo (min)">
-                    <Slider min={1} max={1440} marks={{ 1: '1m', 5: '5m', 15: '15m', 30: '30m', 60: '1h', 360: '6h', 720: '12h', 1440: '24h' }} />
+                    <InputNumber min={1} max={1440} style={{ width: '100%' }} addonAfter="min" />
                   </Form.Item>
                   <Form.Item name="timeout_seconds" label="Timeout (s)">
                     <InputNumber min={1} max={120} />

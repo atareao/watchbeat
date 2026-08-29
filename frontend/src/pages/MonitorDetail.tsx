@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import {
   Card, Typography, Spin, Table, Tag, Button, Descriptions, Space, Tooltip, message, Statistic, Row, Col,
-  Modal, Form, Input, InputNumber, Slider, Select, Switch, Tabs,
+  Modal, Form, Input, InputNumber, Select, Switch, Tabs,
 } from 'antd';
 import {
   BarChartOutlined, HeartOutlined,
@@ -746,7 +746,7 @@ export default function MonitorDetail() {
               </Form.Item>
               <Space style={{ width: '100%' }} size="large">
                 <Form.Item name="interval_minutes" label="Intervalo (min)">
-                  <Slider min={1} max={1440} marks={{ 1: '1m', 5: '5m', 15: '15m', 30: '30m', 60: '1h', 360: '6h', 720: '12h', 1440: '24h' }} />
+                  <InputNumber min={1} max={1440} style={{ width: '100%' }} addonAfter="min" />
                 </Form.Item>
                 <Form.Item name="timeout_seconds" label="Timeout (s)">
                   <InputNumber min={1} max={120} />
