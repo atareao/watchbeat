@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  Card, Col, Row, Statistic, Typography, Spin, Tag, Button, Input, Select, Pagination, Space, Modal, Form, InputNumber, Switch, Tabs, message,
+  Card, Col, Row, Statistic, Typography, Spin, Tag, Button, Input, Select, Pagination, Space, Modal, Form, InputNumber, Slider, Switch, Tabs, message,
 } from 'antd';
 import {
   RocketOutlined, CheckCircleOutlined, CloseCircleOutlined,
@@ -158,7 +158,7 @@ export default function Dashboard() {
     form.resetFields();
     setSelectedType('http');
     setTimeout(() => {
-      form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true, confirmations_required: 0, config: {} });
+      form.setFieldsValue({ type: 'http', interval_minutes: 5, timeout_seconds: 30, enabled: true, confirmations_required: 0, config: {} });
       setModalOpen(true);
     }, 0);
   };
@@ -172,7 +172,7 @@ export default function Dashboard() {
           name: full.name,
           type: full.type,
           target: full.target,
-          interval_seconds: full.interval_seconds,
+          interval_minutes: Math.round(full.interval_seconds / 60),
           timeout_seconds: full.timeout_seconds,
           enabled: full.enabled,
           notifier_id: full.notifier_id ?? null,
@@ -203,7 +203,7 @@ export default function Dashboard() {
         name: values.name,
         type: values.type,
         target: values.target || '',
-        interval_seconds: values.interval_seconds,
+        interval_seconds: values.interval_minutes * 60,
         timeout_seconds: values.timeout_seconds,
         enabled: values.enabled,
         notifier_id: values.notifier_id || null,
@@ -432,8 +432,8 @@ export default function Dashboard() {
               )}
               {!isHeartbeatSelected && (
                 <Space style={{ width: '100%' }} size="large">
-                  <Form.Item name="interval_seconds" label="Intervalo (s)">
-                    <InputNumber min={60} max={86400} />
+                  <Form.Item name="interval_minutes" label="Intervalo (min)">
+                    <Slider min={1} max={1440} marks={{ 1: '1m', 5: '5m', 15: '15m', 30: '30m', 60: '1h', 360: '6h', 720: '12h', 1440: '24h' }} />
                   </Form.Item>
                   <Form.Item name="timeout_seconds" label="Timeout (s)">
                     <InputNumber min={1} max={120} />

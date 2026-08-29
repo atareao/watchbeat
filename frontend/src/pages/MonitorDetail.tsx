@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router';
 import {
   Card, Typography, Spin, Table, Tag, Button, Descriptions, Space, Tooltip, message, Statistic, Row, Col,
-  Modal, Form, Input, InputNumber, Select, Switch, Tabs,
+  Modal, Form, Input, InputNumber, Slider, Select, Switch, Tabs,
 } from 'antd';
 import {
   BarChartOutlined, HeartOutlined,
@@ -516,7 +516,7 @@ export default function MonitorDetail() {
       name: monitor.name,
       type: monitor.type,
       target: monitor.target,
-      interval_seconds: monitor.interval_seconds,
+      interval_minutes: Math.round(monitor.interval_seconds / 60),
       timeout_seconds: monitor.timeout_seconds,
       enabled: monitor.enabled,
       notifier_id: monitor.notifier_id ?? null,
@@ -539,7 +539,7 @@ export default function MonitorDetail() {
         name: values.name,
         type: values.type,
         target: values.target,
-        interval_seconds: values.interval_seconds,
+        interval_seconds: values.interval_minutes * 60,
         timeout_seconds: values.timeout_seconds,
         enabled: values.enabled,
         notifier_id: values.notifier_id || null,
@@ -706,8 +706,8 @@ export default function MonitorDetail() {
                 })()} />
               </Form.Item>
               <Space style={{ width: '100%' }} size="large">
-                <Form.Item name="interval_seconds" label="Intervalo (s)">
-                  <InputNumber min={60} max={86400} />
+                <Form.Item name="interval_minutes" label="Intervalo (min)">
+                  <Slider min={1} max={1440} marks={{ 1: '1m', 5: '5m', 15: '15m', 30: '30m', 60: '1h', 360: '6h', 720: '12h', 1440: '24h' }} />
                 </Form.Item>
                 <Form.Item name="timeout_seconds" label="Timeout (s)">
                   <InputNumber min={1} max={120} />

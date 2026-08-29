@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import {
-  Table, Button, Modal, Form, Input, InputNumber, Select, Switch, Tabs, Typography, Space, Tag, message, Popconfirm,
+  Table, Button, Modal, Form, Input, InputNumber, Slider, Select, Switch, Tabs, Typography, Space, Tag, message, Popconfirm,
 } from 'antd';
 import { PlusOutlined, ReloadOutlined, PlayCircleOutlined, SettingOutlined } from '@ant-design/icons';
 import {
@@ -73,7 +73,7 @@ export default function Monitors() {
     form.resetFields();
     setSelectedType('http');
     setTimeout(() => {
-      form.setFieldsValue({ type: 'http', interval_seconds: 300, timeout_seconds: 30, enabled: true, confirmations_required: 0, config: {} });
+      form.setFieldsValue({ type: 'http', interval_minutes: 5, timeout_seconds: 30, enabled: true, confirmations_required: 0, config: {} });
       setModalOpen(true);
     }, 0);
   };
@@ -87,7 +87,7 @@ export default function Monitors() {
         name: m.name,
         type: m.type,
         target: m.target,
-        interval_seconds: m.interval_seconds,
+        interval_minutes: Math.round(m.interval_seconds / 60),
         timeout_seconds: m.timeout_seconds,
         enabled: m.enabled,
         notifier_id: m.notifier_id ?? null,
@@ -110,7 +110,7 @@ export default function Monitors() {
         name: values.name,
         type: values.type,
         target: values.target,
-        interval_seconds: values.interval_seconds,
+        interval_seconds: values.interval_minutes * 60,
         timeout_seconds: values.timeout_seconds,
         enabled: values.enabled,
         notifier_id: values.notifier_id || null,
@@ -169,7 +169,7 @@ export default function Monitors() {
     },
     { title: 'Tipo', dataIndex: 'type', key: 'type', width: 80 },
     { title: 'Target', dataIndex: 'target', key: 'target', ellipsis: true },
-    { title: 'Intervalo', dataIndex: 'interval_seconds', key: 'interval', render: (v: number) => `${v}s` },
+    { title: 'Intervalo', dataIndex: 'interval_seconds', key: 'interval', render: (v: number) => `${Math.round(v / 60)}min` },
     {
       title: 'Activo', dataIndex: 'enabled', key: 'enabled', width: 80,
       render: (enabled: boolean, record: Monitor) => (
@@ -253,8 +253,8 @@ export default function Monitors() {
                 })()} />
               </Form.Item>
               <Space style={{ width: '100%' }} size="large">
-                <Form.Item name="interval_seconds" label="Intervalo (s)">
-                  <InputNumber min={60} max={86400} />
+                <Form.Item name="interval_minutes" label="Intervalo (min)">
+                  <Slider min={1} max={1440} marks={{ 1: '1m', 5: '5m', 15: '15m', 30: '30m', 60: '1h', 360: '6h', 720: '12h', 1440: '24h' }} />
                 </Form.Item>
                 <Form.Item name="timeout_seconds" label="Timeout (s)">
                   <InputNumber min={1} max={120} />
