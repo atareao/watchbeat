@@ -789,6 +789,56 @@ impl Database {
         Ok(count)
     }
 
+    pub async fn get_checks_filtered(
+        &self,
+        monitor_id: &str,
+        limit: i64,
+        offset: i64,
+        statuses: &[&str],
+    ) -> Result<Vec<CheckResult>> {
+        let placeholders: Vec<String> = statuses.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
+             tls_cert_expires_at, tls_cert_days_left \
+             FROM checks WHERE monitor_id=? AND status IN ({}) ORDER BY checked_at DESC LIMIT ? OFFSET ?",
+            placeholders.join(",")
+        );
+
+        let mut query =
+            sqlx::query_as::<_, CheckResult>(sqlx::AssertSqlSafe(sql.as_str())).bind(monitor_id);
+        for &status in statuses {
+            query = query.bind(status);
+        }
+        query = query.bind(limit).bind(offset);
+        query
+            .fetch_all(&self.pool)
+            .await
+            .context("Failed to get filtered checks")
+    }
+
+    pub async fn get_checks_count_filtered(
+        &self,
+        monitor_id: &str,
+        statuses: &[&str],
+    ) -> Result<i64> {
+        let placeholders: Vec<String> = statuses.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT COUNT(*) FROM checks WHERE monitor_id=? AND status IN ({})",
+            placeholders.join(",")
+        );
+
+        let mut query =
+            sqlx::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(sql.as_str())).bind(monitor_id);
+        for &status in statuses {
+            query = query.bind(status);
+        }
+        let (count,): (i64,) = query
+            .fetch_one(&self.pool)
+            .await
+            .context("Failed to count filtered checks")?;
+        Ok(count)
+    }
+
     pub async fn get_latest_check(&self, monitor_id: &str) -> Result<Option<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
             "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at, \

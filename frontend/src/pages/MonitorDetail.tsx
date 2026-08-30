@@ -1,44 +1,72 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router';
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { useParams, useNavigate } from "react-router";
 import {
-  Card, Typography, Spin, Table, Tag, Button, Descriptions, Space, Tooltip, message, Statistic, Row, Col,
-  Modal, Form, Input, InputNumber, Select, Switch, Tabs,
-} from 'antd';
+  Card,
+  Typography,
+  Spin,
+  Table,
+  Tag,
+  Button,
+  Descriptions,
+  Space,
+  Tooltip,
+  message,
+  Statistic,
+  Row,
+  Col,
+  Modal,
+  Form,
+  Input,
+  InputNumber,
+  Select,
+  Switch,
+  Tabs,
+  Segmented,
+} from "antd";
 import {
-  BarChartOutlined, HeartOutlined,
-  ClockCircleOutlined, EditOutlined, SettingOutlined,
-} from '@ant-design/icons';
+  BarChartOutlined,
+  HeartOutlined,
+  ClockCircleOutlined,
+  EditOutlined,
+  SettingOutlined,
+} from "@ant-design/icons";
 import {
-  fetchMonitor, fetchChecks, fetchTimelineBuckets, fetchNotifiers, fetchSetting,
+  fetchMonitor,
+  fetchChecks,
+  fetchTimelineBuckets,
+  fetchNotifiers,
+  fetchSetting,
   updateMonitor,
-  type Monitor, type CheckResult, type TimelineBucket,
-} from '../api/http';
-import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
-import 'dayjs/locale/es';
+  type Monitor,
+  type CheckResult,
+  type TimelineBucket,
+} from "../api/http";
+import dayjs from "dayjs";
+import relativeTime from "dayjs/plugin/relativeTime";
+import "dayjs/locale/es";
 
 dayjs.extend(relativeTime);
-dayjs.locale('es');
+dayjs.locale("es");
 
 const { Title, Text } = Typography;
 
 const STATUS_TAG: Record<string, { color: string; text: string }> = {
-  up: { color: 'green', text: 'UP' },
-  down: { color: 'red', text: 'DOWN' },
-  error: { color: 'orange', text: 'ERROR' },
+  up: { color: "green", text: "UP" },
+  down: { color: "red", text: "DOWN" },
+  error: { color: "orange", text: "ERROR" },
 };
 
 const MONITOR_TYPES = [
-  { value: 'http', label: 'HTTP(S)' },
-  { value: 'tcp', label: 'TCP' },
-  { value: 'ping', label: 'Ping' },
-  { value: 'tls', label: 'TLS/SSL' },
+  { value: "http", label: "HTTP(S)" },
+  { value: "tcp", label: "TCP" },
+  { value: "ping", label: "Ping" },
+  { value: "tls", label: "TLS/SSL" },
 ];
 
 interface ConfigField {
   name: string;
   label: string;
-  type: 'select' | 'number' | 'boolean' | 'text';
+  type: "select" | "number" | "boolean" | "text";
   defaultValue?: unknown;
   tooltip?: string;
   options?: { value: string | number; label: string }[];
@@ -47,43 +75,69 @@ interface ConfigField {
 const CONFIG_FIELDS: Record<string, ConfigField[]> = {
   http: [
     {
-      name: 'method', label: 'Método HTTP', type: 'select', defaultValue: 'GET',
-      tooltip: 'HEAD es el más rápido y eficiente (no descarga el body). GET descarga la página completa. POST envía datos en el body. Para monitorización de uptime, HEAD es la opción recomendada.',
+      name: "method",
+      label: "Método HTTP",
+      type: "select",
+      defaultValue: "GET",
+      tooltip:
+        "HEAD es el más rápido y eficiente (no descarga el body). GET descarga la página completa. POST envía datos en el body. Para monitorización de uptime, HEAD es la opción recomendada.",
     },
     {
-      name: 'expected_status', label: 'Status esperado', type: 'select', defaultValue: 200,
-      tooltip: 'Código HTTP que el servidor debe devolver para considerar el monitor UP. Por defecto se acepta cualquier código 2xx o 3xx, pero puedes exigir uno concreto.',
+      name: "expected_status",
+      label: "Status esperado",
+      type: "select",
+      defaultValue: 200,
+      tooltip:
+        "Código HTTP que el servidor debe devolver para considerar el monitor UP. Por defecto se acepta cualquier código 2xx o 3xx, pero puedes exigir uno concreto.",
       options: [
-        { value: 200, label: '200 OK' },
-        { value: 201, label: '201 Created' },
-        { value: 204, label: '204 No Content' },
-        { value: 301, label: '301 Moved Permanently' },
-        { value: 302, label: '302 Found' },
-        { value: 304, label: '304 Not Modified' },
-        { value: 400, label: '400 Bad Request' },
-        { value: 401, label: '401 Unauthorized' },
-        { value: 403, label: '403 Forbidden' },
-        { value: 404, label: '404 Not Found' },
-        { value: 500, label: '500 Internal Server Error' },
-        { value: 502, label: '502 Bad Gateway' },
-        { value: 503, label: '503 Service Unavailable' },
+        { value: 200, label: "200 OK" },
+        { value: 201, label: "201 Created" },
+        { value: 204, label: "204 No Content" },
+        { value: 301, label: "301 Moved Permanently" },
+        { value: 302, label: "302 Found" },
+        { value: 304, label: "304 Not Modified" },
+        { value: 400, label: "400 Bad Request" },
+        { value: 401, label: "401 Unauthorized" },
+        { value: 403, label: "403 Forbidden" },
+        { value: 404, label: "404 Not Found" },
+        { value: 500, label: "500 Internal Server Error" },
+        { value: 502, label: "502 Bad Gateway" },
+        { value: 503, label: "503 Service Unavailable" },
       ],
     },
     {
-      name: 'expected_body', label: 'Body esperado', type: 'text',
-      tooltip: 'Texto o patrón regex que debe aparecer en la respuesta del servidor. Si se marca "Body es regex", se interpreta como expresión regular.',
+      name: "expected_body",
+      label: "Body esperado",
+      type: "text",
+      tooltip:
+        'Texto o patrón regex que debe aparecer en la respuesta del servidor. Si se marca "Body es regex", se interpreta como expresión regular.',
     },
     {
-      name: 'body_is_regex', label: 'Body es regex', type: 'boolean', defaultValue: false,
-      tooltip: 'Si está activado, el campo "Body esperado" se interpreta como una expresión regular en lugar de una búsqueda de texto exacta.',
+      name: "body_is_regex",
+      label: "Body es regex",
+      type: "boolean",
+      defaultValue: false,
+      tooltip:
+        'Si está activado, el campo "Body esperado" se interpreta como una expresión regular en lugar de una búsqueda de texto exacta.',
     },
     {
-      name: 'expiry_days', label: 'Días para expiry del certificado', type: 'number', defaultValue: 14,
-      tooltip: 'Número de días antes de la expiración del certificado TLS para enviar una notificación de advertencia. Ej: con 14 días recibirás una alerta cuando queden 14 días o menos.',
+      name: "expiry_days",
+      label: "Días para expiry del certificado",
+      type: "number",
+      defaultValue: 14,
+      tooltip:
+        "Número de días antes de la expiración del certificado TLS para enviar una notificación de advertencia. Ej: con 14 días recibirás una alerta cuando queden 14 días o menos.",
     },
   ],
   tls: [
-    { name: 'expiry_days', label: 'Días para expiry', type: 'number', defaultValue: 14, tooltip: 'Número de días antes de la expiración del certificado TLS para enviar una notificación de advertencia.' },
+    {
+      name: "expiry_days",
+      label: "Días para expiry",
+      type: "number",
+      defaultValue: 14,
+      tooltip:
+        "Número de días antes de la expiración del certificado TLS para enviar una notificación de advertencia.",
+    },
   ],
   tcp: [],
   ping: [],
@@ -99,39 +153,60 @@ interface RangeOption {
 }
 
 const RANGE_OPTIONS: RangeOption[] = [
-  { label: '1h', labelLong: 'Última hora', hours: 1, bucketSeconds: 60 },
-  { label: '6h', labelLong: 'Últimas 6 horas', hours: 6, bucketSeconds: 300 },
-  { label: '12h', labelLong: 'Últimas 12 horas', hours: 12, bucketSeconds: 600 },
-  { label: '24h', labelLong: 'Último día', hours: 24, bucketSeconds: 900 },
-  { label: '7d', labelLong: 'Últimos 7 días', days: 7, bucketSeconds: 7200 },
-  { label: '15d', labelLong: 'Últimos 15 días', days: 15, bucketSeconds: 14400 },
-  { label: '30d', labelLong: 'Último mes', days: 30, bucketSeconds: 28800 },
-  { label: '3m', labelLong: 'Últimos 3 meses', days: 90, bucketSeconds: 86400 },
-  { label: '6m', labelLong: 'Últimos 6 meses', days: 180, bucketSeconds: 172800 },
+  { label: "1h", labelLong: "Última hora", hours: 1, bucketSeconds: 60 },
+  { label: "6h", labelLong: "Últimas 6 horas", hours: 6, bucketSeconds: 300 },
+  {
+    label: "12h",
+    labelLong: "Últimas 12 horas",
+    hours: 12,
+    bucketSeconds: 600,
+  },
+  { label: "24h", labelLong: "Último día", hours: 24, bucketSeconds: 900 },
+  { label: "7d", labelLong: "Últimos 7 días", days: 7, bucketSeconds: 7200 },
+  {
+    label: "15d",
+    labelLong: "Últimos 15 días",
+    days: 15,
+    bucketSeconds: 14400,
+  },
+  { label: "30d", labelLong: "Último mes", days: 30, bucketSeconds: 28800 },
+  { label: "3m", labelLong: "Últimos 3 meses", days: 90, bucketSeconds: 86400 },
+  {
+    label: "6m",
+    labelLong: "Últimos 6 meses",
+    days: 180,
+    bucketSeconds: 172800,
+  },
 ];
 
 // ── Helper: get health color for a bucket ──
 function healthColor(upPct: number, status: string): string {
-  if (status === 'no_data') return '#6b7280';
-  if (upPct >= 99) return '#22c55e';
-  if (upPct >= 95) return '#4ade80';
-  if (upPct >= 90) return '#86efac';
-  if (upPct >= 75) return '#facc15';
-  if (upPct >= 50) return '#fb923c';
-  return '#ef4444';
+  if (status === "no_data") return "#6b7280";
+  if (upPct >= 99) return "#22c55e";
+  if (upPct >= 95) return "#4ade80";
+  if (upPct >= 90) return "#86efac";
+  if (upPct >= 75) return "#facc15";
+  if (upPct >= 50) return "#fb923c";
+  return "#ef4444";
 }
 
 // ── Helper: format bucket time label ──
 function formatBucketTime(bucketStart: string, bucketSeconds: number): string {
   const d = dayjs(bucketStart);
-  if (bucketSeconds >= 86400) return d.format('DD/MM');
-  if (bucketSeconds >= 3600) return d.format('DD/MM HH:mm');
-  return d.format('HH:mm');
+  if (bucketSeconds >= 86400) return d.format("DD/MM");
+  if (bucketSeconds >= 3600) return d.format("DD/MM HH:mm");
+  return d.format("HH:mm");
 }
 
 // ── Monitor Stats Card (latency, uptime 24h/30d/1y, cert expiry) ──
-function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck: CheckResult | null }) {
-  const isHeartbeat = monitor.type === 'heartbeat';
+function MonitorStats({
+  monitor,
+  latestCheck,
+}: {
+  monitor: Monitor;
+  latestCheck: CheckResult | null;
+}) {
+  const isHeartbeat = monitor.type === "heartbeat";
   const [stats, setStats] = useState<{
     latency24h: number | null;
     uptime24h: number | null;
@@ -149,26 +224,42 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
       fetchTimelineBuckets(monitor.id, { hours: 24, bucket_seconds: 900 }),
       fetchTimelineBuckets(monitor.id, { days: 7, bucket_seconds: 10080 }),
       fetchTimelineBuckets(monitor.id, { days: 30, bucket_seconds: 28800 }),
-    ]).then(([b24h, b7d, b30d]) => {
-      const calcUptime = (buckets: TimelineBucket[]) => {
-        const withData = buckets.filter(b => b.dominant_status !== 'no_data');
-        if (withData.length === 0) return null;
-        return Math.round(withData.reduce((sum, b) => sum + b.up_pct, 0) / withData.length * 100) / 100;
-      };
-      const calcLatency = (buckets: TimelineBucket[]) => {
-        const withData = buckets.filter(b => b.dominant_status !== 'no_data');
-        if (withData.length === 0) return null;
-        return Math.round(withData.reduce((sum, b) => sum + b.avg_response_time_ms, 0) / withData.length);
-      };
-      setStats({
-        latency24h: calcLatency(b24h.buckets),
-        uptime24h: calcUptime(b24h.buckets),
-        uptime7d: calcUptime(b7d.buckets),
-        uptime30d: calcUptime(b30d.buckets),
-      });
-    }).catch(() => {
-      // ignore
-    }).finally(() => setLoading(false));
+    ])
+      .then(([b24h, b7d, b30d]) => {
+        const calcUptime = (buckets: TimelineBucket[]) => {
+          const withData = buckets.filter(
+            (b) => b.dominant_status !== "no_data",
+          );
+          if (withData.length === 0) return null;
+          return (
+            Math.round(
+              (withData.reduce((sum, b) => sum + b.up_pct, 0) /
+                withData.length) *
+                100,
+            ) / 100
+          );
+        };
+        const calcLatency = (buckets: TimelineBucket[]) => {
+          const withData = buckets.filter(
+            (b) => b.dominant_status !== "no_data",
+          );
+          if (withData.length === 0) return null;
+          return Math.round(
+            withData.reduce((sum, b) => sum + b.avg_response_time_ms, 0) /
+              withData.length,
+          );
+        };
+        setStats({
+          latency24h: calcLatency(b24h.buckets),
+          uptime24h: calcUptime(b24h.buckets),
+          uptime7d: calcUptime(b7d.buckets),
+          uptime30d: calcUptime(b30d.buckets),
+        });
+      })
+      .catch(() => {
+        // ignore
+      })
+      .finally(() => setLoading(false));
   }, [monitor.id, isHeartbeat]);
 
   const certExpiry = latestCheck?.tls_cert_expires_at ?? null;
@@ -179,9 +270,11 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
     const hbStatus = monitor.last_seen_at
       ? (() => {
           const elapsed = Date.now() - new Date(monitor.last_seen_at).getTime();
-          return elapsed < (monitor.grace_seconds ?? 3600) * 1000 ? 'ok' : 'missing';
+          return elapsed < (monitor.grace_seconds ?? 3600) * 1000
+            ? "ok"
+            : "missing";
         })()
-      : 'pending';
+      : "pending";
     const pulseUrl = `${window.location.origin}/api/heartbeat/${monitor.token}`;
     return (
       <Card title="Heartbeat" style={{ marginTop: 16 }}>
@@ -189,8 +282,15 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
           <Col xs={12} sm={8} md={4}>
             <Statistic
               title="Último pulso"
-              value={monitor.last_seen_at ? dayjs(monitor.last_seen_at).fromNow() : 'Nunca'}
-              valueStyle={{ fontSize: 18, color: hbStatus === 'ok' ? '#22c55e' : '#ef4444' }}
+              value={
+                monitor.last_seen_at
+                  ? dayjs(monitor.last_seen_at).fromNow()
+                  : "Nunca"
+              }
+              valueStyle={{
+                fontSize: 18,
+                color: hbStatus === "ok" ? "#22c55e" : "#ef4444",
+              }}
             />
           </Col>
           <Col xs={12} sm={8} md={4}>
@@ -203,21 +303,38 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
           <Col xs={12} sm={8} md={4}>
             <Statistic
               title="Estado"
-              value={hbStatus === 'ok' ? 'OK' : hbStatus === 'missing' ? 'Perdido' : 'Pendiente'}
-              valueStyle={{ fontSize: 18, color: hbStatus === 'ok' ? '#22c55e' : hbStatus === 'missing' ? '#ef4444' : '#f59e0b' }}
+              value={
+                hbStatus === "ok"
+                  ? "OK"
+                  : hbStatus === "missing"
+                    ? "Perdido"
+                    : "Pendiente"
+              }
+              valueStyle={{
+                fontSize: 18,
+                color:
+                  hbStatus === "ok"
+                    ? "#22c55e"
+                    : hbStatus === "missing"
+                      ? "#ef4444"
+                      : "#f59e0b",
+              }}
             />
           </Col>
           <Col xs={12} sm={8} md={4}>
             <Statistic
               title="Token"
-              value={monitor.token ? `${monitor.token.slice(0, 12)}...` : '—'}
-              valueStyle={{ fontSize: 14, color: '#888' }}
+              value={monitor.token ? `${monitor.token.slice(0, 12)}...` : "—"}
+              valueStyle={{ fontSize: 14, color: "#888" }}
             />
           </Col>
         </Row>
         <div style={{ marginTop: 8 }}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            URL de pulso: <Typography.Text code style={{ fontSize: 12 }}>{pulseUrl}</Typography.Text>
+            URL de pulso:{" "}
+            <Typography.Text code style={{ fontSize: 12 }}>
+              {pulseUrl}
+            </Typography.Text>
           </Typography.Text>
         </div>
       </Card>
@@ -233,7 +350,13 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
             value={stats.latency24h ?? 0}
             suffix="ms"
             precision={0}
-            valueStyle={{ color: stats.latency24h !== null && stats.latency24h > 1000 ? '#ef4444' : '#22c55e', fontSize: 22 }}
+            valueStyle={{
+              color:
+                stats.latency24h !== null && stats.latency24h > 1000
+                  ? "#ef4444"
+                  : "#22c55e",
+              fontSize: 22,
+            }}
           />
         </Col>
         <Col xs={12} sm={8} md={4}>
@@ -242,7 +365,13 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
             value={stats.uptime24h ?? 0}
             suffix="%"
             precision={2}
-            valueStyle={{ color: stats.uptime24h !== null && stats.uptime24h < 99 ? '#ef4444' : '#22c55e', fontSize: 22 }}
+            valueStyle={{
+              color:
+                stats.uptime24h !== null && stats.uptime24h < 99
+                  ? "#ef4444"
+                  : "#22c55e",
+              fontSize: 22,
+            }}
           />
         </Col>
         <Col xs={12} sm={8} md={4}>
@@ -251,7 +380,13 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
             value={stats.uptime30d ?? 0}
             suffix="%"
             precision={2}
-            valueStyle={{ color: stats.uptime30d !== null && stats.uptime30d < 99 ? '#ef4444' : '#22c55e', fontSize: 22 }}
+            valueStyle={{
+              color:
+                stats.uptime30d !== null && stats.uptime30d < 99
+                  ? "#ef4444"
+                  : "#22c55e",
+              fontSize: 22,
+            }}
           />
         </Col>
         <Col xs={12} sm={8} md={4}>
@@ -260,16 +395,27 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
             value={stats.uptime7d ?? 0}
             suffix="%"
             precision={2}
-            valueStyle={{ color: stats.uptime7d !== null && stats.uptime7d < 99 ? '#ef4444' : '#22c55e', fontSize: 22 }}
+            valueStyle={{
+              color:
+                stats.uptime7d !== null && stats.uptime7d < 99
+                  ? "#ef4444"
+                  : "#22c55e",
+              fontSize: 22,
+            }}
           />
         </Col>
         <Col xs={12} sm={8} md={4}>
           <Statistic
             title="Caducidad certificado"
-            value={certDaysLeft !== null ? `${certDaysLeft} días` : '—'}
+            value={certDaysLeft !== null ? `${certDaysLeft} días` : "—"}
             valueStyle={{
               fontSize: 22,
-              color: certDaysLeft !== null && certDaysLeft < 30 ? '#ef4444' : certDaysLeft !== null && certDaysLeft < 60 ? '#facc15' : '#22c55e',
+              color:
+                certDaysLeft !== null && certDaysLeft < 30
+                  ? "#ef4444"
+                  : certDaysLeft !== null && certDaysLeft < 60
+                    ? "#facc15"
+                    : "#22c55e",
             }}
           />
         </Col>
@@ -277,8 +423,8 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
           <Col xs={12} sm={8} md={4}>
             <Statistic
               title="Expira el"
-              value={dayjs(certExpiry).format('DD/MM/YYYY')}
-              valueStyle={{ fontSize: 16, color: '#888' }}
+              value={dayjs(certExpiry).format("DD/MM/YYYY")}
+              valueStyle={{ fontSize: 16, color: "#888" }}
             />
           </Col>
         )}
@@ -287,13 +433,22 @@ function MonitorStats({ monitor, latestCheck }: { monitor: Monitor; latestCheck:
   );
 }
 
-function HeartbeatChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; rangeKey: number }) {
+function HeartbeatChart({
+  buckets,
+  rangeKey,
+}: {
+  buckets: TimelineBucket[];
+  rangeKey: number;
+}) {
   const range = RANGE_OPTIONS[rangeKey];
 
-  const pulses = buckets.filter(b => b.count > 0);
+  const pulses = buckets.filter((b) => b.count > 0);
   const totalPulses = pulses.reduce((sum, b) => sum + b.count, 0);
 
-  if (buckets.length === 0) return <Text type="secondary">Sin datos en {range.labelLong.toLowerCase()}</Text>;
+  if (buckets.length === 0)
+    return (
+      <Text type="secondary">Sin datos en {range.labelLong.toLowerCase()}</Text>
+    );
 
   const MAX_BARS = 150;
   const bars = buckets.length > MAX_BARS ? buckets.slice(-MAX_BARS) : buckets;
@@ -301,10 +456,12 @@ function HeartbeatChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; rang
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 1, alignItems: 'flex-end', height: 60 }}>
+      <div
+        style={{ display: "flex", gap: 1, alignItems: "flex-end", height: 60 }}
+      >
         {bars.map((b, i) => {
           const hasPulse = b.count > 0;
-          const color = hasPulse ? '#22c55e' : '#e5e7eb';
+          const color = hasPulse ? "#22c55e" : "#e5e7eb";
           const tooltipTitle = hasPulse
             ? `Pulso recibido · ${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
             : `Sin pulso · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`;
@@ -312,12 +469,12 @@ function HeartbeatChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; rang
             <Tooltip key={i} title={tooltipTitle}>
               <div
                 style={{
-                  flex: '1 1 0',
+                  flex: "1 1 0",
                   minWidth: 2,
-                  height: hasPulse ? '100%' : '20%',
+                  height: hasPulse ? "100%" : "20%",
                   background: color,
-                  borderRadius: '1px 1px 0 0',
-                  cursor: 'pointer',
+                  borderRadius: "1px 1px 0 0",
+                  cursor: "pointer",
                 }}
               />
             </Tooltip>
@@ -325,75 +482,142 @@ function HeartbeatChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; rang
         })}
       </div>
       {/* Time axis labels */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 10, color: '#888' }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          marginTop: 4,
+          fontSize: 10,
+          color: "#888",
+        }}
+      >
         {bars.length > 0 && (
           <>
-            <span>{formatBucketTime(bars[0].bucket_start, range.bucketSeconds)}</span>
-            {Array.from({ length: Math.min(5, Math.floor(bars.length / labelInterval)) }, (_, i) => {
-              const idx = Math.min((i + 1) * labelInterval, bars.length - 1);
-              return <span key={i}>{formatBucketTime(bars[idx].bucket_start, range.bucketSeconds)}</span>;
-            })}
-            <span>{formatBucketTime(bars[bars.length - 1].bucket_start, range.bucketSeconds)}</span>
+            <span>
+              {formatBucketTime(bars[0].bucket_start, range.bucketSeconds)}
+            </span>
+            {Array.from(
+              { length: Math.min(5, Math.floor(bars.length / labelInterval)) },
+              (_, i) => {
+                const idx = Math.min((i + 1) * labelInterval, bars.length - 1);
+                return (
+                  <span key={i}>
+                    {formatBucketTime(
+                      bars[idx].bucket_start,
+                      range.bucketSeconds,
+                    )}
+                  </span>
+                );
+              },
+            )}
+            <span>
+              {formatBucketTime(
+                bars[bars.length - 1].bucket_start,
+                range.bucketSeconds,
+              )}
+            </span>
           </>
         )}
       </div>
       {/* Stats row */}
-      <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: '#888' }}>
-        <span><HeartOutlined /> {totalPulses} pulsos recibidos</span>
-        <span><ClockCircleOutlined /> {range.labelLong.toLowerCase()}</span>
+      <div
+        style={{
+          marginTop: 8,
+          display: "flex",
+          gap: 16,
+          flexWrap: "wrap",
+          fontSize: 12,
+          color: "#888",
+        }}
+      >
+        <span>
+          <HeartOutlined /> {totalPulses} pulsos recibidos
+        </span>
+        <span>
+          <ClockCircleOutlined /> {range.labelLong.toLowerCase()}
+        </span>
       </div>
       {/* Legend */}
-      <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, color: '#888', alignItems: 'center' }}>
-        <span style={{ fontWeight: 500, color: '#555' }}>Pulso:</span>
-        <span style={{ color: '#22c55e' }}>■ Recibido</span>
-        <span style={{ color: '#e5e7eb' }}>■ Sin pulso</span>
+      <div
+        style={{
+          marginTop: 8,
+          display: "flex",
+          gap: 16,
+          flexWrap: "wrap",
+          fontSize: 11,
+          color: "#888",
+          alignItems: "center",
+        }}
+      >
+        <span style={{ fontWeight: 500, color: "#555" }}>Pulso:</span>
+        <span style={{ color: "#22c55e" }}>■ Recibido</span>
+        <span style={{ color: "#e5e7eb" }}>■ Sin pulso</span>
       </div>
     </div>
   );
 }
 
-function HealthLatencyChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; rangeKey: number }) {
+function HealthLatencyChart({
+  buckets,
+  rangeKey,
+}: {
+  buckets: TimelineBucket[];
+  rangeKey: number;
+}) {
   const range = RANGE_OPTIONS[rangeKey];
 
-  const bucketsWithData = buckets.filter(b => b.dominant_status !== 'no_data');
-  const uptime = bucketsWithData.length > 0
-    ? Math.round(bucketsWithData.reduce((sum, b) => sum + b.up_pct, 0) / bucketsWithData.length * 100) / 100
-    : null;
+  const bucketsWithData = buckets.filter(
+    (b) => b.dominant_status !== "no_data",
+  );
+  const uptime =
+    bucketsWithData.length > 0
+      ? Math.round(
+          (bucketsWithData.reduce((sum, b) => sum + b.up_pct, 0) /
+            bucketsWithData.length) *
+            100,
+        ) / 100
+      : null;
 
-  if (buckets.length === 0) return <Text type="secondary">Sin datos en {range.labelLong.toLowerCase()}</Text>;
+  if (buckets.length === 0)
+    return (
+      <Text type="secondary">Sin datos en {range.labelLong.toLowerCase()}</Text>
+    );
 
-  const maxRt = Math.max(...buckets.map(b => b.avg_response_time_ms), 1);
+  const maxRt = Math.max(...buckets.map((b) => b.avg_response_time_ms), 1);
   const MAX_BARS = 150;
   const bars = buckets.length > MAX_BARS ? buckets.slice(-MAX_BARS) : buckets;
   const labelInterval = Math.max(1, Math.floor(bars.length / 6));
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 1, alignItems: 'flex-end', height: 120 }}>
+      <div
+        style={{ display: "flex", gap: 1, alignItems: "flex-end", height: 120 }}
+      >
         {bars.map((b, i) => {
           const pct = (b.avg_response_time_ms / maxRt) * 100;
           const color = healthColor(b.up_pct, b.dominant_status);
-          const tooltipTitle = b.dominant_status === 'no_data'
-            ? `Sin datos · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
-            : `${b.dominant_status.toUpperCase()} · ${b.up_pct.toFixed(1)}% UP · ` +
-              `${b.avg_response_time_ms.toFixed(0)}ms media · ` +
-              `${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`;
+          const tooltipTitle =
+            b.dominant_status === "no_data"
+              ? `Sin datos · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
+              : `${b.dominant_status.toUpperCase()} · ${b.up_pct.toFixed(1)}% UP · ` +
+                `${b.avg_response_time_ms.toFixed(0)}ms media · ` +
+                `${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`;
           return (
             <Tooltip key={i} title={tooltipTitle}>
               <div
                 style={{
-                  flex: '1 1 0',
+                  flex: "1 1 0",
                   minWidth: 2,
                   height: `${Math.max(pct, 3)}%`,
                   background: color,
-                  borderRadius: '1px 1px 0 0',
-                  cursor: 'pointer',
-                  transition: 'opacity 0.15s',
+                  borderRadius: "1px 1px 0 0",
+                  cursor: "pointer",
+                  transition: "opacity 0.15s",
                   opacity: b.up_pct < 50 ? 1 : 0.85,
                 }}
-                onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
-                onMouseLeave={e => {
-                  e.currentTarget.style.opacity = b.up_pct < 50 ? '1' : '0.85';
+                onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = b.up_pct < 50 ? "1" : "0.85";
                 }}
               />
             </Tooltip>
@@ -401,28 +625,72 @@ function HealthLatencyChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; 
         })}
       </div>
       {/* Time axis labels */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 10, color: '#888' }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          marginTop: 4,
+          fontSize: 10,
+          color: "#888",
+        }}
+      >
         {bars.length > 0 && (
           <>
-            <span>{formatBucketTime(bars[0].bucket_start, range.bucketSeconds)}</span>
-            {Array.from({ length: Math.min(5, Math.floor(bars.length / labelInterval)) }, (_, i) => {
-              const idx = Math.min((i + 1) * labelInterval, bars.length - 1);
-              return (
-                <span key={i}>{formatBucketTime(bars[idx].bucket_start, range.bucketSeconds)}</span>
-              );
-            })}
-            <span>{formatBucketTime(bars[bars.length - 1].bucket_start, range.bucketSeconds)}</span>
+            <span>
+              {formatBucketTime(bars[0].bucket_start, range.bucketSeconds)}
+            </span>
+            {Array.from(
+              { length: Math.min(5, Math.floor(bars.length / labelInterval)) },
+              (_, i) => {
+                const idx = Math.min((i + 1) * labelInterval, bars.length - 1);
+                return (
+                  <span key={i}>
+                    {formatBucketTime(
+                      bars[idx].bucket_start,
+                      range.bucketSeconds,
+                    )}
+                  </span>
+                );
+              },
+            )}
+            <span>
+              {formatBucketTime(
+                bars[bars.length - 1].bucket_start,
+                range.bucketSeconds,
+              )}
+            </span>
           </>
         )}
       </div>
       {/* Stats row */}
-      <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: '#888' }}>
-        <span><BarChartOutlined /> {bars.length} bloques · pico: {maxRt.toFixed(0)}ms</span>
-        <span><ClockCircleOutlined /> {range.labelLong.toLowerCase()}</span>
+      <div
+        style={{
+          marginTop: 8,
+          display: "flex",
+          gap: 16,
+          flexWrap: "wrap",
+          fontSize: 12,
+          color: "#888",
+        }}
+      >
+        <span>
+          <BarChartOutlined /> {bars.length} bloques · pico: {maxRt.toFixed(0)}
+          ms
+        </span>
+        <span>
+          <ClockCircleOutlined /> {range.labelLong.toLowerCase()}
+        </span>
         {uptime !== null && (
           <span
             style={{
-              color: uptime >= 99 ? '#22c55e' : uptime >= 95 ? '#4ade80' : uptime >= 90 ? '#facc15' : '#ef4444',
+              color:
+                uptime >= 99
+                  ? "#22c55e"
+                  : uptime >= 95
+                    ? "#4ade80"
+                    : uptime >= 90
+                      ? "#facc15"
+                      : "#ef4444",
               fontWeight: 600,
             }}
           >
@@ -431,15 +699,27 @@ function HealthLatencyChart({ buckets, rangeKey }: { buckets: TimelineBucket[]; 
         )}
       </div>
       {/* Dual legend */}
-      <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, color: '#888', alignItems: 'center' }}>
-        <span style={{ fontWeight: 500, color: '#555' }}>Salud (color):</span>
-        <span style={{ color: '#22c55e' }}>■ ≥99%</span>
-        <span style={{ color: '#86efac' }}>■ ≥90%</span>
-        <span style={{ color: '#facc15' }}>■ ≥75%</span>
-        <span style={{ color: '#fb923c' }}>■ ≥50%</span>
-        <span style={{ color: '#ef4444' }}>■ {"<50%"}</span>
-        <span style={{ color: '#6b7280' }}>■ Sin datos</span>
-        <span style={{ marginLeft: 8, fontWeight: 500, color: '#555' }}>Latencia (altura):</span>
+      <div
+        style={{
+          marginTop: 8,
+          display: "flex",
+          gap: 16,
+          flexWrap: "wrap",
+          fontSize: 11,
+          color: "#888",
+          alignItems: "center",
+        }}
+      >
+        <span style={{ fontWeight: 500, color: "#555" }}>Salud (color):</span>
+        <span style={{ color: "#22c55e" }}>■ ≥99%</span>
+        <span style={{ color: "#86efac" }}>■ ≥90%</span>
+        <span style={{ color: "#facc15" }}>■ ≥75%</span>
+        <span style={{ color: "#fb923c" }}>■ ≥50%</span>
+        <span style={{ color: "#ef4444" }}>■ {"<50%"}</span>
+        <span style={{ color: "#6b7280" }}>■ Sin datos</span>
+        <span style={{ marginLeft: 8, fontWeight: 500, color: "#555" }}>
+          Latencia (altura):
+        </span>
         <span>▮ más alto = más lento</span>
       </div>
     </div>
@@ -456,18 +736,21 @@ export default function MonitorDetail() {
   const [loading, setLoading] = useState(true);
   const [rangeKey, setRangeKey] = useState(3); // default: 24h
   const [retentionDays, setRetentionDays] = useState<number | null>(null);
+  const [showErrorsOnly, setShowErrorsOnly] = useState(true);
 
   // Load retention setting
   useEffect(() => {
-    fetchSetting('retention_days').then(d => {
-      setRetentionDays(d.value ? parseInt(d.value) : 30);
-    }).catch(() => setRetentionDays(30));
+    fetchSetting("retention_days")
+      .then((d) => {
+        setRetentionDays(d.value ? parseInt(d.value) : 30);
+      })
+      .catch(() => setRetentionDays(30));
   }, []);
 
   // Filter range options based on retention
   const availableRanges = useMemo(() => {
     if (!retentionDays) return RANGE_OPTIONS;
-    return RANGE_OPTIONS.filter(opt => {
+    return RANGE_OPTIONS.filter((opt) => {
       if (opt.days && opt.days > retentionDays) return false;
       if (opt.hours && opt.hours > retentionDays * 24) return false;
       return true;
@@ -489,8 +772,10 @@ export default function MonitorDetail() {
 
   // Edit modal state
   const [editModalOpen, setEditModalOpen] = useState(false);
-  const [selectedType, setSelectedType] = useState<string>('http');
-  const [notifiers, setNotifiers] = useState<{ id: string; name: string }[]>([]);
+  const [selectedType, setSelectedType] = useState<string>("http");
+  const [notifiers, setNotifiers] = useState<{ id: string; name: string }[]>(
+    [],
+  );
   const [editForm] = Form.useForm();
 
   const range = availableRanges[rangeKey] ?? RANGE_OPTIONS[3];
@@ -508,7 +793,9 @@ export default function MonitorDetail() {
   // ── Load timeline buckets ──
   useEffect(() => {
     if (!id) return;
-    const params: Record<string, number> = { bucket_seconds: range.bucketSeconds };
+    const params: Record<string, number> = {
+      bucket_seconds: range.bucketSeconds,
+    };
     if (range.hours != null) {
       (params as { hours: number; bucket_seconds: number }).hours = range.hours;
     } else if (range.days != null) {
@@ -516,40 +803,50 @@ export default function MonitorDetail() {
     }
     fetchTimelineBuckets(
       id,
-      params as { bucket_seconds: number } & ({ hours: number } | { days: number }),
+      params as { bucket_seconds: number } & (
+        | { hours: number }
+        | { days: number }
+      ),
     )
       .then(({ buckets: b }) => setBuckets(b))
       .catch(() => setBuckets([]));
   }, [id, rangeKey, range.bucketSeconds, range.hours, range.days]);
 
   // ── Load checks ──
-  const loadChecks = useCallback(async (cp: number, cpp: number) => {
-    if (!id) return;
-    setLoading(true);
-    try {
-      const checksData = await fetchChecks(id, cp, cpp);
-      setChecks(checksData.checks);
-      setChecksPage(checksData.page);
-      setChecksPerPage(checksData.per_page);
-      setChecksTotal(checksData.total);
-      setChecksTotalPages(checksData.total_pages);
-    } catch {
-      // ignore
-    }
-    setLoading(false);
-  }, [id]);
+  const loadChecks = useCallback(
+    async (cp: number, cpp: number, errorsOnly?: boolean) => {
+      if (!id) return;
+      setLoading(true);
+      try {
+        const statusFilter =
+          (errorsOnly ?? showErrorsOnly) ? "down,error" : undefined;
+        const checksData = await fetchChecks(id, cp, cpp, statusFilter);
+        setChecks(checksData.checks);
+        setChecksPage(checksData.page);
+        setChecksPerPage(checksData.per_page);
+        setChecksTotal(checksData.total);
+        setChecksTotalPages(checksData.total_pages);
+      } catch {
+        // ignore
+      }
+      setLoading(false);
+    },
+    [id, showErrorsOnly],
+  );
 
   // Initial checks load
   useEffect(() => {
-    loadChecks(checksPage, checksPerPage);
-  }, [loadChecks]);
+    loadChecks(checksPage, checksPerPage, showErrorsOnly);
+  }, [loadChecks, showErrorsOnly]);
 
   // ── Edit handlers ──
   const openEdit = () => {
     if (!monitor) return;
-    fetchNotifiers().then(nData => {
-      setNotifiers(nData.notifiers.map(n => ({ id: n.id, name: n.name })));
-    }).catch(() => {});
+    fetchNotifiers()
+      .then((nData) => {
+        setNotifiers(nData.notifiers.map((n) => ({ id: n.id, name: n.name })));
+      })
+      .catch(() => {});
     setSelectedType(monitor.type);
     editForm.setFieldsValue({
       name: monitor.name,
@@ -591,50 +888,91 @@ export default function MonitorDetail() {
         message_template_expiry: values.message_template_expiry || null,
       };
       await updateMonitor(id, payload);
-      message.success('Monitor actualizado');
+      message.success("Monitor actualizado");
       setEditModalOpen(false);
       // Reload monitor data
       const updated = await fetchMonitor(id);
       setMonitor(updated);
     } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'errorFields' in err) return;
-      message.error('Error al guardar');
+      if (err && typeof err === "object" && "errorFields" in err) return;
+      message.error("Error al guardar");
     }
   };
 
-  if (monitorLoading) return <div style={{ textAlign: 'center', padding: 40 }}><Spin size="large" /></div>;
-  if (!monitor) return <Typography.Text type="danger">Monitor no encontrado</Typography.Text>;
+  if (monitorLoading)
+    return (
+      <div style={{ textAlign: "center", padding: 40 }}>
+        <Spin size="large" />
+      </div>
+    );
+  if (!monitor)
+    return (
+      <Typography.Text type="danger">Monitor no encontrado</Typography.Text>
+    );
 
   // ── Common view for all monitor types (including heartbeat) ──
 
-  const isHeartbeat = monitor.type === 'heartbeat';
+  const isHeartbeat = monitor.type === "heartbeat";
 
   const checksColumns = [
-    { title: 'Estado', dataIndex: 'status', key: 'status',
-      render: (s: string) => <Tag color={STATUS_TAG[s]?.color}>{STATUS_TAG[s]?.text ?? s}</Tag>,
+    {
+      title: "Estado",
+      dataIndex: "status",
+      key: "status",
+      render: (s: string) => (
+        <Tag color={STATUS_TAG[s]?.color}>{STATUS_TAG[s]?.text ?? s}</Tag>
+      ),
     },
-    ...(isHeartbeat ? [] : [
-      { title: 'Código', dataIndex: 'status_code', key: 'code', width: 80,
-        render: (v: number | null) => v ?? '—',
-      },
-      { title: 'Latencia', dataIndex: 'response_time_ms', key: 'latency', width: 100,
-        render: (v: number) => `${v} ms`,
-      },
-      { title: 'Error', dataIndex: 'error_message', key: 'error', ellipsis: true,
-        render: (v: string | null) => v ?? '—',
-      },
-    ]),
-    { title: 'Fecha', dataIndex: 'checked_at', key: 'date', width: 160,
-      render: (v: string) => dayjs(v).format('DD/MM/YYYY HH:mm:ss'),
+    ...(isHeartbeat
+      ? []
+      : [
+          {
+            title: "Código",
+            dataIndex: "status_code",
+            key: "code",
+            width: 80,
+            render: (v: number | null) => v ?? "—",
+          },
+          {
+            title: "Latencia",
+            dataIndex: "response_time_ms",
+            key: "latency",
+            width: 100,
+            render: (v: number) => `${v} ms`,
+          },
+          {
+            title: "Error",
+            dataIndex: "error_message",
+            key: "error",
+            ellipsis: true,
+            render: (v: string | null) => v ?? "—",
+          },
+        ]),
+    {
+      title: "Fecha",
+      dataIndex: "checked_at",
+      key: "date",
+      width: 160,
+      render: (v: string) => dayjs(v).format("DD/MM/YYYY HH:mm:ss"),
     },
   ];
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Title level={3} style={{ margin: 0 }}>{monitor.name}</Title>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <Title level={3} style={{ margin: 0 }}>
+          {monitor.name}
+        </Title>
         <Space>
-          <Button icon={<EditOutlined />} onClick={openEdit}>Editar</Button>
+          <Button icon={<EditOutlined />} onClick={openEdit}>
+            Editar
+          </Button>
         </Space>
       </div>
 
@@ -642,20 +980,31 @@ export default function MonitorDetail() {
         <Descriptions.Item label="Tipo">{monitor.type}</Descriptions.Item>
         <Descriptions.Item label="Target">{monitor.target}</Descriptions.Item>
         <Descriptions.Item label="Estado">
-          {monitor.type === 'heartbeat' ? (
+          {monitor.type === "heartbeat" ? (
             (() => {
               const hbStatus = monitor.last_seen_at
-                ? (Date.now() - new Date(monitor.last_seen_at).getTime()) < (monitor.grace_seconds ?? 3600) * 1000
-                  ? 'ok' : 'missing'
-                : 'pending';
-              const cfg = hbStatus === 'ok' ? { color: 'green', text: 'OK' }
-                : hbStatus === 'missing' ? { color: 'red', text: 'Perdido' }
-                : { color: 'orange', text: 'Pendiente' };
+                ? Date.now() - new Date(monitor.last_seen_at).getTime() <
+                  (monitor.grace_seconds ?? 3600) * 1000
+                  ? "ok"
+                  : "missing"
+                : "pending";
+              const cfg =
+                hbStatus === "ok"
+                  ? { color: "green", text: "OK" }
+                  : hbStatus === "missing"
+                    ? { color: "red", text: "Perdido" }
+                    : { color: "orange", text: "Pendiente" };
               return <Tag color={cfg.color}>{cfg.text}</Tag>;
             })()
           ) : (
-            <Tag color={checks[0] ? STATUS_TAG[checks[0].status]?.color : 'default'}>
-              {checks[0] ? STATUS_TAG[checks[0].status]?.text ?? '—' : 'Sin datos'}
+            <Tag
+              color={
+                checks[0] ? STATUS_TAG[checks[0].status]?.color : "default"
+              }
+            >
+              {checks[0]
+                ? (STATUS_TAG[checks[0].status]?.text ?? "—")
+                : "Sin datos"}
             </Tag>
           )}
         </Descriptions.Item>
@@ -666,14 +1015,24 @@ export default function MonitorDetail() {
 
       {/* Health Chart */}
       <Card style={{ marginTop: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <Text strong><BarChartOutlined /> {monitor.type === 'heartbeat' ? 'Health' : 'Health & Latency'}</Text>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 12,
+          }}
+        >
+          <Text strong>
+            <BarChartOutlined />{" "}
+            {monitor.type === "heartbeat" ? "Health" : "Health & Latency"}
+          </Text>
           <Space size={4} wrap>
             {availableRanges.map((opt, i) => (
               <Tooltip key={opt.label} title={opt.labelLong}>
                 <Button
                   size="small"
-                  type={rangeKey === i ? 'primary' : 'default'}
+                  type={rangeKey === i ? "primary" : "default"}
                   onClick={() => setRangeKey(i)}
                 >
                   {opt.label}
@@ -682,14 +1041,33 @@ export default function MonitorDetail() {
             ))}
           </Space>
         </div>
-        {monitor.type === 'heartbeat'
-          ? <HeartbeatChart buckets={buckets} rangeKey={rangeKey} />
-          : <HealthLatencyChart buckets={buckets} rangeKey={rangeKey} />
-        }
+        {monitor.type === "heartbeat" ? (
+          <HeartbeatChart buckets={buckets} rangeKey={rangeKey} />
+        ) : (
+          <HealthLatencyChart buckets={buckets} rangeKey={rangeKey} />
+        )}
       </Card>
 
       {/* History table */}
-      <Card title="Histórico" style={{ marginTop: 16 }}>
+      <Card
+        title={
+          <Space>
+            <span>Histórico</span>
+            <Segmented
+              value={showErrorsOnly ? "errors" : "all"}
+              options={[
+                { value: "errors", label: "Solo errores" },
+                { value: "all", label: "Todos" },
+              ]}
+              onChange={(val) => {
+                setShowErrorsOnly(val === "errors");
+                setChecksPage(1);
+              }}
+            />
+          </Space>
+        }
+        style={{ marginTop: 16 }}
+      >
         <Table
           dataSource={checks}
           columns={checksColumns}
@@ -699,9 +1077,10 @@ export default function MonitorDetail() {
             pageSize: checksPerPage,
             total: checksTotal,
             showSizeChanger: true,
-            pageSizeOptions: ['10', '20', '50', '100'],
-            showTotal: (total, range) => `${range[0]}-${range[1]} de ${total} checks (pág. ${checksPage} de ${checksTotalPages})`,
-            onChange: (p, ps) => loadChecks(p, ps),
+            pageSizeOptions: ["10", "20", "50", "100"],
+            showTotal: (total, range) =>
+              `${range[0]}-${range[1]} de ${total} checks (pág. ${checksPage} de ${checksTotalPages})`,
+            onChange: (p, ps) => loadChecks(p, ps, showErrorsOnly),
           }}
           size="small"
         />
@@ -715,38 +1094,60 @@ export default function MonitorDetail() {
         onCancel={() => setEditModalOpen(false)}
         width={600}
       >
-        <Form form={editForm} layout="vertical" onValuesChange={(changedValues) => {
-          if ('type' in changedValues) {
-            setSelectedType(changedValues.type);
-          }
-        }}>
+        <Form
+          form={editForm}
+          layout="vertical"
+          onValuesChange={(changedValues) => {
+            if ("type" in changedValues) {
+              setSelectedType(changedValues.type);
+            }
+          }}
+        >
           <Tabs>
             <Tabs.TabPane tab="General" key="general">
-              <Form.Item name="name" label="Nombre" rules={[{ required: true }]}>
+              <Form.Item
+                name="name"
+                label="Nombre"
+                rules={[{ required: true }]}
+              >
                 <Input />
               </Form.Item>
               <Form.Item name="type" label="Tipo" rules={[{ required: true }]}>
                 <Select options={MONITOR_TYPES} />
               </Form.Item>
-              <Form.Item name="target" label="Target" rules={[{ required: true }]}
+              <Form.Item
+                name="target"
+                label="Target"
+                rules={[{ required: true }]}
                 extra={(() => {
-                  if (selectedType === 'http') return 'URL completa, ej: https://ejemplo.com';
-                  if (selectedType === 'tls') return 'host o host:puerto (sin https://), ej: atareao.es';
-                  if (selectedType === 'tcp') return 'host:puerto, ej: ejemplo.com:443';
-                  if (selectedType === 'ping') return 'IP o dominio, ej: 8.8.8.8';
-                  return 'URL, host:puerto, o IP';
+                  if (selectedType === "http")
+                    return "URL completa, ej: https://ejemplo.com";
+                  if (selectedType === "tls")
+                    return "host o host:puerto (sin https://), ej: atareao.es";
+                  if (selectedType === "tcp")
+                    return "host:puerto, ej: ejemplo.com:443";
+                  if (selectedType === "ping")
+                    return "IP o dominio, ej: 8.8.8.8";
+                  return "URL, host:puerto, o IP";
                 })()}
               >
-                <Input placeholder={(() => {
-                  if (selectedType === 'tls') return 'atareao.es';
-                  if (selectedType === 'tcp') return 'ejemplo.com:443';
-                  if (selectedType === 'ping') return '8.8.8.8';
-                  return 'https://ejemplo.com';
-                })()} />
+                <Input
+                  placeholder={(() => {
+                    if (selectedType === "tls") return "atareao.es";
+                    if (selectedType === "tcp") return "ejemplo.com:443";
+                    if (selectedType === "ping") return "8.8.8.8";
+                    return "https://ejemplo.com";
+                  })()}
+                />
               </Form.Item>
-              <Space style={{ width: '100%' }} size="large">
+              <Space style={{ width: "100%" }} size="large">
                 <Form.Item name="interval_minutes" label="Intervalo (min)">
-                  <InputNumber min={1} max={1440} style={{ width: '100%' }} addonAfter="min" />
+                  <InputNumber
+                    min={1}
+                    max={1440}
+                    style={{ width: "100%" }}
+                    addonAfter="min"
+                  />
                 </Form.Item>
                 <Form.Item name="timeout_seconds" label="Timeout (s)">
                   <InputNumber min={1} max={120} />
@@ -755,30 +1156,67 @@ export default function MonitorDetail() {
                   <InputNumber min={0} max={10} />
                 </Form.Item>
               </Space>
-              <Space style={{ width: '100%' }} size="large">
-                <Form.Item name="enabled" label="Habilitado" valuePropName="checked">
+              <Space style={{ width: "100%" }} size="large">
+                <Form.Item
+                  name="enabled"
+                  label="Habilitado"
+                  valuePropName="checked"
+                >
                   <Switch />
                 </Form.Item>
-                <Form.Item name="notifier_id" label="Notificador" style={{ minWidth: 200 }}>
-                  <Select allowClear placeholder="Ninguno" options={notifiers.map(n => ({ value: n.id, label: n.name }))} />
+                <Form.Item
+                  name="notifier_id"
+                  label="Notificador"
+                  style={{ minWidth: 200 }}
+                >
+                  <Select
+                    allowClear
+                    placeholder="Ninguno"
+                    options={notifiers.map((n) => ({
+                      value: n.id,
+                      label: n.name,
+                    }))}
+                  />
                 </Form.Item>
               </Space>
-              <Form.Item name="latency_threshold_ms" label="Umbral de latencia (ms)"
-                tooltip="Si la latencia supera este valor estando UP, se envía una notificación de latencia alta">
-                <InputNumber min={0} max={60000} style={{ width: '100%' }} placeholder="Ej: 500" />
+              <Form.Item
+                name="latency_threshold_ms"
+                label="Umbral de latencia (ms)"
+                tooltip="Si la latencia supera este valor estando UP, se envía una notificación de latencia alta"
+              >
+                <InputNumber
+                  min={0}
+                  max={60000}
+                  style={{ width: "100%" }}
+                  placeholder="Ej: 500"
+                />
               </Form.Item>
             </Tabs.TabPane>
             <Tabs.TabPane tab="Específico" key="specific">
               {CONFIG_FIELDS[selectedType]?.length > 0 ? (
-                CONFIG_FIELDS[selectedType].map(field => (
-                  <Form.Item key={field.name} name={['config', field.name]} label={field.label}
-                    valuePropName={field.type === 'boolean' ? 'checked' : undefined}
-                    tooltip={field.tooltip}>
-                    {field.type === 'select' ? (
-                      <Select options={field.options ?? ['GET', 'HEAD', 'POST'].map(v => ({ value: v, label: v }))} />
-                    ) : field.type === 'number' ? (
-                      <InputNumber style={{ width: '100%' }} />
-                    ) : field.type === 'boolean' ? (
+                CONFIG_FIELDS[selectedType].map((field) => (
+                  <Form.Item
+                    key={field.name}
+                    name={["config", field.name]}
+                    label={field.label}
+                    valuePropName={
+                      field.type === "boolean" ? "checked" : undefined
+                    }
+                    tooltip={field.tooltip}
+                  >
+                    {field.type === "select" ? (
+                      <Select
+                        options={
+                          field.options ??
+                          ["GET", "HEAD", "POST"].map((v) => ({
+                            value: v,
+                            label: v,
+                          }))
+                        }
+                      />
+                    ) : field.type === "number" ? (
+                      <InputNumber style={{ width: "100%" }} />
+                    ) : field.type === "boolean" ? (
                       <Switch />
                     ) : (
                       <Input />
@@ -786,44 +1224,79 @@ export default function MonitorDetail() {
                   </Form.Item>
                 ))
               ) : (
-                <Typography.Text type="secondary">No hay opciones específicas para este tipo de monitor.</Typography.Text>
+                <Typography.Text type="secondary">
+                  No hay opciones específicas para este tipo de monitor.
+                </Typography.Text>
               )}
             </Tabs.TabPane>
             <Tabs.TabPane tab="Plantillas" key="templates">
               <div style={{ marginBottom: 16 }}>
                 <Typography.Text type="secondary">
-                  Las plantillas usan sintaxis Jinja2. Variables disponibles:{' '}
-                  <code>{'{{ monitor_name }}'}</code>, <code>{'{{ target }}'}</code>,{' '}
-                  <code>{'{{ response_time_ms }}'}</code>, <code>{'{{ error_message }}'}</code>,{' '}
-                  <code>{'{{ status_code }}'}</code>, <code>{'{{ days_left }}'}</code>,{' '}
-                  <code>{'{{ expiry_threshold_days }}'}</code>
+                  Las plantillas usan sintaxis Jinja2. Variables disponibles:{" "}
+                  <code>{"{{ monitor_name }}"}</code>,{" "}
+                  <code>{"{{ target }}"}</code>,{" "}
+                  <code>{"{{ response_time_ms }}"}</code>,{" "}
+                  <code>{"{{ error_message }}"}</code>,{" "}
+                  <code>{"{{ status_code }}"}</code>,{" "}
+                  <code>{"{{ days_left }}"}</code>,{" "}
+                  <code>{"{{ expiry_threshold_days }}"}</code>
                 </Typography.Text>
                 <br />
-                <Button type="link" icon={<SettingOutlined />} onClick={() => navigate('/settings')}>
+                <Button
+                  type="link"
+                  icon={<SettingOutlined />}
+                  onClick={() => navigate("/settings")}
+                >
                   Configurar plantillas por defecto
                 </Button>
               </div>
               <Tabs>
                 <Tabs.TabPane tab="DOWN" key="template-down">
-                  <Form.Item name="message_template_down" label="Plantilla DOWN">
-                    <Input.TextArea rows={6} placeholder={'⚠️ DOWN: {{ monitor_name }} — {{ target }} — Error: {{ error_message }}'} />
+                  <Form.Item
+                    name="message_template_down"
+                    label="Plantilla DOWN"
+                  >
+                    <Input.TextArea
+                      rows={6}
+                      placeholder={
+                        "⚠️ DOWN: {{ monitor_name }} — {{ target }} — Error: {{ error_message }}"
+                      }
+                    />
                   </Form.Item>
                 </Tabs.TabPane>
                 <Tabs.TabPane tab="LATENCIA" key="template-latency">
-                  <Form.Item name="message_template_latency" label="Plantilla LATENCIA">
-                    <Input.TextArea rows={6} placeholder={'⚠️ Latencia alta: {{ monitor_name }} — {{ response_time_ms }}ms (umbral: {{ latency_threshold_ms }}ms)'} />
+                  <Form.Item
+                    name="message_template_latency"
+                    label="Plantilla LATENCIA"
+                  >
+                    <Input.TextArea
+                      rows={6}
+                      placeholder={
+                        "⚠️ Latencia alta: {{ monitor_name }} — {{ response_time_ms }}ms (umbral: {{ latency_threshold_ms }}ms)"
+                      }
+                    />
                   </Form.Item>
                 </Tabs.TabPane>
                 <Tabs.TabPane tab="UP" key="template-up">
                   <Form.Item name="message_template_up" label="Plantilla UP">
-                    <Input.TextArea rows={6} placeholder={'✅ UP: {{ monitor_name }} — {{ target }} — {{ response_time_ms }}ms'} />
+                    <Input.TextArea
+                      rows={6}
+                      placeholder={
+                        "✅ UP: {{ monitor_name }} — {{ target }} — {{ response_time_ms }}ms"
+                      }
+                    />
                   </Form.Item>
                 </Tabs.TabPane>
                 <Tabs.TabPane tab="EXPIRACIÓN" key="template-expiry">
-                  <Form.Item name="message_template_expiry" label="Plantilla EXPIRACIÓN">
+                  <Form.Item
+                    name="message_template_expiry"
+                    label="Plantilla EXPIRACIÓN"
+                  >
                     <Input.TextArea
                       rows={6}
-                      placeholder={'🟡 {{ monitor_name }} — {{ target }}\nCertificate expires in {{ days_left }} days (threshold: {{ expiry_threshold_days }} days)'}
+                      placeholder={
+                        "🟡 {{ monitor_name }} — {{ target }}\nCertificate expires in {{ days_left }} days (threshold: {{ expiry_threshold_days }} days)"
+                      }
                     />
                   </Form.Item>
                 </Tabs.TabPane>
