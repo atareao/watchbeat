@@ -1,6 +1,6 @@
 [package]
 name = "watchbeat"
-version = "0.8.0"
+version = "0.11.0"
 edition = "2021"
 description = "Self-hosted uptime monitor"
 license = "MIT"
