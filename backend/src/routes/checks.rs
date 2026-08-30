@@ -10,6 +10,7 @@ use crate::auth::AppState;
 pub struct ChecksQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    pub status: Option<String>,
 }
 
 pub async fn list(
@@ -20,17 +21,41 @@ pub async fn list(
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0).max(0);
 
-    let checks = state
-        .db
-        .get_checks(&id, limit, offset)
-        .await
-        .map_err(|e| e.to_string())?;
+    let statuses: Vec<&str> = query
+        .status
+        .as_deref()
+        .map(|s| s.split(',').collect())
+        .unwrap_or_default();
 
-    let total = state
-        .db
-        .get_checks_count(&id)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (checks, total) = if statuses.is_empty() {
+        let checks = state
+            .db
+            .get_checks(&id, limit, offset)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let total = state
+            .db
+            .get_checks_count(&id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        (checks, total)
+    } else {
+        let checks = state
+            .db
+            .get_checks_filtered(&id, limit, offset, &statuses)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let total = state
+            .db
+            .get_checks_count_filtered(&id, &statuses)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        (checks, total)
+    };
 
     let total_pages = (total as f64 / limit as f64).ceil() as i64;
     let page = (offset / limit) + 1;

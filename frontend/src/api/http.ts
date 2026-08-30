@@ -89,13 +89,18 @@ export interface TimelineBucket {
   dominant_status: string;
 }
 
-async function fetcher<T>(path: string, opts?: { method?: string; body?: unknown }): Promise<T> {
+async function fetcher<T>(
+  path: string,
+  opts?: { method?: string; body?: unknown },
+): Promise<T> {
   const token = getToken();
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const res = await fetch(path, {
-    method: opts?.method ?? (opts?.body ? 'POST' : 'GET'),
+    method: opts?.method ?? (opts?.body ? "POST" : "GET"),
     headers,
     body: opts?.body ? JSON.stringify(opts.body) : undefined,
   });
@@ -103,12 +108,12 @@ async function fetcher<T>(path: string, opts?: { method?: string; body?: unknown
   // If unauthorized, clear token and redirect to login
   if (res.status === 401) {
     clearToken();
-    window.location.href = '/login';
-    throw new Error('Not authenticated');
+    window.location.href = "/login";
+    throw new Error("Not authenticated");
   }
 
   if (!res.ok) {
-    const text = await res.text().catch(() => 'unknown error');
+    const text = await res.text().catch(() => "unknown error");
     throw new Error(`HTTP ${res.status}: ${text}`);
   }
 
@@ -117,8 +122,8 @@ async function fetcher<T>(path: string, opts?: { method?: string; body?: unknown
 }
 
 export async function fetchMe(): Promise<User> {
-  const data = await fetcher<{ authenticated: boolean; user: User }>('/api/me');
-  if (!data.authenticated || !data.user) throw new Error('Not authenticated');
+  const data = await fetcher<{ authenticated: boolean; user: User }>("/api/me");
+  if (!data.authenticated || !data.user) throw new Error("Not authenticated");
   return data.user;
 }
 
@@ -133,7 +138,11 @@ export interface PaginatedResponse<T> {
 export interface UnifiedDashboardResponse {
   status: DashboardStatus;
   monitors: MonitorSummary[];
-  scheduler: { last_run_at: string | null; next_run_at: string | null; last_monitors_checked: number };
+  scheduler: {
+    last_run_at: string | null;
+    next_run_at: string | null;
+    last_monitors_checked: number;
+  };
   total: number;
   page: number;
   per_page: number;
@@ -148,13 +157,13 @@ export async function fetchMonitors(params?: {
   status?: string;
 }): Promise<UnifiedDashboardResponse> {
   const searchParams = new URLSearchParams();
-  if (params?.page) searchParams.set('page', String(params.page));
-  if (params?.perPage) searchParams.set('per_page', String(params.perPage));
-  if (params?.q) searchParams.set('q', params.q);
-  if (params?.type) searchParams.set('type', params.type);
-  if (params?.status) searchParams.set('status', params.status);
+  if (params?.page) searchParams.set("page", String(params.page));
+  if (params?.perPage) searchParams.set("per_page", String(params.perPage));
+  if (params?.q) searchParams.set("q", params.q);
+  if (params?.type) searchParams.set("type", params.type);
+  if (params?.status) searchParams.set("status", params.status);
   const qs = searchParams.toString();
-  return fetcher(`/api/monitors${qs ? `?${qs}` : ''}`);
+  return fetcher(`/api/monitors${qs ? `?${qs}` : ""}`);
 }
 
 export async function fetchMonitor(id: string): Promise<Monitor> {
@@ -162,26 +171,34 @@ export async function fetchMonitor(id: string): Promise<Monitor> {
 }
 
 export async function createMonitor(data: Partial<Monitor>): Promise<Monitor> {
-  return fetcher<Monitor>('/api/monitors', { method: 'POST', body: data });
+  return fetcher<Monitor>("/api/monitors", { method: "POST", body: data });
 }
 
-export async function updateMonitor(id: string, data: Partial<Monitor>): Promise<Monitor> {
-  return fetcher<Monitor>(`/api/monitors/${id}`, { method: 'PUT', body: data });
+export async function updateMonitor(
+  id: string,
+  data: Partial<Monitor>,
+): Promise<Monitor> {
+  return fetcher<Monitor>(`/api/monitors/${id}`, { method: "PUT", body: data });
 }
 
 export async function deleteMonitor(id: string): Promise<void> {
-  return fetcher(`/api/monitors/${id}`, { method: 'DELETE' });
+  return fetcher(`/api/monitors/${id}`, { method: "DELETE" });
 }
 
 export async function toggleMonitor(id: string): Promise<{ enabled: boolean }> {
-  return fetcher(`/api/monitors/${id}`, { method: 'PATCH' });
+  return fetcher(`/api/monitors/${id}`, { method: "PATCH" });
 }
 
 export async function runCheck(id: string): Promise<CheckResult> {
-  return fetcher<CheckResult>(`/api/monitors/${id}/check`, { method: 'POST' });
+  return fetcher<CheckResult>(`/api/monitors/${id}/check`, { method: "POST" });
 }
 
-export async function fetchChecks(id: string, page = 1, perPage = 20): Promise<{
+export async function fetchChecks(
+  id: string,
+  page = 1,
+  perPage = 20,
+  status?: string,
+): Promise<{
   checks: CheckResult[];
   total: number;
   page: number;
@@ -189,10 +206,15 @@ export async function fetchChecks(id: string, page = 1, perPage = 20): Promise<{
   total_pages: number;
 }> {
   const offset = (page - 1) * perPage;
-  return fetcher(`/api/monitors/${id}/checks?limit=${perPage}&offset=${offset}`);
+  let query = `limit=${perPage}&offset=${offset}`;
+  if (status) query += `&status=${status}`;
+  return fetcher(`/api/monitors/${id}/checks?${query}`);
 }
 
-export async function fetchTimeline(id: string, opts?: { days?: number; hours?: number }): Promise<{ timeline: TimelinePoint[] }> {
+export async function fetchTimeline(
+  id: string,
+  opts?: { days?: number; hours?: number },
+): Promise<{ timeline: TimelinePoint[] }> {
   if (opts?.hours != null) {
     return fetcher(`/api/monitors/${id}/timeline?hours=${opts.hours}`);
   }
@@ -205,7 +227,7 @@ export async function fetchTimelineBuckets(
   opts: { bucket_seconds: number } & ({ days?: number } | { hours?: number }),
 ): Promise<{ buckets: TimelineBucket[] }> {
   let query: string;
-  if ('hours' in opts && opts.hours != null) {
+  if ("hours" in opts && opts.hours != null) {
     query = `hours=${opts.hours}&bucket_seconds=${opts.bucket_seconds}`;
   } else {
     const days = (opts as { days?: number }).days ?? 1;
@@ -215,27 +237,35 @@ export async function fetchTimelineBuckets(
 }
 
 export async function fetchStatus(): Promise<UnifiedDashboardResponse> {
-  return fetcher('/api/monitors?per_page=100');
+  return fetcher("/api/monitors?per_page=100");
 }
 
 export async function fetchNotifiers(): Promise<{ notifiers: Notifier[] }> {
-  return fetcher('/api/notifiers');
+  return fetcher("/api/notifiers");
 }
 
-export async function createNotifier(data: Partial<Notifier>): Promise<Notifier> {
-  return fetcher<Notifier>('/api/notifiers', { method: 'POST', body: data });
+export async function createNotifier(
+  data: Partial<Notifier>,
+): Promise<Notifier> {
+  return fetcher<Notifier>("/api/notifiers", { method: "POST", body: data });
 }
 
-export async function updateNotifier(id: string, data: Partial<Notifier>): Promise<Notifier> {
-  return fetcher<Notifier>(`/api/notifiers/${id}`, { method: 'PUT', body: data });
+export async function updateNotifier(
+  id: string,
+  data: Partial<Notifier>,
+): Promise<Notifier> {
+  return fetcher<Notifier>(`/api/notifiers/${id}`, {
+    method: "PUT",
+    body: data,
+  });
 }
 
 export async function deleteNotifier(id: string): Promise<void> {
-  return fetcher(`/api/notifiers/${id}`, { method: 'DELETE' });
+  return fetcher(`/api/notifiers/${id}`, { method: "DELETE" });
 }
 
 export async function testNotifier(id: string): Promise<{ sent: boolean }> {
-  return fetcher(`/api/notifiers/${id}/test`, { method: 'POST' });
+  return fetcher(`/api/notifiers/${id}/test`, { method: "POST" });
 }
 
 // ───── Status Pages ─────
@@ -251,37 +281,52 @@ export interface StatusPage {
   updated_at: string;
 }
 
-export async function fetchStatusPages(): Promise<{ status_pages: StatusPage[] }> {
-  return fetcher('/api/status-pages');
+export async function fetchStatusPages(): Promise<{
+  status_pages: StatusPage[];
+}> {
+  return fetcher("/api/status-pages");
 }
 
-export async function createStatusPage(data: Partial<StatusPage>): Promise<StatusPage> {
-  return fetcher<StatusPage>('/api/status-pages', { method: 'POST', body: data });
+export async function createStatusPage(
+  data: Partial<StatusPage>,
+): Promise<StatusPage> {
+  return fetcher<StatusPage>("/api/status-pages", {
+    method: "POST",
+    body: data,
+  });
 }
 
-export async function updateStatusPage(id: string, data: Partial<StatusPage>): Promise<StatusPage> {
-  return fetcher<StatusPage>(`/api/status-pages/${id}`, { method: 'PUT', body: data });
+export async function updateStatusPage(
+  id: string,
+  data: Partial<StatusPage>,
+): Promise<StatusPage> {
+  return fetcher<StatusPage>(`/api/status-pages/${id}`, {
+    method: "PUT",
+    body: data,
+  });
 }
 
 export async function deleteStatusPage(id: string): Promise<void> {
-  return fetcher(`/api/status-pages/${id}`, { method: 'DELETE' });
+  return fetcher(`/api/status-pages/${id}`, { method: "DELETE" });
 }
 
 // ───── Settings ─────
 
-export async function fetchSetting(key: string): Promise<{ key: string; value: string | null }> {
+export async function fetchSetting(
+  key: string,
+): Promise<{ key: string; value: string | null }> {
   return fetcher(`/api/settings?key=${encodeURIComponent(key)}`);
 }
 
 export async function saveSetting(key: string, value: string): Promise<void> {
-  await fetcher('/api/settings', {
-    method: 'POST',
+  await fetcher("/api/settings", {
+    method: "POST",
     body: { key, value },
   });
 }
 
 export async function createBackup(): Promise<{ path: string }> {
-  return fetcher('/api/backup', { method: 'POST' });
+  return fetcher("/api/backup", { method: "POST" });
 }
 
 // ───── Export / Import ─────
@@ -296,11 +341,21 @@ export interface ExportPayload {
 }
 
 export async function exportConfig(): Promise<ExportPayload> {
-  return fetcher<ExportPayload>('/api/export');
+  return fetcher<ExportPayload>("/api/export");
 }
 
-export async function importConfig(payload: ExportPayload): Promise<{ ok: boolean; imported: { monitors: number; notifiers: number; status_pages: number; settings: number } }> {
-  return fetcher('/api/import', { method: 'POST', body: payload });
+export async function importConfig(
+  payload: ExportPayload,
+): Promise<{
+  ok: boolean;
+  imported: {
+    monitors: number;
+    notifiers: number;
+    status_pages: number;
+    settings: number;
+  };
+}> {
+  return fetcher("/api/import", { method: "POST", body: payload });
 }
 
 // ───── Heartbeats ─────
@@ -318,19 +373,27 @@ export interface Heartbeat {
 }
 
 export async function fetchHeartbeats(): Promise<{ heartbeats: Heartbeat[] }> {
-  return fetcher('/api/heartbeats');
+  return fetcher("/api/heartbeats");
 }
 
-export async function createHeartbeat(data: Partial<Heartbeat>): Promise<Heartbeat> {
-  return fetcher<Heartbeat>('/api/heartbeats', { method: 'POST', body: data });
+export async function createHeartbeat(
+  data: Partial<Heartbeat>,
+): Promise<Heartbeat> {
+  return fetcher<Heartbeat>("/api/heartbeats", { method: "POST", body: data });
 }
 
-export async function updateHeartbeat(id: string, data: Partial<Heartbeat>): Promise<Heartbeat> {
-  return fetcher<Heartbeat>(`/api/heartbeats/${id}`, { method: 'PUT', body: data });
+export async function updateHeartbeat(
+  id: string,
+  data: Partial<Heartbeat>,
+): Promise<Heartbeat> {
+  return fetcher<Heartbeat>(`/api/heartbeats/${id}`, {
+    method: "PUT",
+    body: data,
+  });
 }
 
 export async function deleteHeartbeat(id: string): Promise<void> {
-  return fetcher(`/api/heartbeats/${id}`, { method: 'DELETE' });
+  return fetcher(`/api/heartbeats/${id}`, { method: "DELETE" });
 }
 
 // ───── Unified Dashboard Item ─────
