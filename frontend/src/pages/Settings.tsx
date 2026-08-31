@@ -269,7 +269,7 @@ export default function Settings() {
       label: 'Retención de datos',
       children: (
         <Card>
-          <Paragraph>Los checks antiguos se eliminan automáticamente. El cambio se aplica en el siguiente ciclo del scheduler (~15s).</Paragraph>
+          <Paragraph>Los checks antiguos se eliminan automáticamente. El cambio se aplica inmediatamente.</Paragraph>
           <Space>
             <Select value={retentionDays} onChange={(v) => setRetentionDays(v ?? 30)} style={{ width: 200 }}>
               <Select.Option value={7}>7 días</Select.Option>
