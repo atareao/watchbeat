@@ -103,7 +103,7 @@ export default function Dashboard() {
   // Data state
   const [status, setStatus] = useState<DashboardStatus | null>(null);
   const [monitors, setMonitors] = useState<MonitorSummary[]>([]);
-  const [scheduler, setScheduler] = useState<UnifiedDashboardResponse['scheduler']>({ last_run_at: null, next_run_at: null, last_monitors_checked: 0 });
+  const [scheduler, setScheduler] = useState<UnifiedDashboardResponse['scheduler']>({ last_check_at: null, active_tasks: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 

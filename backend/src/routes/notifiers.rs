@@ -63,6 +63,8 @@ pub async fn create(
         .await
         .map_err(|e| e.to_string())?;
 
+    state.scheduler_mgr.reload_notifiers().await;
+
     Ok(Json(serde_json::json!(notifier)))
 }
 
@@ -108,6 +110,8 @@ pub async fn update(
         .await
         .map_err(|e| e.to_string())?;
 
+    state.scheduler_mgr.reload_notifiers().await;
+
     Ok(Json(serde_json::json!(notifier)))
 }
 
@@ -124,6 +128,9 @@ pub async fn delete(
     if !deleted {
         return Err("Notifier not found".into());
     }
+
+    state.scheduler_mgr.reload_notifiers().await;
+
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 
