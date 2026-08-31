@@ -268,10 +268,8 @@ pub(crate) async fn run_monitor_check(
         } else {
             effective_status = "down".into();
         }
-    } else if is_up_raw {
-        if monitor.failed_checks > 0 {
-            let _ = db.reset_failed_checks(&monitor.id).await;
-        }
+    } else if is_up_raw && monitor.failed_checks > 0 {
+        let _ = db.reset_failed_checks(&monitor.id).await;
     }
 
     let check = CheckResult {
