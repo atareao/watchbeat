@@ -6,4 +6,5 @@ pub mod embed;
 pub mod models;
 pub mod notifier;
 pub mod routes;
+pub mod scheduler;
 pub mod template;

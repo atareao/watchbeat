@@ -139,9 +139,8 @@ export interface UnifiedDashboardResponse {
   status: DashboardStatus;
   monitors: MonitorSummary[];
   scheduler: {
-    last_run_at: string | null;
-    next_run_at: string | null;
-    last_monitors_checked: number;
+    last_check_at: string | null;
+    active_tasks: number;
   };
   total: number;
   page: number;
