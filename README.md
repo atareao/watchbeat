@@ -1,6 +1,29 @@
-# 🕵️ WatchBeat
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/watchbeat.svg">
+    <img src="frontend/public/watchbeat.svg" alt="WatchBeat" width="180">
+  </picture>
+</p>
 
-> **Monitor de uptime auto-hosteado** — backend Rust + Axum + SQLite, frontend React 19 + TypeScript 7 + Ant Design 6.
+<h1 align="center">WatchBeat</h1>
+
+<p align="center">
+  <strong>Monitor de uptime auto-hosteado</strong><br>
+  Backend Rust + Axum + SQLite · Frontend React 19 + TypeScript 7 + Ant Design 6
+</p>
+
+<p align="center">
+  <a href="#características">Características</a> •
+  <a href="#capturas">Capturas</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#instalación">Instalación</a> •
+  <a href="#configuración">Configuración</a> •
+  <a href="#uso">Uso</a> •
+  <a href="#rendimiento">Rendimiento</a> •
+  <a href="#api">API</a>
+</p>
+
+---
 
 WatchBeat te permite monitorizar tus servicios desde tu propio servidor. Sin dependencias externas, sin SaaS, sin límites artificiales. Conéctalo a tu proveedor OIDC, define tus monitores, y recibe alertas cuando algo falle.
 
@@ -29,6 +52,28 @@ Diseñado para ser **eficiente**: con 100 monitores estables, el backend escribe
 | **Retención** | Limpieza automática de checks antiguos (configurable, defecto 30 días) |
 | **SPA embebida** | Frontend compilado dentro del binario — un solo proceso, cero dependencias runtime |
 | **Docker** | Build multi-stage, healthcheck, compose listo para producción |
+
+---
+
+## 📸 Capturas {#capturas}
+
+<p align="center">
+  <strong>Dashboard</strong> — visión general del estado de todos tus monitores
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="Dashboard de WatchBeat" width="90%">
+</p>
+
+<br>
+
+<p align="center">
+  <strong>Monitor Detail</strong> — histórico, timeline de uptime y checks en tiempo real
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/monitor-detail.png" alt="Detalle de monitor WatchBeat" width="90%">
+</p>
 
 ---
 
