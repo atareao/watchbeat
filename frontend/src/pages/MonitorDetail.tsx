@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router";
 import {
   Card,
@@ -41,6 +41,7 @@ import {
   type CheckResult,
   type TimelineBucket,
 } from "../api/http";
+import { useSse, type CheckEvent } from "../hooks/useSse";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 import "dayjs/locale/es";
@@ -737,6 +738,7 @@ export default function MonitorDetail() {
   const [rangeKey, setRangeKey] = useState(3); // default: 24h
   const [retentionDays, setRetentionDays] = useState<number | null>(null);
   const [showErrorsOnly, setShowErrorsOnly] = useState(true);
+  const [latestCheck, setLatestCheck] = useState<CheckResult | null>(null);
 
   // Load retention setting
   useEffect(() => {
@@ -834,10 +836,60 @@ export default function MonitorDetail() {
     [id, showErrorsOnly],
   );
 
+  // SSE: real-time check events for this monitor
+  const loadDataRef = useRef(loadChecks);
+  loadDataRef.current = loadChecks;
+  useSse(useCallback((event) => {
+    if (event.type !== 'check' || event.monitor_id !== id || !id) return;
+    // Update latestCheck from SSE event immediately (before API calls resolve)
+    setLatestCheck({
+      id: 0,
+      monitor_id: event.monitor_id,
+      status: event.status,
+      status_code: null,
+      response_time_ms: event.response_time_ms,
+      error_message: event.error_message,
+      checked_at: event.checked_at,
+      tls_cert_expires_at: null,
+      tls_cert_days_left: null,
+    });
+    // Re-fetch monitor, buckets, and checks when a new check arrives
+    fetchMonitor(id).then(m => setMonitor(m)).catch(() => {});
+    // Re-fetch timeline
+    const params: Record<string, number> = {
+      bucket_seconds: range.bucketSeconds,
+    };
+    if (range.hours != null) {
+      (params as { hours: number; bucket_seconds: number }).hours = range.hours;
+    } else if (range.days != null) {
+      (params as { days: number; bucket_seconds: number }).days = range.days;
+    }
+    fetchTimelineBuckets(
+      id,
+      params as { bucket_seconds: number } & ({ hours: number } | { days: number }),
+    ).then(({ buckets: b }) => setBuckets(b)).catch(() => {});
+    // Re-fetch latest check (unfiltered) for accuracy
+    fetchChecks(id, 1, 1).then(data => {
+      if (data.checks.length > 0) setLatestCheck(data.checks[0]);
+    }).catch(() => {});
+    // Re-fetch checks table (filtered)
+    loadDataRef.current(1, 20, true);
+  }, [id, range.bucketSeconds, range.hours, range.days]));
+
   // Initial checks load
   useEffect(() => {
     loadChecks(checksPage, checksPerPage, showErrorsOnly);
   }, [loadChecks, showErrorsOnly]);
+
+  // Fetch latest check (unfiltered) for status display
+  useEffect(() => {
+    if (!id) return;
+    fetchChecks(id, 1, 1).then(data => {
+      if (data.checks.length > 0) {
+        setLatestCheck(data.checks[0]);
+      }
+    }).catch(() => {});
+  }, [id]);
 
   // ── Edit handlers ──
   const openEdit = () => {
@@ -855,10 +907,10 @@ export default function MonitorDetail() {
       interval_minutes: Math.round(monitor.interval_seconds / 60),
       timeout_seconds: monitor.timeout_seconds,
       enabled: monitor.enabled,
-      notifier_id: monitor.notifier_id ?? null,
+      notifier_id: monitor.notifier_id ?? undefined,
       confirmations_required: (monitor as any).confirmations_required ?? 0,
       config: monitor.config_json ?? {},
-      latency_threshold_ms: monitor.latency_threshold_ms,
+      latency_threshold_ms: monitor.latency_threshold_ms ?? undefined,
       message_template_down: monitor.message_template_down,
       message_template_latency: monitor.message_template_latency,
       message_template_up: monitor.message_template_up,
@@ -881,7 +933,9 @@ export default function MonitorDetail() {
         notifier_id: values.notifier_id || null,
         confirmations_required: values.confirmations_required ?? 0,
         config: (values.config ?? {}) as any,
-        latency_threshold_ms: values.latency_threshold_ms ?? null,
+        latency_threshold_ms: values.latency_threshold_ms != null
+          ? values.latency_threshold_ms
+          : null,
         message_template_down: values.message_template_down || null,
         message_template_latency: values.message_template_latency || null,
         message_template_up: values.message_template_up || null,
@@ -999,11 +1053,11 @@ export default function MonitorDetail() {
           ) : (
             <Tag
               color={
-                checks[0] ? STATUS_TAG[checks[0].status]?.color : "default"
+                latestCheck ? STATUS_TAG[latestCheck.status]?.color : "default"
               }
             >
-              {checks[0]
-                ? (STATUS_TAG[checks[0].status]?.text ?? "—")
+              {latestCheck
+                ? (STATUS_TAG[latestCheck.status]?.text ?? "—")
                 : "Sin datos"}
             </Tag>
           )}
@@ -1011,7 +1065,7 @@ export default function MonitorDetail() {
       </Descriptions>
 
       {/* Stats card */}
-      <MonitorStats monitor={monitor} latestCheck={checks[0] ?? null} />
+      <MonitorStats monitor={monitor} latestCheck={latestCheck} />
 
       {/* Health Chart */}
       <Card style={{ marginTop: 16 }}>
@@ -1182,13 +1236,11 @@ export default function MonitorDetail() {
               <Form.Item
                 name="latency_threshold_ms"
                 label="Umbral de latencia (ms)"
-                tooltip="Si la latencia supera este valor estando UP, se envía una notificación de latencia alta"
+                tooltip="Si la latencia supera este valor estando UP, se envía una notificación de latencia alta. Déjalo vacío para desactivar."
               >
                 <InputNumber
-                  min={0}
-                  max={60000}
                   style={{ width: "100%" }}
-                  placeholder="Ej: 500"
+                  placeholder="Ej: 500 (vacío = desactivado)"
                 />
               </Form.Item>
             </Tabs.TabPane>
