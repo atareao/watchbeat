@@ -1,15 +1,17 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future::FutureExt;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::checker;
+use crate::checker::Checker;
 use crate::db::Database;
 use crate::models::{CheckResult, Monitor, Notifier};
 use crate::notifier;
-use crate::routes::metrics;
 use crate::template::{self, TemplateContext};
 
 // ───── Commands ─────
@@ -28,7 +30,7 @@ pub enum SchedulerCommand {
 #[derive(Clone)]
 pub struct SchedulerManager {
     pub active_tasks: Arc<AtomicU64>,
-    pub last_check_at: Arc<RwLock<Option<String>>>,
+    pub last_check_at: Arc<AtomicI64>,
     tx: mpsc::Sender<SchedulerCommand>,
 }
 
@@ -37,7 +39,7 @@ impl SchedulerManager {
     pub async fn spawn(db: Database, event_tx: broadcast::Sender<String>) -> Self {
         let (tx, rx) = mpsc::channel(64);
         let active_tasks = Arc::new(AtomicU64::new(0));
-        let last_check_at = Arc::new(RwLock::new(None));
+        let last_check_at = Arc::new(AtomicI64::new(0));
 
         let mgr = Self {
             active_tasks: active_tasks.clone(),
@@ -80,7 +82,7 @@ async fn manager_loop(
     db: Database,
     event_tx: broadcast::Sender<String>,
     active_tasks: Arc<AtomicU64>,
-    last_check_at: Arc<RwLock<Option<String>>>,
+    last_check_at: Arc<AtomicI64>,
 ) {
     let notifier_cache: Arc<RwLock<HashMap<String, Notifier>>> =
         Arc::new(RwLock::new(HashMap::new()));
@@ -100,7 +102,7 @@ async fn manager_loop(
         for m in monitors {
             if m.enabled && m.monitor_type != "heartbeat" {
                 let id = m.id.clone();
-                let handle = monitor_task_wrapper(
+                let handle = monitor_task(
                     db.clone(),
                     m,
                     notifier_cache.clone(),
@@ -125,7 +127,7 @@ async fn manager_loop(
                 // Start new task if enabled and not heartbeat
                 if monitor.enabled && monitor.monitor_type != "heartbeat" {
                     let id = monitor.id.clone();
-                    let handle = monitor_task_wrapper(
+                    let handle = monitor_task(
                         db.clone(),
                         monitor,
                         notifier_cache.clone(),
@@ -162,92 +164,122 @@ async fn manager_loop(
 
 // ──── Per-monitor task (with panic recovery) ─────
 
-fn monitor_task_wrapper(
+fn monitor_task(
     db: Database,
     monitor: Monitor,
     notifier_cache: Arc<RwLock<HashMap<String, Notifier>>>,
     event_tx: broadcast::Sender<String>,
-    last_check_at: Arc<RwLock<Option<String>>>,
+    last_check_at: Arc<AtomicI64>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let interval_secs = monitor.interval_seconds.max(1) as u64;
         loop {
-            let inner_handle = tokio::spawn(monitor_task_impl(
+            let result = AssertUnwindSafe(monitor_task_inner(
                 db.clone(),
                 monitor.clone(),
                 notifier_cache.clone(),
                 event_tx.clone(),
                 last_check_at.clone(),
-            ));
+                interval_secs,
+            ))
+            .catch_unwind()
+            .await;
 
-            match inner_handle.await {
+            match result {
                 Ok(()) => {
-                    // Normal exit — shouldn't happen with infinite loop,
-                    // but if it does, exit the wrapper too.
+                    // Aborted via JoinHandle — exit
                     break;
                 }
-                Err(e) if e.is_panic() => {
+                Err(panic_err) => {
+                    let msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
                     tracing::error!(
-                        "Scheduler: panic in monitor task for '{}', restarting in 30s",
-                        monitor.name
+                        "Scheduler: panic in monitor task for '{}': {}. Restarting in 30s",
+                        monitor.name,
+                        msg
                     );
                     tokio::time::sleep(Duration::from_secs(30)).await;
-                    // Loop to restart
-                }
-                Err(_) => {
-                    // Task was aborted via JoinHandle::abort() — exit gracefully
-                    break;
                 }
             }
         }
     })
 }
 
-async fn monitor_task_impl(
+async fn monitor_task_inner(
     db: Database,
     monitor: Monitor,
     notifier_cache: Arc<RwLock<HashMap<String, Notifier>>>,
     event_tx: broadcast::Sender<String>,
-    last_check_at: Arc<RwLock<Option<String>>>,
+    last_check_at: Arc<AtomicI64>,
+    interval_secs: u64,
 ) {
-    let mut interval =
-        tokio::time::interval(Duration::from_secs(monitor.interval_seconds.max(1) as u64));
-    // First tick is immediate — run check right away
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     interval.tick().await;
+
+    // Cache checker once (reused across all checks for this monitor)
+    let checker = checker::checker_for(&monitor);
+
+    // Cache notifier IDs (avoids DB query on every status change)
+    let notifier_ids = db
+        .get_monitor_notifier_ids(&monitor.id)
+        .await
+        .unwrap_or_default();
+
+    // Track previous status in memory (avoids get_latest_check query per check)
+    let mut was_up = true;
+    // Check counter: write every N checks to maintain latency data without writing every time
+    let mut check_count: u64 = 0;
 
     loop {
         interval.tick().await;
-        run_monitor_check(&db, &monitor, &notifier_cache, &event_tx).await;
-
-        // Update global last-check timestamp
-        let now = chrono::Utc::now().to_rfc3339();
-        *last_check_at.write().await = Some(now);
+        check_count = check_count.wrapping_add(1);
+        was_up = run_monitor_check(
+            &db,
+            &monitor,
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            checker.as_deref(),
+            was_up,
+            &notifier_ids,
+            check_count,
+        )
+        .await;
     }
 }
 
 // ──── The actual check (moved from main.rs) ─────
 
+#[allow(clippy::too_many_arguments, clippy::manual_is_multiple_of)]
 pub(crate) async fn run_monitor_check(
     db: &Database,
     monitor: &Monitor,
     notifier_cache: &Arc<RwLock<HashMap<String, Notifier>>>,
     event_tx: &broadcast::Sender<String>,
-) {
-    let was_up = match db.get_latest_check(&monitor.id).await {
-        Ok(Some(c)) => c.status == "up",
-        _ => true,
-    };
+    last_check_at: &Arc<AtomicI64>,
+    checker: Option<&dyn Checker>,
+    was_up: bool,
+    notifier_ids: &[String],
+    check_count: u64,
+) -> bool {
+    let now = chrono::Utc::now();
+    let now_str = now.to_rfc3339();
 
-    let checker = match checker::checker_for(monitor) {
+    let checker = match checker {
         Some(c) => c,
         None => {
             tracing::warn!("Scheduler: no checker for type '{}'", monitor.monitor_type);
-            return;
+            return was_up;
         }
     };
 
     let outcome = checker.check(monitor).await;
-
-    let now_str = chrono::Utc::now().to_rfc3339();
 
     // Confirmation logic
     let is_up_raw = outcome.status == "up" || outcome.status == "warning";
@@ -268,10 +300,8 @@ pub(crate) async fn run_monitor_check(
         } else {
             effective_status = "down".into();
         }
-    } else if is_up_raw {
-        if monitor.failed_checks > 0 {
-            let _ = db.reset_failed_checks(&monitor.id).await;
-        }
+    } else if is_up_raw && monitor.failed_checks > 0 {
+        let _ = db.reset_failed_checks(&monitor.id).await;
     }
 
     let check = CheckResult {
@@ -286,32 +316,37 @@ pub(crate) async fn run_monitor_check(
         tls_cert_days_left: outcome.tls.as_ref().and_then(|t| t.cert_days_left),
     };
 
-    if let Err(e) = db.insert_check(&check).await {
-        tracing::error!(
-            "Scheduler: failed to save check for {}: {}",
-            monitor.name,
-            e
-        );
-        return;
+    // Write to DB when status changes OR every 10th check (latency sampling)
+    let is_up = check.status == "up" || check.status == "warning";
+    let status_changed = was_up != is_up;
+
+    if status_changed || (check_count % 10 == 0) {
+        if let Err(e) = db.insert_check(&check).await {
+            tracing::error!(
+                "Scheduler: failed to save check for {}: {}",
+                monitor.name,
+                e
+            );
+            return was_up;
+        }
     }
 
-    metrics::inc_checks();
-
-    let event = serde_json::json!({
-        "type": "check",
-        "monitor_id": monitor.id,
-        "monitor_name": monitor.name,
-        "status": check.status,
-        "response_time_ms": check.response_time_ms,
-        "error_message": check.error_message,
-        "checked_at": check.checked_at,
-    })
-    .to_string();
-    let _ = event_tx.send(event);
+    // SSE event: only allocate JSON if someone is listening
+    if event_tx.receiver_count() > 0 {
+        let event = serde_json::json!({
+            "type": "check",
+            "monitor_id": monitor.id,
+            "monitor_name": monitor.name,
+            "status": check.status,
+            "response_time_ms": check.response_time_ms,
+            "error_message": check.error_message,
+            "checked_at": check.checked_at,
+        })
+        .to_string();
+        let _ = event_tx.send(event);
+    }
 
     // Detect status changes and latency breaches
-    let is_up = check.status == "up" || check.status == "warning";
-
     let notification_type: Option<(&str, String)> = {
         if was_up && !is_up {
             let template = monitor
@@ -377,21 +412,17 @@ pub(crate) async fn run_monitor_check(
         }
     };
 
-    // Send notification
+    // Send notification (using cached notifier_ids)
     if let Some((_notif_type, message)) = notification_type {
-        let mut notifier_ids = db
-            .get_monitor_notifier_ids(&monitor.id)
-            .await
-            .unwrap_or_default();
-
-        if notifier_ids.is_empty() {
+        let mut ids = notifier_ids.to_vec();
+        if ids.is_empty() {
             if let Some(ref nid) = monitor.notifier_id {
-                notifier_ids.push(nid.clone());
+                ids.push(nid.clone());
             }
         }
 
         let cache = notifier_cache.read().await;
-        for nid in &notifier_ids {
+        for nid in &ids {
             if let Some(notifier) = cache.get(nid) {
                 if !notifier.enabled {
                     continue;
@@ -568,4 +599,7 @@ pub(crate) async fn run_monitor_check(
             }
         }
     }
+
+    last_check_at.store(now.timestamp(), Ordering::Relaxed);
+    is_up
 }
