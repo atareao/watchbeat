@@ -101,9 +101,20 @@ pub async fn list(
         .map_err(|e| e.to_string())?;
 
     let sched_status = &state.scheduler_mgr;
-    let last_check_at = sched_status.last_check_at.read().await.clone();
+    let last_check_at = sched_status
+        .last_check_at
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let last_check_at_str = if last_check_at > 0 {
+        Some(
+            chrono::DateTime::from_timestamp(last_check_at, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default(),
+        )
+    } else {
+        None
+    };
     let sched_info = serde_json::json!({
-        "last_check_at": last_check_at,
+        "last_check_at": last_check_at_str,
         "active_tasks": sched_status.active_tasks.load(std::sync::atomic::Ordering::Relaxed),
     });
 
@@ -232,23 +243,19 @@ pub async fn update(
             .max(60),
         timeout_seconds: req.timeout_seconds.unwrap_or(existing.timeout_seconds),
         enabled: req.enabled.unwrap_or(existing.enabled),
-        notifier_id: req.notifier_id.or(existing.notifier_id),
+        notifier_id: req.notifier_id,
         confirmations_required: req
             .confirmations_required
             .unwrap_or(existing.confirmations_required),
         failed_checks: existing.failed_checks,
-        latency_threshold_ms: req.latency_threshold_ms.or(existing.latency_threshold_ms),
-        message_template_down: req.message_template_down.or(existing.message_template_down),
-        message_template_latency: req
-            .message_template_latency
-            .or(existing.message_template_latency),
-        message_template_up: req.message_template_up.or(existing.message_template_up),
-        message_template_expiry: req
-            .message_template_expiry
-            .or(existing.message_template_expiry),
+        latency_threshold_ms: req.latency_threshold_ms,
+        message_template_down: req.message_template_down,
+        message_template_latency: req.message_template_latency,
+        message_template_up: req.message_template_up,
+        message_template_expiry: req.message_template_expiry,
         tags: existing.tags,
         token: existing.token,
-        grace_seconds: req.grace_seconds.or(existing.grace_seconds),
+        grace_seconds: req.grace_seconds,
         last_seen_at: existing.last_seen_at,
         created_at: existing.created_at,
         updated_at: now,
