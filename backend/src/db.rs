@@ -29,7 +29,12 @@ impl Database {
             .filename(path)
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .foreign_keys(true);
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            .foreign_keys(true)
+            .pragma("journal_size_limit", "65536")
+            .pragma("cache_size", "-8000")
+            .pragma("busy_timeout", "5000")
+            .pragma("temp_store", "memory");
 
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
@@ -79,6 +84,11 @@ impl Database {
             sqlx::raw_sql("CREATE INDEX IF NOT EXISTS idx_checks_checked_at ON checks(checked_at)")
                 .execute(&pool)
                 .await;
+        // Covering index for uptime queries (COUNT/SUM by monitor_id + date range)
+        let _ = sqlx::raw_sql(
+            "CREATE INDEX IF NOT EXISTS idx_checks_uptime ON checks(monitor_id, checked_at, status)")
+            .execute(&pool)
+            .await;
         let _ = sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS notifiers (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, notifier_type TEXT NOT NULL,

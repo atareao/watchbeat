@@ -1,6 +1,20 @@
 use async_trait::async_trait;
+use std::sync::OnceLock;
 
 use crate::models::Monitor;
+
+/// Shared reqwest::Client reused across all HTTP checks (created once)
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .tls_info(true)
+            .pool_max_idle_per_host(2)
+            .build()
+            .expect("Failed to build reqwest::Client")
+    })
+}
 
 /// Result of a single check.
 #[derive(Debug, Clone, Default)]
@@ -43,24 +57,7 @@ impl Checker for HttpChecker {
         let timeout = std::time::Duration::from_secs(monitor.timeout_seconds as u64);
         let url = monitor.target.clone();
 
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .tls_info(true)
-            .build();
-
-        let client = match client {
-            Ok(c) => c,
-            Err(e) => {
-                return CheckOutcome {
-                    status: "error".into(),
-                    status_code: None,
-                    response_time_ms: start.elapsed().as_millis() as u64,
-                    error_message: Some(format!("Client build error: {}", e)),
-                    tls: None,
-                };
-            }
-        };
+        let client = http_client();
 
         let method = monitor
             .config_json
@@ -74,7 +71,7 @@ impl Checker for HttpChecker {
             _ => client.get(&url),
         };
 
-        let req = req.header("User-Agent", "WatchBeat/0.1");
+        let req = req.header("User-Agent", "WatchBeat/0.1").timeout(timeout);
         let result = req.send().await;
 
         let elapsed = start.elapsed().as_millis() as u64;

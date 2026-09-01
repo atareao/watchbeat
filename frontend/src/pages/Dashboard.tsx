@@ -13,6 +13,7 @@ import {
   type MonitorSummary, type UnifiedDashboardResponse, type DashboardStatus,
 } from '../api/http';
 import MonitorCard from '../components/MonitorCard';
+import { useSse } from '../hooks/useSse';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import 'dayjs/locale/es';
@@ -103,7 +104,7 @@ export default function Dashboard() {
   // Data state
   const [status, setStatus] = useState<DashboardStatus | null>(null);
   const [monitors, setMonitors] = useState<MonitorSummary[]>([]);
-  const [scheduler, setScheduler] = useState<UnifiedDashboardResponse['scheduler']>({ last_run_at: null, next_run_at: null, last_monitors_checked: 0 });
+  const [scheduler, setScheduler] = useState<UnifiedDashboardResponse['scheduler']>({ last_check_at: null, active_tasks: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -140,7 +141,7 @@ export default function Dashboard() {
   // Reset page when filters change
   useEffect(() => { setPage(1); }, [typeFilter, statusFilter]);
 
-  // ── Load monitors ──
+  // ── Load monitors (with spinner) ──
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
@@ -167,6 +168,31 @@ export default function Dashboard() {
       .finally(() => setLoading(false));
   }, [debouncedSearch, typeFilter, statusFilter, page, perPage]);
 
+  // ── Silent refresh (no spinner) for SSE + fallback ──
+  const refresh = useCallback(() => {
+    setError(null);
+    fetchMonitors({
+      page,
+      perPage,
+      q: debouncedSearch || undefined,
+      type: typeFilter || undefined,
+      status: statusFilter || undefined,
+    })
+      .then(data => {
+        setStatus(data.status);
+        setMonitors(data.monitors);
+        setScheduler(data.scheduler);
+        setTotal(data.total);
+        setPage(data.page);
+        setPerPage(data.per_page);
+        setTotalPages(data.total_pages);
+      })
+      .catch(err => {
+        setError(err.message);
+        message.error(err.message);
+      });
+  }, [debouncedSearch, typeFilter, statusFilter, page, perPage]);
+
   // Load notifiers once
   useEffect(() => {
     fetchNotifiers()
@@ -179,12 +205,17 @@ export default function Dashboard() {
     load();
   }, [debouncedSearch, typeFilter, statusFilter, page, perPage, load]);
 
-  // Auto-refresh every 30s, paused when modal is open
+  // SSE: real-time updates via backend event stream
+  useSse(useCallback((event) => {
+    if (event.type === 'check') refresh();
+  }, [refresh]));
+
+  // Fallback poll every 60s in case SSE disconnects, paused when modal is open
   useEffect(() => {
     if (modalOpen) return;
-    const interval = setInterval(() => load(), 30_000);
+    const interval = setInterval(() => refresh(), 60_000);
     return () => clearInterval(interval);
-  }, [modalOpen, load]);
+  }, [modalOpen, refresh]);
 
   // ── Stats (monitors only — heartbeats are monitors) ──
   const healthyItems = (status?.up_monitors ?? 0);
@@ -214,10 +245,10 @@ export default function Dashboard() {
           interval_minutes: Math.round(full.interval_seconds / 60),
           timeout_seconds: full.timeout_seconds,
           enabled: full.enabled,
-          notifier_id: full.notifier_id ?? null,
+          notifier_id: full.notifier_id ?? undefined,
           confirmations_required: (full as any).confirmations_required ?? 0,
           config: full.config_json ?? {},
-          latency_threshold_ms: full.latency_threshold_ms,
+          latency_threshold_ms: full.latency_threshold_ms ?? undefined,
           message_template_down: full.message_template_down,
           message_template_latency: full.message_template_latency,
           message_template_up: full.message_template_up,
@@ -248,7 +279,9 @@ export default function Dashboard() {
         notifier_id: values.notifier_id || null,
         confirmations_required: values.confirmations_required ?? 0,
         config: (values.config ?? {}) as any,
-        latency_threshold_ms: values.latency_threshold_ms ?? null,
+        latency_threshold_ms: values.latency_threshold_ms != null
+          ? values.latency_threshold_ms
+          : null,
         message_template_down: values.message_template_down || null,
         message_template_latency: values.message_template_latency || null,
         message_template_up: values.message_template_up || null,
@@ -492,8 +525,8 @@ export default function Dashboard() {
               </Space>
               {!isHeartbeatSelected && (
                 <Form.Item name="latency_threshold_ms" label="Umbral de latencia (ms)"
-                  tooltip="Si la latencia supera este valor estando UP, se envía una notificación de latencia alta">
-                  <InputNumber min={0} max={60000} style={{ width: '100%' }} placeholder="Ej: 500" />
+                  tooltip="Si la latencia supera este valor estando UP, se envía una notificación de latencia alta. Déjalo vacío para desactivar.">
+                  <InputNumber style={{ width: '100%' }} placeholder="Ej: 500 (vacío = desactivado)" />
                 </Form.Item>
               )}
               {editingMonitor && isHeartbeatSelected && editingMonitor.token && (

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::Config;
+use crate::scheduler::SchedulerManager;
 
 // ───── OIDC Metadata ─────
 
@@ -153,15 +154,14 @@ pub struct AppState {
     pub oidc_metadata: Option<OidcMetadata>,
     pub jwt_validator: Arc<JwtValidator>,
     pub oidc_states: OidcStates,
-    pub scheduler_status: Arc<Mutex<SchedulerStatus>>,
+    pub scheduler_mgr: SchedulerManager,
     pub event_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SchedulerStatus {
-    pub last_run_at: Option<String>,
-    pub next_run_at: Option<String>,
-    pub last_monitors_checked: u64,
+    pub last_check_at: Option<String>,
+    pub active_tasks: u64,
 }
 
 // ───── Auth Middleware (exactamente como populates) ─────
@@ -174,6 +174,7 @@ pub async fn require_auth(mut req: Request, next: Next) -> Result<Response, Stat
         || path == "/health"
         || path == "/"
         || path.starts_with("/api/heartbeat/")
+        || path.starts_with("/api/events")
     {
         tracing::trace!(path = %path, "public endpoint — skipping auth");
         return Ok(next.run(req).await);
