@@ -115,26 +115,6 @@ async fn main() {
         event_tx: event_tx.clone(),
     });
 
-    // ───── Prometheus metrics update timer ─────
-    let db_for_metrics = db.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            if let Ok(summaries) = db_for_metrics.get_monitor_summaries().await {
-                let up = summaries
-                    .iter()
-                    .filter(|s| s.last_status.as_deref() == Some("up"))
-                    .count() as u64;
-                let down = summaries
-                    .iter()
-                    .filter(|s| s.last_status.as_deref() == Some("down"))
-                    .count() as u64;
-                watchbeat::routes::metrics::set_monitor_counts(up, down);
-            }
-        }
-    });
-
     // ───── Daily Cleanup Loop ─────
     let db_for_cleanup = db.clone();
     tokio::spawn(async move {
