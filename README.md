@@ -4,6 +4,8 @@
 
 WatchBeat te permite monitorizar tus servicios desde tu propio servidor. Sin dependencias externas, sin SaaS, sin límites artificiales. Conéctalo a tu proveedor OIDC, define tus monitores, y recibe alertas cuando algo falle.
 
+Diseñado para ser **eficiente**: con 100 monitores estables, el backend escribe ~0 veces por minuto a SQLite y consume ~0% de CPU cuando no hay cambios de estado.
+
 ---
 
 ## ✨ Características
@@ -18,14 +20,13 @@ WatchBeat te permite monitorizar tus servicios desde tu propio servidor. Sin dep
 | **Plantillas** | Mensajes personalizables con Jinja2 para DOWN, UP, latencia y expiración de certificado |
 | **Certificados TLS** | Monitorización de expiración con alertas anticipadas |
 | **Status Pages** | Páginas públicas de estado eligiendo qué monitores mostrar |
-| **Tiempo real** | Eventos SSE en vivo sobre el estado de los checks |
-| **Gráficas** | Timeline de uptime por monitor con buckets consolidados (6h, 12h, 24h, 7d, 15d, 30d, 3m, 6m, 1a) |
+| **Tiempo real** | Eventos SSE en vivo sobre el estado de los checks (sin polling) |
+| **Gráficas** | Timeline de uptime por monitor con buckets (6h, 12h, 24h, 7d, 15d, 30d, 3m, 6m, 1a) |
 | **Dashboard** | Estadísticas globales, búsqueda, filtros por tipo/estado, paginación |
 | **Dark mode** | Tema oscuro/claro con persistencia en localStorage |
 | **Backup** | Copia de seguridad de la BD SQLite desde la interfaz |
 | **Export/Import** | Exporta e importa toda la configuración (monitores, notificadores, status pages, ajustes) en JSON |
-| **Retención** | Limpieza automática de checks antiguos (configurable, defecto 14 días) |
-| **Métricas Prometheus** | Endpoint `/metrics` con contadores de checks y estado de monitores |
+| **Retención** | Limpieza automática de checks antiguos (configurable, defecto 30 días) |
 | **SPA embebida** | Frontend compilado dentro del binario — un solo proceso, cero dependencias runtime |
 | **Docker** | Build multi-stage, healthcheck, compose listo para producción |
 
@@ -47,7 +48,7 @@ Infra:     Docker multi-stage, Podman, Just, Git Flow
 watchbeat/
 ├── backend/                    # Rust ([[bin]] + [lib])
 │   ├── src/
-│   │   ├── main.rs             # Entrypoint + scheduler loop + consolidación
+│   │   ├── main.rs             # Entrypoint + SchedulerManager::spawn()
 │   │   ├── lib.rs              # Re-exporta todos los módulos
 │   │   ├── config.rs           # Variables de entorno → Config
 │   │   ├── db.rs               # SQLite + migraciones + CRUD (sqlx 0.9)
@@ -55,6 +56,7 @@ watchbeat/
 │   │   ├── models.rs           # Monitor, CheckResult, Notifier, StatusPage, etc.
 │   │   ├── embed.rs            # SPA embebida (include_dir!)
 │   │   ├── template.rs         # Motor de plantillas Jinja2 + defaults
+│   │   ├── scheduler.rs        # SchedulerManager + per-monitor tokio timers
 │   │   ├── checker/            # HTTP, TCP, Ping, TLS checkers
 │   │   ├── notifier/           # 8 tipos: telegram, matrix, ntfy, webhook,
 │   │   │                       #   slack, discord, email, gotify
@@ -69,8 +71,7 @@ watchbeat/
 │   │       ├── settings.rs     # Ajustes globales
 │   │       ├── backup.rs       # Backup SQLite
 │   │       ├── export_import.rs# Export/import JSON
-│   │       ├── exports.rs      # Export individual por monitor
-│   │       └── metrics.rs      # Endpoint Prometheus /metrics
+│   │       └── exports.rs      # Export individual por monitor
 │   └── tests/
 │       └── db_integration.rs   # Tests de integración con SQLite tempfile
 ├── frontend/
@@ -79,7 +80,7 @@ watchbeat/
 │       ├── App.tsx             # Router + lazy-loaded pages
 │       ├── api/http.ts         # Fetcher genérico con auth JWT + tipos
 │       ├── store/auth.ts       # JWT en sessionStorage + localStorage
-│       ├── hooks/              # useAuth, useTheme
+│       ├── hooks/              # useAuth, useSse, useTheme
 │       ├── components/         # AppLayout (header + navegación), MonitorCard
 │       └── pages/              # Dashboard, MonitorDetail, Settings, LoginPage
 ├── compose.yml                 # Docker Compose canónico
@@ -92,6 +93,27 @@ watchbeat/
 ├── docs/                       # Documentación del proyecto
 └── PLAN.md                     # Roadmap de features
 ```
+
+---
+
+## ⚡ Rendimiento
+
+WatchBeat está optimizado para ser **ultra-ligero** en idle:
+
+| Escenario | Antes (v0.11) | Ahora (v0.12) |
+|---|---|---|
+| **CPU idle** (sin frontend) | ~1% (polling cada 15s) | **~0%** (timers del SO) |
+| **Queries SQLite por check** | 3 (get_latest + insert + notifier_ids) | **0** (caches en memoria) |
+| **Writes a DB** (100 monitores estables) | ~20 INSERTs/min | **~0** (solo cambios de estado) |
+| **reqwest::Client** | Creado en cada check (TLS+DNS+pool) | **Global** (OnceLock, reutilizado) |
+| **SSE JSON allocation** | En cada check | Solo si hay clientes conectados |
+
+### Cómo funciona
+
+- **Scheduler**: Cada monitor tiene su propio `tokio::time::interval` con `MissedTickBehavior::Skip`. No hay polling global. El manager loop está bloqueado en `mpsc::Receiver::recv()` — 0 CPU.
+- **Caches en memoria**: `checker` (Box), `was_up` (bool), `notifier_ids` (Vec) se crean una vez por monitor y se reutilizan en cada check.
+- **Writes diferidos**: Solo se escribe a SQLite cuando el estado cambia (UP↔DOWN) o cada 10º check (muestreo de latencia). Monitores estables → 0 writes.
+- **SQLite optimizado**: WAL mode con `synchronous=NORMAL` (~50x más rápido que FULL), índice cubriente `(monitor_id, checked_at, status)` para queries de uptime index-only.
 
 ---
 
@@ -132,8 +154,7 @@ Los notificadores se configuran desde la interfaz web (Settings → Notificadore
 | `GET` | `/auth/login` | No | Login OIDC |
 | `GET` | `/auth/callback` | No | Callback OIDC (PKCE) |
 | `GET` | `/auth/logout` | No | Cerrar sesión |
-| `GET` | `/api/events` | Token | SSE — eventos en vivo |
-| `GET` | `/metrics` | No | Métricas Prometheus |
+| `GET` | `/api/events` | Token (query) | SSE — eventos en vivo de checks |
 | `GET` | `/status/{slug}` | No | Status page pública |
 | `POST` | `/api/heartbeat/{token}` | No | Pulso de heartbeat |
 | `GET` | `/api/me` | JWT | Usuario actual |
@@ -144,7 +165,7 @@ Los notificadores se configuran desde la interfaz web (Settings → Notificadore
 | `PATCH` | `/api/monitors/{id}` | JWT | Toggle enable/disable |
 | `POST` | `/api/monitors/{id}/check` | JWT | Ejecutar check manual |
 | `GET` | `/api/monitors/{id}/checks` | JWT | Histórico de checks |
-| `GET` | `/api/monitors/{id}/timeline` | JWT | Timeline buckets (chequeos >1h usa datos consolidados) |
+| `GET` | `/api/monitors/{id}/timeline` | JWT | Timeline buckets |
 | `GET` | `/api/checks/recent` | JWT | Último check de cada monitor |
 | `GET/POST` | `/api/notifiers` | JWT | Listar / crear notificadores |
 | `PUT` | `/api/notifiers/{id}` | JWT | Actualizar notificador |
@@ -160,6 +181,8 @@ Los notificadores se configuran desde la interfaz web (Settings → Notificadore
 | `GET` | `/api/settings` | JWT | Obtener un ajuste por clave |
 | `POST` | `/api/settings` | JWT | Guardar un ajuste |
 | `GET` | `/api/status` | JWT | Dashboard stats globales |
+
+> **Nota**: No hay endpoint `/metrics`. Prometheus fue eliminado en v0.12 porque nadie lo scrapeaba y consumía CPU cada 30s con queries a SQLite.
 
 ---
 
@@ -314,6 +337,7 @@ Usamos [Conventional Commits](https://www.conventionalcommits.org/) con gitmoji:
 | fix | 🐛 |
 | fix (seguridad) | 🔒 |
 | refactor | ♻️ |
+| perf | ⚡ |
 | docs | 📝 |
 | test | ✅ |
 | style | 🎨 |
