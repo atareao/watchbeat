@@ -233,12 +233,12 @@ async fn monitor_task_inner(
 
     // Track previous status in memory (avoids get_latest_check query per check)
     let mut was_up = true;
-    // Check counter: write every N checks to maintain latency data without writing every time
-    let mut check_count: u64 = 0;
+    // Track last DB write timestamp for time-based sampling:
+    // write at least once per interval_secs to maintain latency data
+    let mut last_write_at: i64 = 0;
 
     loop {
         interval.tick().await;
-        check_count = check_count.wrapping_add(1);
         was_up = run_monitor_check(
             &db,
             &monitor,
@@ -248,7 +248,8 @@ async fn monitor_task_inner(
             checker.as_deref(),
             was_up,
             &notifier_ids,
-            check_count,
+            &mut last_write_at,
+            interval_secs,
         )
         .await;
     }
@@ -256,7 +257,7 @@ async fn monitor_task_inner(
 
 // ──── The actual check (moved from main.rs) ─────
 
-#[allow(clippy::too_many_arguments, clippy::manual_is_multiple_of)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_monitor_check(
     db: &Database,
     monitor: &Monitor,
@@ -266,7 +267,8 @@ pub(crate) async fn run_monitor_check(
     checker: Option<&dyn Checker>,
     was_up: bool,
     notifier_ids: &[String],
-    check_count: u64,
+    last_write_at: &mut i64,
+    interval_secs: u64,
 ) -> bool {
     let now = chrono::Utc::now();
     let now_str = now.to_rfc3339();
@@ -316,11 +318,12 @@ pub(crate) async fn run_monitor_check(
         tls_cert_days_left: outcome.tls.as_ref().and_then(|t| t.cert_days_left),
     };
 
-    // Write to DB when status changes OR every 10th check (latency sampling)
+    // Write to DB when status changes OR at least once per interval_secs (time-based sampling)
     let is_up = check.status == "up" || check.status == "warning";
     let status_changed = was_up != is_up;
+    let time_elapsed = now.timestamp() - *last_write_at;
 
-    if status_changed || (check_count % 10 == 0) {
+    if status_changed || time_elapsed >= interval_secs as i64 {
         if let Err(e) = db.insert_check(&check).await {
             tracing::error!(
                 "Scheduler: failed to save check for {}: {}",
@@ -329,6 +332,7 @@ pub(crate) async fn run_monitor_check(
             );
             return was_up;
         }
+        *last_write_at = now.timestamp();
     }
 
     // SSE event: only allocate JSON if someone is listening
@@ -602,4 +606,336 @@ pub(crate) async fn run_monitor_check(
 
     last_check_at.store(now.timestamp(), Ordering::Relaxed);
     is_up
+}
+
+// ──── Characterization tests (current behavior) ─────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::checker::CheckOutcome;
+    use async_trait::async_trait;
+    use tempfile::TempDir;
+
+    struct AlwaysUpChecker;
+    #[async_trait]
+    impl Checker for AlwaysUpChecker {
+        async fn check(&self, _monitor: &Monitor) -> CheckOutcome {
+            CheckOutcome {
+                status: "up".into(),
+                status_code: Some(200),
+                response_time_ms: 42,
+                error_message: None,
+                tls: None,
+            }
+        }
+    }
+
+    struct AlwaysDownChecker;
+    #[async_trait]
+    impl Checker for AlwaysDownChecker {
+        async fn check(&self, _monitor: &Monitor) -> CheckOutcome {
+            CheckOutcome {
+                status: "down".into(),
+                status_code: None,
+                response_time_ms: 0,
+                error_message: Some("connection refused".into()),
+                tls: None,
+            }
+        }
+    }
+
+    fn sample_monitor(id: &str) -> Monitor {
+        Monitor {
+            id: id.into(),
+            name: format!("Monitor {}", id),
+            monitor_type: "http".into(),
+            target: "https://example.com".into(),
+            config_json: serde_json::json!({}),
+            interval_seconds: 60,
+            timeout_seconds: 30,
+            enabled: true,
+            notifier_id: None,
+            confirmations_required: 0,
+            failed_checks: 0,
+            latency_threshold_ms: None,
+            message_template_down: None,
+            message_template_latency: None,
+            message_template_up: None,
+            message_template_expiry: None,
+            tags: vec![],
+            token: None,
+            grace_seconds: None,
+            last_seen_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    async fn setup_db() -> (Database, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.db");
+        let db = Database::open(&path).await.unwrap();
+        (db, dir)
+    }
+
+    /// Characterizes current sampling: only every 10th check is written when status is stable.
+    #[tokio::test]
+    async fn test_count_based_sampling_writes_every_10th_check() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-sampling"))
+            .await
+            .unwrap();
+
+        let checker = AlwaysUpChecker;
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let (event_tx, _) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec![];
+        let interval_secs: u64 = 60;
+
+        let mut was_up = true;
+        let mut last_write_at: i64 = 0;
+
+        // Run 15 checks with stable UP status
+        for _ in 1..=15 {
+            was_up = run_monitor_check(
+                &db,
+                &sample_monitor("m-sampling"),
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&checker),
+                was_up,
+                &notifier_ids,
+                &mut last_write_at,
+                interval_secs,
+            )
+            .await;
+        }
+
+        // Current behavior: only 1 write at check_count=10
+        let checks = db.get_checks("m-sampling", 100, 0).await.unwrap();
+        assert_eq!(
+            checks.len(),
+            1,
+            "Only 1 in 10 checks should be written with count-based sampling"
+        );
+    }
+
+    /// Characterizes that status changes bypass the sampling and write immediately.
+    #[tokio::test]
+    async fn test_status_change_writes_immediately_regardless_of_count() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-status"))
+            .await
+            .unwrap();
+
+        let up_checker = AlwaysUpChecker;
+        let down_checker = AlwaysDownChecker;
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let (event_tx, _) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec![];
+        let interval_secs: u64 = 60;
+
+        let mut was_up = true;
+        let mut last_write_at: i64 = 0;
+
+        // 3 checks UP (stable, none written because rapid succession)
+        for _ in 1..=3 {
+            was_up = run_monitor_check(
+                &db,
+                &sample_monitor("m-status"),
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&up_checker),
+                was_up,
+                &notifier_ids,
+                &mut last_write_at,
+                interval_secs,
+            )
+            .await;
+        }
+
+        // Check #4: status changes UP→DOWN → should write immediately
+        run_monitor_check(
+            &db,
+            &sample_monitor("m-status"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&down_checker),
+            was_up,
+            &notifier_ids,
+            &mut last_write_at,
+            interval_secs,
+        )
+        .await;
+
+        let checks = db.get_checks("m-status", 100, 0).await.unwrap();
+        // First call writes (time_elapsed from epoch >= interval_secs),
+        // then status change writes immediately = 2 total
+        assert_eq!(
+            checks.len(),
+            2,
+            "First check writes by time, status change writes immediately"
+        );
+        assert_eq!(checks[0].status, "down");
+        assert_eq!(checks[1].status, "up");
+    }
+
+    // ──── RED tests: new time-based sampling behavior ─────
+
+    /// New behavior: writes when interval_secs have elapsed since last write.
+    /// With old count-based code this FAILS because check #1 is not a multiple of 10.
+    #[tokio::test]
+    async fn test_time_based_sampling_writes_when_interval_elapsed() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-time-1"))
+            .await
+            .unwrap();
+
+        let checker = AlwaysUpChecker;
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let (event_tx, _) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec![];
+        let mut last_write_at: i64 = 0; // epoch — time_elapsed will be >= interval_secs
+        let interval_secs: u64 = 60;
+
+        let was_up = run_monitor_check(
+            &db,
+            &sample_monitor("m-time-1"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            interval_secs,
+        )
+        .await;
+
+        let checks = db.get_checks("m-time-1", 100, 0).await.unwrap();
+        assert_eq!(
+            checks.len(),
+            1,
+            "Should write when interval_secs have elapsed since last write"
+        );
+        assert!(was_up);
+    }
+
+    /// New behavior: skips write when called rapidly within the same interval.
+    #[tokio::test]
+    async fn test_time_based_sampling_skips_within_interval() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-time-2"))
+            .await
+            .unwrap();
+
+        let checker = AlwaysUpChecker;
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let (event_tx, _) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec![];
+        let interval_secs: u64 = 60;
+
+        // First call: last_write_at=0 → time_elapsed >= 60 → writes
+        let mut last_write_at: i64 = 0;
+        let was_up = run_monitor_check(
+            &db,
+            &sample_monitor("m-time-2"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            interval_secs,
+        )
+        .await;
+
+        // Second call: last_write_at=now → time_elapsed=0 < 60 → no write
+        run_monitor_check(
+            &db,
+            &sample_monitor("m-time-2"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            was_up,
+            &notifier_ids,
+            &mut last_write_at,
+            interval_secs,
+        )
+        .await;
+
+        let checks = db.get_checks("m-time-2", 100, 0).await.unwrap();
+        assert_eq!(
+            checks.len(),
+            1,
+            "Only first check should write; second is within interval"
+        );
+    }
+
+    /// New behavior: status change writes immediately regardless of elapsed time.
+    #[tokio::test]
+    async fn test_time_based_status_change_writes_immediately() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-time-3"))
+            .await
+            .unwrap();
+
+        let up_checker = AlwaysUpChecker;
+        let down_checker = AlwaysDownChecker;
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let (event_tx, _) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec![];
+        let interval_secs: u64 = 60;
+
+        // First call: writes (interval elapsed from epoch), status=UP
+        let mut last_write_at: i64 = 0;
+        let was_up = run_monitor_check(
+            &db,
+            &sample_monitor("m-time-3"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&up_checker),
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            interval_secs,
+        )
+        .await;
+
+        // Second call: status changes UP→DOWN, writes immediately
+        run_monitor_check(
+            &db,
+            &sample_monitor("m-time-3"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&down_checker),
+            was_up,
+            &notifier_ids,
+            &mut last_write_at,
+            interval_secs,
+        )
+        .await;
+
+        let checks = db.get_checks("m-time-3", 100, 0).await.unwrap();
+        assert_eq!(
+            checks.len(),
+            2,
+            "Both checks should write: first by time, second by status change"
+        );
+        assert_eq!(checks[0].status, "down");
+        assert_eq!(checks[1].status, "up");
+    }
 }

@@ -7,3 +7,5 @@ target/
 data/
 .env.codegraph/
 tsconfig.tsbuildinfo
+.codegraph/
+.opencode/
