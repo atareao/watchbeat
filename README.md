@@ -51,7 +51,7 @@ Diseñado para ser **eficiente**: con 100 monitores estables, el backend escribe
 | **Export/Import** | Exporta e importa toda la configuración en JSON |
 | **Retención** | Limpieza automática de checks antiguos (configurable, defecto 30 días) |
 | **SPA embebida** | Frontend compilado dentro del binario — un solo proceso, cero dependencias runtime |
-| **Docker** | Build multi-stage, healthcheck, compose listo para producción |
+| **Docker** | Build multi-stage, imagen multi-arquitectura (`amd64`/`arm64`), healthcheck, compose listo para producción |
 
 ---
 
@@ -127,6 +127,42 @@ just build
 just push     # si tienes registry configurado
 ```
 
+### Imagen oficial multi-arquitectura (GHCR)
+
+WatchBeat publica imagen en **GitHub Container Registry**:
+
+- `ghcr.io/atareao/watchbeat:latest` (rama `main`)
+- `ghcr.io/atareao/watchbeat:vX.Y.Z` (tags de versión)
+
+Arquitecturas soportadas en publicación automática:
+
+- `linux/amd64` (x86_64)
+- `linux/arm64` (Raspberry Pi 3/4/5 con SO de 64 bits)
+
+> ℹ️ Para Raspberry Pi, usa sistema operativo **64-bit**. En Raspberry Pi OS de 32 bits (`arm/v7`) esta imagen no está publicada oficialmente.
+
+Si el paquete es público, normalmente puedes hacer `docker pull` sin login. Si necesitas autenticación (paquete privado o políticas de tu organización):
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u TU_USUARIO_GITHUB --password-stdin
+```
+
+Para publicar desde GitHub Actions, el workflow usa `GITHUB_TOKEN` con permisos `packages: write` y `contents: read` (no requiere secretos adicionales para GHCR).
+
+Ejemplo en Raspberry Pi 64-bit:
+
+```bash
+docker pull ghcr.io/atareao/watchbeat:latest
+docker run -d --name watchbeat \
+  -p 3055:3055 \
+  -v watchbeat_data:/app/data \
+  -e OIDC_ISSUER_URL=https://auth.tudominio.com \
+  -e OIDC_CLIENT_ID=watchbeat \
+  -e OIDC_CLIENT_SECRET=secreto \
+  -e OIDC_REDIRECT_URL=https://watchbeat.tudominio.com/auth/callback \
+  ghcr.io/atareao/watchbeat:latest
+```
+
 ### Manual (sin Docker)
 
 ```bash
@@ -138,6 +174,19 @@ docker run -p 3055:3055 \
   -e OIDC_CLIENT_SECRET=secreto \
   -e OIDC_REDIRECT_URL=https://watchbeat.tudominio.com/auth/callback \
   watchbeat
+```
+
+### Build local por plataforma con Buildx
+
+```bash
+# Build local para tu daemon Docker (una plataforma)
+docker buildx build --platform linux/arm64 -t watchbeat:arm64 --load .
+
+# Build y push multi-arquitectura a un registry
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/atareao/watchbeat:dev \
+  --push .
 ```
 
 ### Desarrollo local
