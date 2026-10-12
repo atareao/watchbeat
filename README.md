@@ -43,6 +43,7 @@ Diseñado para ser **eficiente**: con 100 monitores estables, el backend escribe
 | **Plantillas** | Mensajes personalizables con Jinja2 para DOWN, UP, latencia y expiración de certificado |
 | **Certificados TLS** | Monitorización de expiración con alertas anticipadas |
 | **Status Pages** | Páginas públicas de estado eligiendo qué monitores mostrar |
+| **gethomepage** | Endpoint JSON para integrar el estado en dashboards (gethomepage, customapi) con API key opcional |
 | **Tiempo real** | Eventos SSE en vivo sobre el estado de los checks (sin polling) |
 | **Gráficas** | Timeline de uptime por monitor con buckets (6h, 12h, 24h, 7d, 15d, 30d, 3m, 6m, 1a) |
 | **Dashboard** | Estadísticas globales, búsqueda, filtros por tipo/estado, paginación |
@@ -475,6 +476,7 @@ watchbeat/
 | `GET` | `/auth/logout` | No | Cerrar sesión |
 | `GET` | `/api/events` | Token (query) | SSE — eventos en vivo de checks |
 | `GET` | `/status/{slug}` | No | Status page pública |
+| `GET` | `/status/{slug}/api.json` | No* | JSON público de la status page (integración gethomepage) — ver sección gethomepage |
 | `POST` | `/api/heartbeat/{token}` | No | Pulso de heartbeat |
 | `GET` | `/api/me` | JWT | Usuario actual |
 | `GET/POST` | `/api/monitors` | JWT | Listar / crear monitores (paginado, búsqueda, filtros) |
@@ -502,6 +504,99 @@ watchbeat/
 | `GET` | `/api/status` | JWT | Dashboard stats globales |
 
 > **Nota**: No hay endpoint `/metrics`. Prometheus fue eliminado en v0.12 porque nadie lo scrapeaba y consumía CPU cada 30s con queries a SQLite.
+
+> **Nota**: En la tabla anterior, la ruta `/status/{slug}/api.json` está marcada con `No*` porque es pública pero puede requerir una **API key opcional** (header `x-api-key` o query param `api_key`) — ver sección [gethomepage](#integración-con-gethomepage).
+
+---
+
+## 🏠 Integración con gethomepage
+
+WatchBeat expone un endpoint JSON público para que dashboards externos como [gethomepage](https://gethomepage.dev/) (widget `customapi`) lean el estado y el uptime de los monitores de una status page, con polling simple.
+
+### Crear la status page
+
+1. Ve a **Settings → Status Pages** en la interfaz.
+2. Crea una página con un slug (ej: `mi-slug`).
+3. Selecciona los monitores que quieras mostrar.
+4. Marca la página como **pública** (`public: true`). Solo las páginas públicas se sirven por este endpoint; una página privada o inexistente devuelve `404` (indistinguible a propósito, no se filtra nada).
+
+### Configurar la API key (opcional)
+
+El endpoint es público por defecto. Para protegerlo, configura la setting `homepage_api_key`:
+
+- Desde la interfaz: **Settings → Ajustes**.
+- O por API: `POST /api/settings` con la clave `homepage_api_key`.
+
+Una vez configurada, cada petición debe llevarla mediante el header `x-api-key` o el query param `?api_key=...`. Si falta o es incorrecta → `401`. Si la setting está vacía → sin autenticación, totalmente público. **La API key no exime de `public: true`**: si la página es privada, el endpoint sigue devolviendo `404` aunque la key sea correcta.
+
+### Endpoint
+
+`GET /status/{slug}/api.json`
+
+| Respuesta | Significado |
+|---|---|
+| `200` | Status page pública servida (con o sin API key según configuración) |
+| `404` | Página inexistente o privada (indistinguible) |
+| `401` | API key configurada y ausente/incorrecta |
+
+Ejemplo de respuesta:
+
+```json
+{
+  "status": "up",
+  "title": "Mi Estado",
+  "updated_at": "2026-10-12T10:05:00+00:00",
+  "monitors": [
+    {
+      "id": "m1",
+      "name": "Mi web",
+      "target": "https://ejemplo.com",
+      "status": "up",
+      "response_time_ms": 120,
+      "uptime_7d": 99.5,
+      "uptime_30d": 98.2,
+      "last_checked_at": "2026-10-12T10:00:00+00:00"
+    }
+  ]
+}
+```
+
+- `status` global: `"down"` si algún monitor listado está down, `"up"` si todos están up y hay al menos uno, y `"unknown"` si no hay estado conocido.
+- `monitors` solo incluye los monitores elegidos al crear la status page (`page.monitors`).
+
+### Widget customapi de gethomepage
+
+```yaml
+widget:
+  type: customapi
+  url: https://watchbeat.tudominio.com/status/mi-slug/api.json
+  refreshInterval: 30000
+  # headers:
+  #   x-api-key: tu-key   # solo si configuraste homepage_api_key
+  mappings:
+    - field: status
+      label: Estado
+```
+
+Para listar cada monitor en un widget, usa `display: dynamic-list` con `items: monitors`:
+
+```yaml
+widget:
+  type: customapi
+  url: https://watchbeat.tudominio.com/status/mi-slug/api.json
+  refreshInterval: 30000
+  display: dynamic-list
+  items: monitors
+  mappings:
+    - field: name
+      label: Nombre
+    - field: status
+      label: Estado
+    - field: uptime_30d
+      label: Uptime 30d
+    - field: response_time_ms
+      label: Latencia
+```
 
 ---
 
