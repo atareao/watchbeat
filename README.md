@@ -37,7 +37,7 @@ Diseñado para ser **eficiente**: con 100 monitores estables, el backend escribe
 |---|---|
 | **Checkers** | HTTP(S), TCP, Ping, TLS/SSL |
 | **Heartbeats** | Monitores que esperan un pulso periódico desde un servicio (push) |
-| **Notificaciones** | 8 canales: Telegram, Matrix, ntfy, Webhook, Slack, Discord, Email (SMTP), Gotify |
+| **Notificaciones** | 9 canales: Telegram, Matrix, ntfy, Webhook, Slack, Discord, Email (SMTP), Gotify, Valet |
 | **Autenticación** | OIDC obligatorio (Authentik, Keycloak, Authelia, Google, Azure AD, etc.) |
 | **Alertas inteligentes** | Confirmaciones configurables antes de marcar DOWN, umbrales de latencia |
 | **Plantillas** | Mensajes personalizables con Jinja2 para DOWN, UP, latencia y expiración de certificado |
@@ -342,6 +342,7 @@ Los heartbeats son monitores que esperan un pulso HTTP desde tu servicio:
 | **Discord** | Discord Webhook | `webhook_url` |
 | **Email** | SMTP | `smtp_host`, `smtp_port`, `username`, `password`, `from`, `to` |
 | **Gotify** | Gotify self-hosted | `server_url`, `app_token`, `priority` (opcional) |
+| **Valet** | Valet Notifications API | `base_url`, `ingest_token`, `origin` (opcional) |
 
 Cada monitor puede tener múltiples notificadores asociados (relación many-to-many).
 
@@ -428,8 +429,8 @@ watchbeat/
 │   │   ├── template.rs         # Motor de plantillas Jinja2 + defaults
 │   │   ├── scheduler.rs        # SchedulerManager + per-monitor tokio timers
 │   │   ├── checker/            # HTTP, TCP, Ping, TLS checkers
-│   │   ├── notifier/           # 8 tipos: telegram, matrix, ntfy, webhook,
-│   │   │                       #   slack, discord, email, gotify
+│   │   ├── notifier/           # 9 tipos: telegram, matrix, ntfy, webhook,
+│   │   │                       #   slack, discord, email, gotify, valet
 │   │   └── routes/             # 11 módulos de rutas
 │   │       ├── auth_routes.rs  # Login/logout/callback OIDC
 │   │       ├── monitors.rs     # CRUD + toggle + run check

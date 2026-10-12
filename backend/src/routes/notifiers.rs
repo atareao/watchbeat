@@ -354,6 +354,33 @@ async fn send_test_notification(notifier: &Notifier) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())
         }
+        "valet" => {
+            let base_url = notifier
+                .config_json
+                .get("base_url")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing base_url in notifier config")?;
+            let ingest_token = notifier
+                .config_json
+                .get("ingest_token")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing ingest_token in notifier config")?;
+            let origin = notifier
+                .config_json
+                .get("origin")
+                .and_then(|v| v.as_str())
+                .unwrap_or("WatchBeat");
+            crate::notifier::valet::send_valet_notification(
+                base_url,
+                ingest_token,
+                origin,
+                "WatchBeat",
+                "info",
+                "Test notification from WatchBeat",
+            )
+            .await
+            .map_err(|e| e.to_string())
+        }
         _ => Err(format!(
             "Unsupported notifier type: {}",
             notifier.notifier_type
