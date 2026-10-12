@@ -43,7 +43,7 @@ Diseñado para ser **eficiente**: con 100 monitores estables, el backend escribe
 | **Plantillas** | Mensajes personalizables con Jinja2 para DOWN, UP, latencia y expiración de certificado |
 | **Certificados TLS** | Monitorización de expiración con alertas anticipadas |
 | **Status Pages** | Páginas públicas de estado eligiendo qué monitores mostrar |
-| **gethomepage** | Endpoint JSON para integrar el estado en dashboards (gethomepage, customapi) con API key opcional |
+| **gethomepage** | Endpoint JSON para integrar el estado en dashboards (gethomepage, customapi) con API keys múltiples gestionables desde la UI |
 | **Tiempo real** | Eventos SSE en vivo sobre el estado de los checks (sin polling) |
 | **Gráficas** | Timeline de uptime por monitor con buckets (6h, 12h, 24h, 7d, 15d, 30d, 3m, 6m, 1a) |
 | **Dashboard** | Estadísticas globales, búsqueda, filtros por tipo/estado, paginación |
@@ -505,7 +505,7 @@ watchbeat/
 
 > **Nota**: No hay endpoint `/metrics`. Prometheus fue eliminado en v0.12 porque nadie lo scrapeaba y consumía CPU cada 30s con queries a SQLite.
 
-> **Nota**: En la tabla anterior, la ruta `/status/{slug}/api.json` está marcada con `No*` porque es pública pero puede requerir una **API key opcional** (header `x-api-key` o query param `api_key`) — ver sección [gethomepage](#integración-con-gethomepage).
+> **Nota**: En la tabla anterior, la ruta `/status/{slug}/api.json` está marcada con `No*` porque es pública si no hay ninguna API key configurada, pero puede requerir una de tus **API keys** (header `x-api-key` o query param `api_key`) cuando hay al menos una creada — ver sección [gethomepage](#integración-con-gethomepage).
 
 ---
 
@@ -520,14 +520,21 @@ WatchBeat expone un endpoint JSON público para que dashboards externos como [ge
 3. Selecciona los monitores que quieras mostrar.
 4. Marca la página como **pública** (`public: true`). Solo las páginas públicas se sirven por este endpoint; una página privada o inexistente devuelve `404` (indistinguible a propósito, no se filtra nada).
 
-### Configurar la API key (opcional)
+### Configurar las API keys (opcional)
 
-El endpoint es público por defecto. Para protegerlo, configura la setting `homepage_api_key`:
+El endpoint es público por defecto, pero puedes protegerlo creando una o más **API keys** desde la interfaz:
 
-- Desde la interfaz: **Settings → Ajustes**.
-- O por API: `POST /api/settings` con la clave `homepage_api_key`.
+1. Ve a **Settings → API Keys** (nueva pestaña en Ajustes, bajo el icono de llave).
+2. Añade una key introduciendo solo el **nombre** (palabra clave, p. ej. el nombre de la app consumidora). El nombre debe ser único y no vacío.
+3. El servidor genera automáticamente una clave secreta en formato **UUID** (única e inmutable). **Cópiala una única vez al crearla** porque no se puede volver a consultar; solo el nombre es editable.
+4. Desde esa misma sección puedes **editar** el nombre de una key existente, o **eliminarla**.
 
-Una vez configurada, cada petición debe llevarla mediante el header `x-api-key` o el query param `?api_key=...`. Si falta o es incorrecta → `401`. Si la setting está vacía → sin autenticación, totalmente público. **La API key no exime de `public: true`**: si la página es privada, el endpoint sigue devolviendo `404` aunque la key sea correcta.
+El comportamiento del endpoint según las keys configuradas:
+
+- **0 API keys** → el endpoint es totalmente público, sin autenticación.
+- **1 o más API keys** → cada petición debe presentar una de las keys válidas mediante el header `x-api-key` (prioridad) o el query param `?api_key=...`. Si la key falta o no coincide con ninguna → `401`.
+
+**La API key no exime de `public: true`**: si la página es privada, el endpoint sigue devolviendo `404` aunque la key sea correcta.
 
 ### Endpoint
 
@@ -572,7 +579,7 @@ widget:
   url: https://watchbeat.tudominio.com/status/mi-slug/api.json
   refreshInterval: 30000
   # headers:
-  #   x-api-key: tu-key   # solo si configuraste homepage_api_key
+  #   x-api-key: <el-UUID-de-tu-api-key>   # solo si has creado al menos una API key en Settings → API Keys
   mappings:
     - field: status
       label: Estado
