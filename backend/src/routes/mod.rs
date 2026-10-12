@@ -29,6 +29,10 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         .route("/auth/callback", routing::get(auth_routes::callback))
         .route("/auth/logout", routing::get(auth_routes::logout))
         .route("/status/{slug}", routing::get(status_pages::public_page))
+        .route(
+            "/status/{slug}/api.json",
+            routing::get(status_pages::public_page_json),
+        )
         .route("/api/heartbeat/{token}", routing::post(heartbeats::ping));
 
     let events_route = Router::new().route("/api/events", routing::get(sse_handler));
