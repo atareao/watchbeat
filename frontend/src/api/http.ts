@@ -1,5 +1,17 @@
 import { getToken, clearToken } from "../store/auth";
 
+/** Error raised by the fetcher when the server returns a non-OK status.
+ * Carries the HTTP status code so callers can branch on it (e.g. 409, 400). */
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export interface User {
   sub: string;
   email?: string;
@@ -114,7 +126,8 @@ async function fetcher<T>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "unknown error");
-    throw new Error(`HTTP ${res.status}: ${text}`);
+    const err = new ApiError(`HTTP ${res.status}: ${text}`, res.status);
+    throw err;
   }
 
   if (res.status === 204) return undefined as T;
@@ -307,6 +320,35 @@ export async function updateStatusPage(
 
 export async function deleteStatusPage(id: string): Promise<void> {
   return fetcher(`/api/status-pages/${id}`, { method: "DELETE" });
+}
+
+// ───── API Keys ─────
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  api_key: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchApiKeys(): Promise<{ api_keys: ApiKey[] }> {
+  return fetcher("/api/api-keys");
+}
+
+export async function createApiKey(data: { name: string }): Promise<ApiKey> {
+  return fetcher<ApiKey>("/api/api-keys", { method: "POST", body: data });
+}
+
+export async function updateApiKey(
+  id: string,
+  data: { name: string },
+): Promise<ApiKey> {
+  return fetcher<ApiKey>(`/api/api-keys/${id}`, { method: "PUT", body: data });
+}
+
+export async function deleteApiKey(id: string): Promise<void> {
+  return fetcher(`/api/api-keys/${id}`, { method: "DELETE" });
 }
 
 // ───── Settings ─────

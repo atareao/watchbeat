@@ -245,9 +245,9 @@ pub struct ApiKeyQuery {
 
 // ───── Public JSON endpoint (no auth) — `GET /status/{slug}/api.json` ─────
 // Consumido por gethomepage (widget `customapi`) y otros agregadores.
-// API key opcional: si el setting `homepage_api_key` está vacío → público;
-// si está definido, la request debe presentarlo vía header `x-api-key` o
-// query `api_key`. Una página inexistente o privada nunca se revela (404),
+// API key opcional: si no hay keys configuradas (tabla `api_keys`) → público;
+// si hay alguna, la request debe presentar una de ellas vía header `x-api-key`
+// o query `api_key`. Una página inexistente o privada nunca se revela (404),
 // aunque la key sea correcta.
 
 pub async fn public_page_json(
@@ -276,18 +276,14 @@ pub async fn public_page_json(
         .as_ref()
         .expect("page_access() == true guarantees Some(&public StatusPage)");
 
-    // API key opcional configurada en settings.
-    let api_key = state
-        .db
-        .get_setting("homepage_api_key")
-        .await
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
+    // API keys opcionales configuradas (conjunto en tabla `api_keys`).
+    let keys = state.db.list_api_keys().await.map_err(|e| e.to_string())?;
+    let api_keys: Vec<String> = keys.iter().map(|k| k.api_key.clone()).collect();
 
     // Extraer key de header `x-api-key` o query `api_key` (header prioritario).
     let provided = extract_api_key(&headers, &query);
 
-    if !api_key_authorized(&api_key, provided.as_deref()) {
+    if !any_key_matches(&api_keys, provided.as_deref()) {
         return Ok(axum::response::Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header("Content-Type", "text/plain")
@@ -365,16 +361,12 @@ fn extract_api_key(headers: &HeaderMap, query: &ApiKeyQuery) -> Option<String> {
         .or_else(|| query.api_key.clone())
 }
 
-/// Autoriza una request contra el API key opcional configurado
-/// (`homepage_api_key`). Si el setting está vacío/ausente → público.
-/// Si está definido, la request debe presentar la key que coincide con
-/// `provided` (extraído del header `x-api-key` o del query `api_key`).
+/// Autoriza una request contra un CONJUNTO de API keys configuradas.
+/// Devuelve `true` si `configured` está vacío (endpoint público) o si
+/// `provided` coincide (comparación constante-tiempo con sha2+subtle) con
+/// cualquiera de las keys.
 ///
-/// La comparación es constante-tiempo: se compara el SHA-256 de ambas
-/// cadenas con `subtle::ConstantTimeEq`, de modo que el timing no depende de
-/// la longitud ni de los bytes de la key.
-///
-fn api_key_authorized(configured: &str, provided: Option<&str>) -> bool {
+fn any_key_matches(configured: &[String], provided: Option<&str>) -> bool {
     if configured.is_empty() {
         return true;
     }
@@ -383,11 +375,17 @@ fn api_key_authorized(configured: &str, provided: Option<&str>) -> bool {
     };
 
     use sha2::{Digest, Sha256};
-    use subtle::ConstantTimeEq;
+    use subtle::{Choice, ConstantTimeEq};
 
-    let configured_digest = Sha256::digest(configured.as_bytes());
     let provided_digest = Sha256::digest(provided.as_bytes());
-    bool::from(configured_digest.ct_eq(&provided_digest))
+    // OR acumulativo sobre TODAS las keys: sin cortocircuito, para que el
+    // tiempo invertido no dependa de la posición de la key que coincide.
+    let mut matched = Choice::from(0u8);
+    for key in configured {
+        let configured_digest = Sha256::digest(key.as_bytes());
+        matched |= provided_digest.ct_eq(&configured_digest);
+    }
+    bool::from(matched)
 }
 
 /// Construye el payload JSON de la respuesta 200 del endpoint público.
@@ -561,8 +559,8 @@ mod tests {
     #[test]
     fn no_api_key_configured_allows_access() {
         assert!(
-            api_key_authorized("", None),
-            "sin api key configurada el endpoint debe ser público"
+            any_key_matches(&keys(&[]), None),
+            "sin api keys configuradas el endpoint debe ser público"
         );
     }
 
@@ -570,7 +568,8 @@ mod tests {
 
     #[test]
     fn configured_key_present_authorizes() {
-        assert!(api_key_authorized("secret", Some("secret")));
+        let configured = keys(&["secret"]);
+        assert!(any_key_matches(&configured, Some("secret")));
         // El header `x-api-key` y el query `api_key` se normalizan ambos
         // en `extract_api_key` antes de comparar: header con prioridad.
         let mut headers = HeaderMap::new();
@@ -583,7 +582,7 @@ mod tests {
             "header x-api-key se extrae"
         );
         assert!(
-            api_key_authorized("secret", provided.as_deref()),
+            any_key_matches(&configured, provided.as_deref()),
             "key vía header autoriza"
         );
 
@@ -599,7 +598,7 @@ mod tests {
             "query api_key se extrae"
         );
         assert!(
-            api_key_authorized("secret", provided.as_deref()),
+            any_key_matches(&configured, provided.as_deref()),
             "key vía query autoriza"
         );
     }
@@ -648,12 +647,12 @@ mod tests {
 
     #[test]
     fn configured_key_missing_rejects() {
-        assert!(!api_key_authorized("secret", None));
+        assert!(!any_key_matches(&keys(&["secret"]), None));
     }
 
     #[test]
     fn configured_key_wrong_rejects() {
-        assert!(!api_key_authorized("secret", Some("wrong")));
+        assert!(!any_key_matches(&keys(&["secret"]), Some("wrong")));
     }
 
     // ── Scenario 8: API key no exime de page pública ──
@@ -667,10 +666,54 @@ mod tests {
         );
         // Y la combinación handler (acceso negado aunque key válida) no se sirve:
         let served =
-            api_key_authorized("secret", Some("secret")) && page_access(Some(&page(false)));
+            any_key_matches(&keys(&["secret"]), Some("secret")) && page_access(Some(&page(false)));
         assert!(
             !served,
             "page privada + key correcta debe seguir devolviendo 404"
+        );
+    }
+
+    // ── Scenario 9: conjunto de API keys (feature: api-keys) ──
+    // `any_key_matches` valida la request contra un CONJUNTO de keys.
+
+    fn keys(ks: &[&str]) -> Vec<String> {
+        ks.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn any_key_matches_empty_set_is_public() {
+        // Sin keys configuradas → endpoint público.
+        assert!(any_key_matches(&keys(&[]), None));
+        assert!(any_key_matches(&keys(&[]), Some("anything")));
+    }
+
+    #[test]
+    fn any_key_matches_accepts_a_matching_key() {
+        let configured = keys(&["k-alpha", "k-beta"]);
+        assert!(
+            any_key_matches(&configured, Some("k-beta")),
+            "una key del conjunto debe autorizar"
+        );
+        assert!(
+            any_key_matches(&configured, Some("k-alpha")),
+            "cualquier key del conjunto debe autorizar"
+        );
+    }
+
+    #[test]
+    fn any_key_matches_rejects_absent_or_wrong_key() {
+        let configured = keys(&["k-alpha"]);
+        assert!(
+            !any_key_matches(&configured, None),
+            "sin key presentada no debe autorizarse"
+        );
+        assert!(
+            !any_key_matches(&configured, Some("wrong")),
+            "una key fuera del conjunto no debe autorizarse"
+        );
+        assert!(
+            !any_key_matches(&configured, Some("")),
+            "una key vacía no debe autorizarse"
         );
     }
 }

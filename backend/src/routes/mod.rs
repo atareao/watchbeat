@@ -10,6 +10,7 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth::AppState;
 
+pub mod api_keys;
 pub mod auth_routes;
 pub mod backup;
 pub mod checks;
@@ -88,7 +89,15 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             "/api/settings",
             routing::get(settings::get_setting_query).post(settings::set_setting),
         )
-        .route("/api/status", routing::get(status::dashboard));
+        .route("/api/status", routing::get(status::dashboard))
+        .route(
+            "/api/api-keys",
+            routing::get(api_keys::list).post(api_keys::create),
+        )
+        .route(
+            "/api/api-keys/{id}",
+            routing::put(api_keys::update).delete(api_keys::delete),
+        );
 
     public.merge(events_route).merge(protected)
 }
