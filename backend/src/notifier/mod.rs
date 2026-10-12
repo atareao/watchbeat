@@ -9,6 +9,7 @@ pub mod matrix;
 pub mod ntfy;
 pub mod slack;
 pub mod telegram;
+pub mod valet;
 pub mod webhook;
 
 #[async_trait]
@@ -35,6 +36,7 @@ pub fn notifier_for(notifier: &Notifier) -> Option<Box<dyn NotifierTrait>> {
         "discord" => Some(Box::new(DiscordNotifier::new(notifier.config_json.clone()))),
         "email" => Some(Box::new(EmailNotifier::new(notifier.config_json.clone()))),
         "gotify" => Some(Box::new(GotifyNotifier::new(notifier.config_json.clone()))),
+        "valet" => Some(Box::new(ValetNotifier::new(notifier.config_json.clone()))),
         _ => None,
     }
 }
@@ -353,5 +355,55 @@ impl NotifierTrait for GotifyNotifier {
             .unwrap_or(5);
         crate::notifier::gotify::send_gotify_notification(server_url, app_token, priority, message)
             .await
+    }
+}
+
+// ───── Valet Notifier ─────
+
+pub struct ValetNotifier {
+    config: serde_json::Value,
+}
+
+impl ValetNotifier {
+    pub fn new(config: serde_json::Value) -> Self {
+        Self { config }
+    }
+}
+
+#[async_trait]
+impl NotifierTrait for ValetNotifier {
+    async fn notify(
+        &self,
+        monitor: &Monitor,
+        _check: &CheckResult,
+        _was_up: bool,
+        message: &str,
+    ) -> anyhow::Result<()> {
+        let base_url = self
+            .config
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing base_url in valet notifier config"))?;
+        let ingest_token = self
+            .config
+            .get("ingest_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing ingest_token in valet notifier config"))?;
+        let origin = self
+            .config
+            .get("origin")
+            .and_then(|v| v.as_str())
+            .unwrap_or("WatchBeat");
+        let author = &monitor.name;
+        let level = "info";
+        crate::notifier::valet::send_valet_notification(
+            base_url,
+            ingest_token,
+            origin,
+            author,
+            level,
+            message,
+        )
+        .await
     }
 }
