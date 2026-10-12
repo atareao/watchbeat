@@ -10,7 +10,11 @@ export interface CheckEvent {
   checked_at: string;
 }
 
-export type SseEvent = CheckEvent;
+export interface ResyncEvent {
+  type: 'resync';
+}
+
+export type SseEvent = CheckEvent | ResyncEvent;
 
 function getToken(): string | null {
   try {
@@ -22,18 +26,27 @@ function getToken(): string | null {
 
 /**
  * Hook that connects to the backend SSE endpoint /api/events?token=<jwt>
- * and calls onEvent for each parsed event.
- * Auto-reconnects on error/close after 5s delay.
+ * and calls onEvent for each parsed 'check' event and onResync for each
+ * 'resync' event.
+ * Auto-reconnects on error/close with exponential backoff
+ * (2000ms initial, doubling up to 30000ms max; resets on a valid message).
  * Cleans up on unmount.
  */
-export function useSse(onEvent: (event: SseEvent) => void): void {
+export function useSse(
+  onEvent: (event: CheckEvent) => void,
+  onResync?: () => void,
+): void {
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
+  const onResyncRef = useRef(onResync);
+  onResyncRef.current = onResync;
 
   useEffect(() => {
     let eventSource: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let destroyed = false;
+    // Exponential backoff state.
+    let attempt = 0;
 
     function connect() {
       if (destroyed) return;
@@ -45,11 +58,19 @@ export function useSse(onEvent: (event: SseEvent) => void): void {
 
       eventSource.onmessage = (msg) => {
         if (!msg.data) return;
+        // A valid, parseable message means the connection is alive: reset backoff.
+        let event: SseEvent;
         try {
-          const event = JSON.parse(msg.data) as SseEvent;
-          onEventRef.current(event);
+          event = JSON.parse(msg.data) as SseEvent;
         } catch {
           // ignore malformed JSON
+          return;
+        }
+        attempt = 0;
+        if (event.type === 'check') {
+          onEventRef.current(event);
+        } else if (event.type === 'resync' && onResyncRef.current) {
+          onResyncRef.current();
         }
       };
 
@@ -58,9 +79,10 @@ export function useSse(onEvent: (event: SseEvent) => void): void {
           eventSource.close();
           eventSource = null;
         }
-        if (!destroyed) {
-          reconnectTimer = setTimeout(connect, 5000);
-        }
+        if (destroyed) return;
+        const delay = Math.min(2000 * 2 ** attempt, 30000);
+        attempt += 1;
+        reconnectTimer = setTimeout(connect, delay);
       };
     }
 

@@ -29,6 +29,10 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         .route("/auth/callback", routing::get(auth_routes::callback))
         .route("/auth/logout", routing::get(auth_routes::logout))
         .route("/status/{slug}", routing::get(status_pages::public_page))
+        .route(
+            "/status/{slug}/api.json",
+            routing::get(status_pages::public_page_json),
+        )
         .route("/api/heartbeat/{token}", routing::post(heartbeats::ping));
 
     let events_route = Router::new().route("/api/events", routing::get(sse_handler));
@@ -138,10 +142,50 @@ pub async fn sse_handler(
     }
 
     let rx = state.event_tx.subscribe();
-    let stream = BroadcastStream::new(rx).map(|msg| match msg {
-        Ok(data) => Ok(Event::default().data(data)),
-        Err(_) => Ok(Event::default().data("")),
-    });
+    let stream = BroadcastStream::new(rx).map(|msg| Ok(Event::default().data(sse_payload(msg))));
 
     Ok(Sse::new(stream))
+}
+
+/// Maps an individual broadcast result into the SSE data payload (pure, testable).
+/// - `Ok(data)` → forwarded unchanged.
+/// - `Err(Lagged)` → `{"type":"resync"}` so connected clients know they missed
+///   events and should refresh their state. (BroadcastStream converts `Closed`
+///   into an end-of-stream, so no `Closed` arm is needed here.)
+fn sse_payload(
+    msg: Result<String, tokio_stream::wrappers::errors::BroadcastStreamRecvError>,
+) -> String {
+    match msg {
+        Ok(data) => data,
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_)) => {
+            "{\"type\":\"resync\"}".to_string()
+        }
+    }
+}
+
+// ──── Tests for SSE message mapping (pure function, no AppState needed) ─────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ok_data_is_forwarded_unchanged() {
+        let payload = sse_payload(Ok("{\"type\":\"check\"}".into()));
+        assert_eq!(
+            payload, "{\"type\":\"check\"}",
+            "Ok data must be forwarded unchanged"
+        );
+    }
+
+    #[test]
+    fn lagged_emits_resync_event() {
+        let payload = sse_payload(Err(
+            tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(3),
+        ));
+        assert_eq!(
+            payload, "{\"type\":\"resync\"}",
+            "Lagged must emit a resync event so clients refresh their state"
+        );
+    }
 }

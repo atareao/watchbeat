@@ -3277,7 +3277,7 @@ dependencies = [
 
 [[package]]
 name = "watchbeat"
-version = "0.11.1"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3303,6 +3303,7 @@ dependencies = [
  "sha1",
  "sha2 0.11.0",
  "sqlx",
+ "subtle",
  "tempfile",
  "tokio",
  "tokio-rustls",

@@ -321,6 +321,12 @@ pub(crate) async fn run_monitor_check(
     // Write to DB when status changes OR at least once per interval_secs (time-based sampling)
     let is_up = check.status == "up" || check.status == "warning";
     let status_changed = was_up != is_up;
+    // Heuristic for the first check of this monitor after task startup:
+    // monitor_task_inner initialises last_write_at to 0; the first check always
+    // writes to DB (time_elapsed from epoch >= interval_secs) which then updates
+    // last_write_at. So == 0 reliably means "first check of this run". We capture
+    // it here, BEFORE the DB write below overwrites last_write_at.
+    let is_first_check = *last_write_at == 0;
     let time_elapsed = now.timestamp() - *last_write_at;
 
     if status_changed || time_elapsed >= interval_secs as i64 {
@@ -335,8 +341,18 @@ pub(crate) async fn run_monitor_check(
         *last_write_at = now.timestamp();
     }
 
-    // SSE event: only allocate JSON if someone is listening
-    if event_tx.receiver_count() > 0 {
+    // Latency breach: emitted when a configured threshold is met (>=), independent
+    // of status change. Only evaluated when the SSE block may run.
+    let latency_breach = monitor
+        .latency_threshold_ms
+        .is_some_and(|t| check.response_time_ms >= t);
+
+    // SSE event: only emit for RELEVANT events — the initial/first check of this
+    // monitor, a status change, or a latency breach. A stable monitor (status
+    // unchanged, latency within threshold) emits only the initial event, not one
+    // per check. Receiver count is checked BEFORE serializing (zero-alloc when
+    // nobody is listening). DB persistence (time-based sampling above) is untouched.
+    if event_tx.receiver_count() > 0 && (is_first_check || status_changed || latency_breach) {
         let event = serde_json::json!({
             "type": "check",
             "monitor_id": monitor.id,
@@ -937,5 +953,193 @@ mod tests {
         );
         assert_eq!(checks[0].status, "down");
         assert_eq!(checks[1].status, "up");
+    }
+
+    // ──── RED tests: SSE emission restricted to relevant events ─────
+
+    /// Checker that always reports UP with a response time over any typical latency
+    /// threshold (used to prove latency breaches emit SSE events).
+    struct LatencyUpChecker;
+    #[async_trait]
+    impl Checker for LatencyUpChecker {
+        async fn check(&self, _monitor: &Monitor) -> CheckOutcome {
+            CheckOutcome {
+                status: "up".into(),
+                status_code: Some(200),
+                response_time_ms: 200,
+                error_message: None,
+                tls: None,
+            }
+        }
+    }
+
+    /// Drains all buffered SSE events from a broadcast receiver (non-blocking).
+    async fn drain_events(rx: &mut broadcast::Receiver<String>) -> Vec<String> {
+        let mut out = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                Ok(Ok(s)) => out.push(s),
+                // Preserve any lagged events; receiver is fast enough we shouldn't lag.
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                _ => break,
+            }
+        }
+        out
+    }
+
+    /// A stable monitor (status unchanged, no latency breach) must emit ONLY the
+    /// initial/first SSE event, not one per subsequent check.
+    #[tokio::test]
+    async fn test_stable_monitor_emits_only_initial_sse_event() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-sse-stable"))
+            .await
+            .unwrap();
+
+        let checker = AlwaysUpChecker;
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let (event_tx, mut rx) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec![];
+        let interval_secs: u64 = 60;
+        let mut was_up = true;
+        let mut last_write_at: i64 = 0;
+
+        for _ in 1..=3 {
+            was_up = run_monitor_check(
+                &db,
+                &sample_monitor("m-sse-stable"),
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&checker),
+                was_up,
+                &notifier_ids,
+                &mut last_write_at,
+                interval_secs,
+            )
+            .await;
+        }
+
+        let events = drain_events(&mut rx).await;
+        assert_eq!(
+            events.len(),
+            1,
+            "Stable monitor should emit only the initial SSE event (got {:?})",
+            events
+        );
+    }
+
+    /// A status change (UP→DOWN) must emit an SSE event. Stable checks before it
+    /// must NOT emit extra events: total = 1 initial + 1 status change = 2.
+    #[tokio::test]
+    async fn test_status_change_emits_sse_event() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-sse-status"))
+            .await
+            .unwrap();
+
+        let up_checker = AlwaysUpChecker;
+        let down_checker = AlwaysDownChecker;
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let (event_tx, mut rx) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec![];
+        let interval_secs: u64 = 60;
+        let mut was_up = true;
+        let mut last_write_at: i64 = 0;
+
+        // Check 1: UP (initial event)
+        was_up = run_monitor_check(
+            &db,
+            &sample_monitor("m-sse-status"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&up_checker),
+            was_up,
+            &notifier_ids,
+            &mut last_write_at,
+            interval_secs,
+        )
+        .await;
+        // Check 2: UP again (stable — must NOT emit)
+        was_up = run_monitor_check(
+            &db,
+            &sample_monitor("m-sse-status"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&up_checker),
+            was_up,
+            &notifier_ids,
+            &mut last_write_at,
+            interval_secs,
+        )
+        .await;
+        // Check 3: DOWN (status change → must emit)
+        run_monitor_check(
+            &db,
+            &sample_monitor("m-sse-status"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&down_checker),
+            was_up,
+            &notifier_ids,
+            &mut last_write_at,
+            interval_secs,
+        )
+        .await;
+
+        let events = drain_events(&mut rx).await;
+        assert_eq!(
+            events.len(),
+            2,
+            "Status change should emit initial + change = 2 events (got {:?})",
+            events
+        );
+    }
+
+    /// Every check that breaches the latency threshold must emit an SSE event.
+    #[tokio::test]
+    async fn test_latency_breach_emits_sse_event() {
+        let (db, _dir) = setup_db().await;
+        let mut mon = sample_monitor("m-sse-lat");
+        mon.latency_threshold_ms = Some(100);
+        db.create_monitor(&mon).await.unwrap();
+
+        let checker = LatencyUpChecker;
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let (event_tx, mut rx) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec![];
+        let interval_secs: u64 = 60;
+        let mut was_up = true;
+        let mut last_write_at: i64 = 0;
+
+        for _ in 1..=3 {
+            was_up = run_monitor_check(
+                &db,
+                &mon,
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&checker),
+                was_up,
+                &notifier_ids,
+                &mut last_write_at,
+                interval_secs,
+            )
+            .await;
+        }
+
+        let events = drain_events(&mut rx).await;
+        assert_eq!(
+            events.len(),
+            3,
+            "Every latency-breaching check should emit an SSE event (got {:?})",
+            events
+        );
     }
 }
