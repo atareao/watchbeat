@@ -4,14 +4,16 @@ import {
 } from 'antd';
 import {
   SettingOutlined, DownloadOutlined, FileTextOutlined, SaveOutlined, WarningOutlined,
-  BellOutlined, ControlOutlined, PlusOutlined, ReloadOutlined, LinkOutlined,
+  BellOutlined, ControlOutlined, PlusOutlined, ReloadOutlined, LinkOutlined, KeyOutlined,
+  EyeOutlined, EyeInvisibleOutlined, CopyOutlined,
 } from '@ant-design/icons';
 import {
   fetchStatus, fetchSetting, saveSetting, createBackup,
   fetchNotifiers, createNotifier, updateNotifier, deleteNotifier, testNotifier,
   fetchStatusPages, createStatusPage, updateStatusPage, deleteStatusPage, fetchMonitors,
+  fetchApiKeys, createApiKey, updateApiKey, deleteApiKey,
   exportConfig, importConfig,
-  type Notifier, type StatusPage, type ExportPayload,
+  type Notifier, type StatusPage, type ExportPayload, type ApiKey,
 } from '../api/http';
 
 const { Title, Text, Paragraph } = Typography;
@@ -78,6 +80,20 @@ const CONFIG_FIELDS: Record<string, ConfigField[]> = {
   ],
 };
 
+/** Copy text to the clipboard with a fallback for non-secure contexts
+ * (e.g. plain http in dev) where navigator.clipboard is unavailable. */
+const copyText = async (text: string): Promise<boolean> => {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+};
+
 export default function Settings() {
   // ── General state ──
   const [retentionDays, setRetentionDays] = useState(30);
@@ -102,6 +118,19 @@ export default function Settings() {
   const [editingSpId, setEditingSpId] = useState<string | null>(null);
   const [spForm] = Form.useForm();
 
+  // ── API keys state ──
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
+  const [apiLoading, setApiLoading] = useState(false);
+  const [apiModal, setApiModal] = useState(false);
+  const [editingApiId, setEditingApiId] = useState<string | null>(null);
+  const [apiReveal, setApiReveal] = useState<string | null>(null);
+  const [apiSaving, setApiSaving] = useState(false);
+  const [lastCreated, setLastCreated] = useState<ApiKey | null>(null);
+  const [activeTab, setActiveTab] = useState('retention');
+  const [apiForm] = Form.useForm();
+  const apiKeysLoadedRef = useRef(false);
+  const mountedRef = useRef(true);
+
   // ── Export / Import state ──
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -122,6 +151,21 @@ export default function Settings() {
       setDefaultTemplates({ down: down?.value || '', latency: latency?.value || '', up: up?.value || '', expiry: expiry?.value || '' });
     }).catch(() => {});
   }, []);
+
+  // Guard against setState after unmount
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  // Auto-expire API key reveal after ~30s if not manually hidden
+  useEffect(() => {
+    if (!apiReveal) return;
+    const t = setTimeout(() => {
+      setApiReveal((cur) => (cur === apiReveal ? null : cur));
+    }, 30000);
+    return () => clearTimeout(t);
+  }, [apiReveal]);
 
   // ── Handlers: general ──
   const saveRetention = async () => {
@@ -223,6 +267,81 @@ export default function Settings() {
   };
 
   const deleteStatusPage = async (id: string) => { try { await deleteStatusPage(id); message.success('Eliminada'); loadStatusPages(); } catch { message.error('Error'); } };
+
+  // ── Handlers: api keys ──
+
+  const loadApiKeys = () => {
+    setApiLoading(true);
+    fetchApiKeys()
+      .then(d => { if (mountedRef.current) setApiKeys(d.api_keys); })
+      .catch((e: any) => { if (mountedRef.current) message.error(e.message); })
+      .finally(() => { if (mountedRef.current) setApiLoading(false); });
+  };
+
+  // Lazy-load API keys only the first time the tab is opened
+  useEffect(() => {
+    if (activeTab === 'api-keys' && !apiKeysLoadedRef.current) {
+      apiKeysLoadedRef.current = true;
+      loadApiKeys();
+    }
+  }, [activeTab]);
+
+  const openApiCreate = () => {
+    setEditingApiId(null);
+    setApiReveal(null);
+    setLastCreated(null);
+    apiForm.resetFields();
+    setApiModal(true);
+  };
+
+  const openApiEdit = (k: ApiKey) => {
+    setEditingApiId(k.id);
+    setApiReveal(null);
+    setLastCreated(null);
+    apiForm.setFieldsValue({ name: k.name });
+    setApiModal(true);
+  };
+
+  const saveApiKey = async () => {
+    setApiSaving(true);
+    try {
+      const values = await apiForm.validateFields();
+      if (editingApiId) {
+        await updateApiKey(editingApiId, { name: values.name });
+        message.success('API key actualizada');
+        setApiModal(false);
+        loadApiKeys();
+      } else {
+        const created = await createApiKey({ name: values.name });
+        // Keep the modal open so the secret stays visible until the user closes it.
+        setLastCreated(created);
+        setApiReveal(created.id);
+        const ok = await copyText(created.api_key);
+        if (ok) message.success('API key creada. Secreto copiado al portapapeles');
+        else message.warning('API key creada. Copia el secreto ahora (se muestra abajo), no se volverá a mostrar');
+      }
+    } catch (err: any) {
+      if (err?.errorFields) return;
+      if (err?.status === 409) message.error('Ya existe una API key con ese nombre');
+      else if (err?.status === 400) message.error('El nombre no puede estar vacío');
+      else message.error(err?.message ?? 'Error al guardar');
+    } finally {
+      setApiSaving(false);
+    }
+  };
+
+  const closeApiModal = () => { setApiModal(false); loadApiKeys(); };
+
+  const deleteApiKeyAction = async (id: string) => {
+    setApiReveal(null);
+    try { await deleteApiKey(id); message.success('Eliminada'); loadApiKeys(); } catch (e: any) { message.error(e.message); }
+  };
+
+  const copyApiKey = async (k: ApiKey) => {
+    const ok = await copyText(k.api_key);
+    if (ok) message.success('Copiada al portapapeles');
+    else message.error('No se pudo copiar');
+  };
 
   // ── Handlers: export / import ──
 
@@ -409,6 +528,45 @@ export default function Settings() {
         </Card>
       ),
     },
+    {
+      key: 'api-keys',
+      label: <><KeyOutlined /> API Keys</>,
+      children: (
+        <Card>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+            <Title level={4} style={{ margin: 0 }}>API Keys</Title>
+            <Space>
+              <Button icon={<ReloadOutlined />} onClick={loadApiKeys}>Recargar</Button>
+              <Button type="primary" icon={<PlusOutlined />} onClick={openApiCreate}>Añadir</Button>
+            </Space>
+          </div>
+          <Table dataSource={apiKeys} columns={[
+            { title: 'Nombre', dataIndex: 'name', key: 'name' },
+            {
+              title: 'API key', dataIndex: 'api_key', key: 'api_key',
+              render: (_: string, r: ApiKey) => {
+                const revealed = apiReveal === r.id;
+                const display = revealed ? r.api_key : `••••••••••••${r.api_key.slice(-6)}`;
+                return (
+                  <Space>
+                    <Text style={{ fontFamily: 'monospace' }}>{display}</Text>
+                    <Button size="small" type="text" icon={revealed ? <EyeInvisibleOutlined /> : <EyeOutlined />} onClick={() => setApiReveal(revealed ? null : r.id)} title={revealed ? 'Ocultar' : 'Mostrar'} aria-label={revealed ? 'Ocultar clave' : 'Mostrar clave'} />
+                    <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyApiKey(r)} title="Copiar" aria-label="Copiar clave" />
+                  </Space>
+                );
+              },
+            },
+            { title: 'Creada', dataIndex: 'created_at', key: 'created_at', render: (v: string) => v ? new Date(v).toLocaleString() : '—' },
+            { title: 'Acciones', key: 'actions', width: 160, render: (_: any, r: ApiKey) => (
+              <Space>
+                <Button size="small" onClick={() => openApiEdit(r)}>Editar</Button>
+                <Popconfirm title="¿Eliminar?" onConfirm={() => deleteApiKeyAction(r.id)}><Button size="small" danger>Eliminar</Button></Popconfirm>
+              </Space>
+            )},
+          ]} rowKey="id" loading={apiLoading} pagination={false} />
+        </Card>
+      ),
+    },
   ];
 
   const currentNotifFields = CONFIG_FIELDS[notifType] || [];
@@ -416,7 +574,7 @@ export default function Settings() {
   return (
     <div>
       <Title level={3}><SettingOutlined /> Ajustes</Title>
-      <Tabs items={tabItems} />
+      <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} />
 
       {/* Notifier modal */}
       <Modal title={editingNotifId ? 'Editar notificador' : 'Nuevo notificador'} open={notifModal} onOk={saveNotifier} onCancel={() => setNotifModal(false)} width={550} destroyOnClose>
@@ -442,6 +600,39 @@ export default function Settings() {
           <Form.Item name="description" label="Descripción"><Input.TextArea rows={2} /></Form.Item>
           <Form.Item name="monitors" label="Monitores"><Select mode="multiple" options={monitorOptions.map(m => ({ value: m.id, label: m.name }))} placeholder="Selecciona monitores" /></Form.Item>
           <Form.Item name="public" label="Pública" valuePropName="checked"><Switch /></Form.Item>
+        </Form>
+      </Modal>
+
+      {/* API key modal */}
+      <Modal title={editingApiId ? 'Editar API key' : 'Nueva API key'} open={apiModal} onOk={saveApiKey} onCancel={closeApiModal} confirmLoading={apiSaving} width={480} destroyOnClose>
+        <Form form={apiForm} layout="vertical">
+          <Form.Item name="name" label="Nombre" rules={[{ required: true, message: 'El nombre es obligatorio' }]}><Input placeholder="p.ej. script-de-backup" /></Form.Item>
+          {editingApiId && (
+            <Form.Item label="API key (inmutable)">
+              {(() => {
+                const current = apiKeys.find(k => k.id === editingApiId);
+                return current ? (
+                  <Space>
+                    <Text style={{ fontFamily: 'monospace' }}>{`••••••••••••${current.api_key.slice(-6)}`}</Text>
+                    <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyApiKey(current)} title="Copiar" aria-label="Copiar clave" />
+                  </Space>
+                ) : <Text type="secondary">—</Text>;
+              })()}
+            </Form.Item>
+          )}
+          {!editingApiId && lastCreated && (
+            <Form.Item label="Secret (cópialo ahora, solo se muestra una vez)">
+              <Space>
+                <Text style={{ fontFamily: 'monospace' }}>{lastCreated.api_key}</Text>
+                <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyApiKey(lastCreated)} title="Copiar" aria-label="Copiar clave" />
+              </Space>
+            </Form.Item>
+          )}
+          {!editingApiId && (
+            <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              El secreto se genera automáticamente y solo se mostrará una vez al crear.
+            </Paragraph>
+          )}
         </Form>
       </Modal>
     </div>

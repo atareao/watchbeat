@@ -34,21 +34,21 @@ When a request hits `GET /status/{slug}/api.json` for an existing **public** sta
 
 ### Requirement: API key opcional configurable
 
-The endpoint SHALL read a per-install API key from settings (key `homepage_api_key`). If that setting is defined and non-empty, every request to `GET /status/{slug}/api.json` SHALL be required to present it, either via the `x-api-key` header or the `?api_key=` query param; a missing or wrong key SHALL yield `401 Unauthorized`. If the setting is empty/absent, the endpoint SHALL behave as fully public for public status pages. The status page still must be public regardless of the API key. The API key SHALL be set via the existing protected settings endpoints (`POST /api/settings`) and stored in the existing `settings` table.
+The public endpoint `GET /status/{slug}/api.json` SHALL stop reading the `homepage_api_key` setting. Instead, it SHALL load all keys from the `api_keys` table: if the list is empty, the endpoint SHALL behave as fully public for public status pages; if one or more keys exist, the request SHALL present one of them via the `x-api-key` header (priority) or the `?api_key=` query param, and the presented value SHALL match (constant-time) ANY configured key; otherwise `401 Unauthorized`. The status page must still be `public: true` regardless of keys (private/non-existent → `404`). API keys SHALL be managed via the new protected `/api/api-keys` routes and stored in the `api_keys` table.
 
 #### Scenario: API key no configurada
-- **WHEN** the `homepage_api_key` setting is empty/absent and the page is public
+- **WHEN** the `api_keys` table is empty and the page is public
 - **THEN** any request to the JSON endpoint is served without authentication
 
 #### Scenario: API key configurada y presente
-- **WHEN** `homepage_api_key` is set and the request includes the matching key (`x-api-key` header or `api_key` query param)
+- **WHEN** one or more keys exist and the request includes a matching key (`x-api-key` header or `api_key` query param)
 - **THEN** the endpoint is served normally (page must still be public)
 
 #### Scenario: API key configurada y ausente/incorrecta
-- **WHEN** `homepage_api_key` is set and the request omits the key or sends a wrong one
+- **WHEN** at least one key exists and the request omits the key or sends one that matches no configured key
 - **THEN** the response is `401 Unauthorized`
 - **AND** no monitor data is returned
 
 #### Scenario: API key no exime de page pública
-- **WHEN** `homepage_api_key` is set and a request presents the correct key for a page with `public: false`
+- **WHEN** keys exist and a request presents a correct key for a page with `public: false`
 - **THEN** the response is still `404` (page not revealed)
