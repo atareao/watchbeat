@@ -29,6 +29,7 @@ const NOTIFIER_TYPES = [
   { value: 'discord', label: 'Discord' },
   { value: 'email', label: 'Email (SMTP)' },
   { value: 'gotify', label: 'Gotify' },
+  { value: 'valet', label: 'Valet' },
 ];
 
 type ConfigField = {
@@ -77,6 +78,11 @@ const CONFIG_FIELDS: Record<string, ConfigField[]> = {
     { name: 'server_url', label: 'Server URL', type: 'text', required: false, defaultValue: 'http://localhost:8080' },
     { name: 'app_token', label: 'App Token', type: 'password', required: true },
     { name: 'priority', label: 'Prioridad', type: 'number', required: false, defaultValue: 5 },
+  ],
+  valet: [
+    { name: 'base_url', label: 'Valet Base URL', type: 'text', required: true, defaultValue: 'http://valet:3000' },
+    { name: 'ingest_token', label: 'Ingest Token', type: 'password', required: true },
+    { name: 'origin', label: 'Origin (opcional)', type: 'text', required: false },
   ],
 };
 

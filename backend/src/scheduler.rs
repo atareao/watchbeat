@@ -433,7 +433,7 @@ pub(crate) async fn run_monitor_check(
     };
 
     // Send notification (using cached notifier_ids)
-    if let Some((_notif_type, message)) = notification_type {
+    if let Some((notif_type, message)) = notification_type {
         let mut ids = notifier_ids.to_vec();
         if ids.is_empty() {
             if let Some(ref nid) = monitor.notifier_id {
@@ -608,6 +608,36 @@ pub(crate) async fn run_monitor_check(
                             .await
                             {
                                 tracing::warn!("Scheduler: gotify notification failed: {}", e);
+                            }
+                        }
+                    }
+                    "valet" => {
+                        let base_url = notifier
+                            .config_json
+                            .get("base_url")
+                            .and_then(|v| v.as_str());
+                        let ingest_token = notifier
+                            .config_json
+                            .get("ingest_token")
+                            .and_then(|v| v.as_str());
+                        let origin = notifier
+                            .config_json
+                            .get("origin")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("WatchBeat");
+                        let author = &monitor.name;
+                        let level = match notif_type {
+                            "down" => "critical",
+                            "latency" | "expiry" => "warning",
+                            _ => "info",
+                        };
+                        if let (Some(i), Some(b)) = (ingest_token, base_url) {
+                            if let Err(e) = notifier::valet::send_valet_notification(
+                                b, i, origin, author, level, &message,
+                            )
+                            .await
+                            {
+                                tracing::warn!("Scheduler: valet notification failed: {}", e);
                             }
                         }
                     }
