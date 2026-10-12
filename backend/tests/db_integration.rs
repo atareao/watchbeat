@@ -488,3 +488,139 @@ async fn test_cleanup_old_checks() {
     assert_eq!(checks_after.len(), 1);
     assert_eq!(checks_after[0].status, "down");
 }
+
+// ───── API Keys (feature: api-keys) ─────
+// RED: los métodos de `Database` aún son stubs que devuelven `Err`, por lo que
+// estos tests fallan en runtime (RED) a la espera del GREEN phase.
+
+#[tokio::test]
+async fn test_create_and_list_api_keys() {
+    let (db, _dir) = setup_db().await;
+    db.create_api_key("ak-1", "ci-cd", "550e8400-e29b-41d4-a716-446655440000")
+        .await
+        .unwrap();
+    let keys = db.list_api_keys().await.unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].name, "ci-cd");
+    assert_eq!(
+        keys[0].api_key, "550e8400-e29b-41d4-a716-446655440000",
+        "el api_key UUID generado debe conservarse"
+    );
+}
+
+#[tokio::test]
+async fn test_create_api_key_duplicate_name_rejected() {
+    let (db, _dir) = setup_db().await;
+    db.create_api_key("ak-1", "ci-cd", "key-1").await.unwrap();
+    // Segundo key con el mismo `name` → debe fallar por unicidad
+    let res = db.create_api_key("ak-2", "ci-cd", "key-2").await;
+    assert!(
+        res.is_err(),
+        "un name duplicado debe generar un error de unicidad"
+    );
+    // La lista debe seguir teniendo solo la primera key
+    assert_eq!(db.list_api_keys().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_create_api_key_duplicate_api_key_rejected() {
+    let (db, _dir) = setup_db().await;
+    db.create_api_key("ak-1", "first", "dup-key").await.unwrap();
+    // Segundo key con el mismo `api_key` → debe fallar por unicidad
+    let res = db.create_api_key("ak-2", "second", "dup-key").await;
+    assert!(
+        res.is_err(),
+        "un api_key duplicado debe generar un error de unicidad"
+    );
+    assert_eq!(db.list_api_keys().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_update_api_key_name_preserves_secret() {
+    let (db, _dir) = setup_db().await;
+    db.create_api_key("ak-1", "ci-cd", "secret-key")
+        .await
+        .unwrap();
+    assert!(db.update_api_key_name("ak-1", "renamed").await.unwrap());
+    let key = db
+        .get_api_key_by_value("secret-key")
+        .await
+        .unwrap()
+        .expect("should exist");
+    assert_eq!(key.name, "renamed");
+    assert_eq!(
+        key.api_key, "secret-key",
+        "el api_key UUID NO debe cambiar al editar solo el nombre"
+    );
+}
+
+#[tokio::test]
+async fn test_update_api_key_name_duplicate_rejected() {
+    let (db, _dir) = setup_db().await;
+    db.create_api_key("ak-1", "ci-cd", "key-1").await.unwrap();
+    db.create_api_key("ak-2", "deploy", "key-2").await.unwrap();
+    // Renombrar ak-1 a un name ya usado por ak-2 → debe fallar
+    let res = db.update_api_key_name("ak-1", "deploy").await;
+    assert!(res.is_err(), "renombrar a un name duplicado debe fallar");
+}
+
+#[tokio::test]
+async fn test_update_api_key_name_nonexistent() {
+    let (db, _dir) = setup_db().await;
+    let res = db.update_api_key_name("no-such-id", "whatever").await;
+    assert!(
+        res.is_err() || !res.unwrap(),
+        "un id inexistente debe no-error o devolver false"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_api_key() {
+    let (db, _dir) = setup_db().await;
+    db.create_api_key("ak-1", "ci-cd", "secret-key")
+        .await
+        .unwrap();
+    assert!(db.delete_api_key("ak-1").await.unwrap());
+    assert_eq!(db.list_api_keys().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_get_api_key_by_value() {
+    let (db, _dir) = setup_db().await;
+    db.create_api_key("ak-1", "ci-cd", "550e8400-e29b-41d4-a716-446655440000")
+        .await
+        .unwrap();
+    let key = db
+        .get_api_key_by_value("550e8400-e29b-41d4-a716-446655440000")
+        .await
+        .unwrap()
+        .expect("debe devolver la key buscada");
+    assert_eq!(key.id, "ak-1");
+    assert_eq!(key.name, "ci-cd");
+}
+
+#[tokio::test]
+async fn test_get_api_key_by_value_missing() {
+    let (db, _dir) = setup_db().await;
+    assert!(
+        db.get_api_key_by_value("not-present")
+            .await
+            .unwrap()
+            .is_none(),
+        "un api_key inexistente debe devolver None"
+    );
+}
+
+#[tokio::test]
+async fn test_api_key_name_unique() {
+    let (db, _dir) = setup_db().await;
+    // Nombre libre → true
+    assert!(db.api_key_name_unique("free-name", None).await.unwrap());
+    db.create_api_key("ak-1", "ci-cd", "secret-key")
+        .await
+        .unwrap();
+    // Nombre duplicado (sin exclusion) → false
+    assert!(!db.api_key_name_unique("ci-cd", None).await.unwrap());
+    // Excluyendo el propio id → true (no se cuenta a sí mismo)
+    assert!(db.api_key_name_unique("ci-cd", Some("ak-1")).await.unwrap());
+}

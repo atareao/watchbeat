@@ -6,9 +6,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
 use crate::models::{
-    CheckResult, DashboardStatus, Monitor, MonitorRow, MonitorSummary, MonitorWithSummaryRow,
-    Notifier, NotifierRow, StatusPage, StatusPageRow, TimelineBucket, TimelinePoint,
-    TimelinePointRow,
+    ApiKey, ApiKeyRow, CheckResult, DashboardStatus, Monitor, MonitorRow, MonitorSummary,
+    MonitorWithSummaryRow, Notifier, NotifierRow, StatusPage, StatusPageRow, TimelineBucket,
+    TimelinePoint, TimelinePointRow,
 };
 
 #[derive(Clone)]
@@ -120,6 +120,14 @@ impl Database {
                 monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
                 notifier_id TEXT NOT NULL REFERENCES notifiers(id) ON DELETE CASCADE,
                 PRIMARY KEY (monitor_id, notifier_id)
+            )",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS api_keys (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, api_key TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             )",
         )
         .execute(&pool)
@@ -1316,6 +1324,94 @@ impl Database {
             .await
             .context("Failed to delete status page")?;
         Ok(rows.rows_affected() > 0)
+    }
+
+    // ───── API Keys (feature: api-keys) ─────
+
+    pub async fn list_api_keys(&self) -> Result<Vec<ApiKey>> {
+        let rows = sqlx::query_as::<_, ApiKeyRow>(
+            "SELECT id, name, api_key, created_at, updated_at FROM api_keys ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to list api keys")?;
+        Ok(rows.into_iter().map(ApiKey::from).collect())
+    }
+
+    pub async fn get_api_key(&self, id: &str) -> Result<Option<ApiKey>> {
+        let row = sqlx::query_as::<_, ApiKeyRow>(
+            "SELECT id, name, api_key, created_at, updated_at FROM api_keys WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("Failed to get api key")?;
+        Ok(row.map(ApiKey::from))
+    }
+
+    pub async fn create_api_key(&self, id: &str, name: &str, api_key: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO api_keys (id, name, api_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(api_key)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .context("Failed to create api key")?;
+        Ok(())
+    }
+
+    pub async fn update_api_key_name(&self, id: &str, name: &str) -> Result<bool> {
+        let now = Utc::now().to_rfc3339();
+        let rows = sqlx::query("UPDATE api_keys SET name=?, updated_at=? WHERE id=?")
+            .bind(name)
+            .bind(&now)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to update api key name")?;
+        Ok(rows.rows_affected() > 0)
+    }
+
+    pub async fn delete_api_key(&self, id: &str) -> Result<bool> {
+        let rows = sqlx::query("DELETE FROM api_keys WHERE id=?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete api key")?;
+        Ok(rows.rows_affected() > 0)
+    }
+
+    pub async fn get_api_key_by_value(&self, api_key: &str) -> Result<Option<ApiKey>> {
+        let row = sqlx::query_as::<_, ApiKeyRow>(
+            "SELECT id, name, api_key, created_at, updated_at FROM api_keys WHERE api_key=?",
+        )
+        .bind(api_key)
+        .fetch_optional(&self.pool)
+        .await
+        .context("Failed to get api key by value")?;
+        Ok(row.map(ApiKey::from))
+    }
+
+    pub async fn api_key_name_unique(&self, name: &str, exclude_id: Option<&str>) -> Result<bool> {
+        let count: i64 = match exclude_id {
+            Some(id) => sqlx::query_scalar("SELECT COUNT(*) FROM api_keys WHERE name=? AND id!=?")
+                .bind(name)
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await
+                .context("Failed to check api key name uniqueness")?,
+            None => sqlx::query_scalar("SELECT COUNT(*) FROM api_keys WHERE name=?")
+                .bind(name)
+                .fetch_one(&self.pool)
+                .await
+                .context("Failed to check api key name uniqueness")?,
+        };
+        Ok(count == 0)
     }
 
     // ───── Heartbeat pulse (public endpoint) ─────

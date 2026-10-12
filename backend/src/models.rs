@@ -176,6 +176,38 @@ impl From<StatusPageRow> for StatusPage {
     }
 }
 
+// ───── API Key (feature: api-keys) ─────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKey {
+    pub id: String,
+    pub name: String,
+    pub api_key: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ApiKeyRow {
+    pub id: String,
+    pub name: String,
+    pub api_key: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<ApiKeyRow> for ApiKey {
+    fn from(row: ApiKeyRow) -> Self {
+        ApiKey {
+            id: row.id,
+            name: row.name,
+            api_key: row.api_key,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
 // ───── DB row types (SQLx FromRow) ─────
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -633,5 +665,49 @@ mod tests {
         let json = serde_json::to_value(&notifier).unwrap();
         assert_eq!(json["type"], "telegram");
         assert!(json.get("notifier_type").is_none());
+    }
+
+    // ───── ApiKey ← ApiKeyRow conversion ─────
+
+    fn sample_api_key_row() -> ApiKeyRow {
+        ApiKeyRow {
+            id: "ak-1".into(),
+            name: "ci-cd".into(),
+            api_key: "550e8400-e29b-41d4-a716-446655440000".into(),
+            created_at: "2026-10-12T08:00:00+00:00".into(),
+            updated_at: "2026-10-12T08:00:00+00:00".into(),
+        }
+    }
+
+    #[test]
+    fn test_api_key_from_row_preserves_all_fields() {
+        let key: ApiKey = sample_api_key_row().into();
+        assert_eq!(key.id, "ak-1");
+        assert_eq!(key.name, "ci-cd");
+        assert_eq!(
+            key.api_key, "550e8400-e29b-41d4-a716-446655440000",
+            "el api_key UUID debe conservarse intacto en la conversión"
+        );
+        assert_eq!(key.created_at, "2026-10-12T08:00:00+00:00");
+        assert_eq!(key.updated_at, "2026-10-12T08:00:00+00:00");
+    }
+
+    #[test]
+    fn test_api_key_from_row_roundtrip_name() {
+        let key: ApiKey = sample_api_key_row().into();
+        assert_eq!(key.name, "ci-cd", "el nombre debe conservarse");
+    }
+
+    #[test]
+    fn test_api_key_from_row_roundtrip_secret() {
+        let row = ApiKeyRow {
+            api_key: "9d2c7a1f-4c3e-4b1a-8f6d-0123456789ab".into(),
+            ..sample_api_key_row()
+        };
+        let key: ApiKey = row.into();
+        assert_eq!(
+            key.api_key, "9d2c7a1f-4c3e-4b1a-8f6d-0123456789ab",
+            "el api_key secreto debe conservarse intacto"
+        );
     }
 }
