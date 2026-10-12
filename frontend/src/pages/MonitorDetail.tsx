@@ -41,7 +41,7 @@ import {
   type CheckResult,
   type TimelineBucket,
 } from "../api/http";
-import { useSse, type CheckEvent } from "../hooks/useSse";
+import { useSse } from "../hooks/useSse";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 import "dayjs/locale/es";
@@ -836,45 +836,82 @@ export default function MonitorDetail() {
     [id, showErrorsOnly],
   );
 
-  // SSE: real-time check events for this monitor
+  // Refs for the current pagination / filter values so a single SSE hook can reload
+  // the checks table using the user's active page, size and errors-only filter
+  // without needing them in the callbacks' dependency arrays.
+  const checksPageRef = useRef(checksPage);
+  checksPageRef.current = checksPage;
+  const checksPerPageRef = useRef(checksPerPage);
+  checksPerPageRef.current = checksPerPage;
+  const showErrorsOnlyRef = useRef(showErrorsOnly);
+  showErrorsOnlyRef.current = showErrorsOnly;
+
   const loadDataRef = useRef(loadChecks);
   loadDataRef.current = loadChecks;
-  useSse(useCallback((event) => {
-    if (event.type !== 'check' || event.monitor_id !== id || !id) return;
-    // Update latestCheck from SSE event immediately (before API calls resolve)
-    setLatestCheck({
-      id: 0,
-      monitor_id: event.monitor_id,
-      status: event.status,
-      status_code: null,
-      response_time_ms: event.response_time_ms,
-      error_message: event.error_message,
-      checked_at: event.checked_at,
-      tls_cert_expires_at: null,
-      tls_cert_days_left: null,
-    });
-    // Re-fetch monitor, buckets, and checks when a new check arrives
-    fetchMonitor(id).then(m => setMonitor(m)).catch(() => {});
+
+  // Shared full reload used by both the per-check SSE event and the resync.
+  // Uses refs for `id` and `range` so the callbacks stay stable across renders
+  // and the single `useSse` connection is not re-established.
+  const idRef = useRef(id);
+  idRef.current = id;
+  const rangeRef = useRef(range);
+  rangeRef.current = range;
+
+  // Reload monitor + timeline buckets + latest check + checks table (respecting
+  // the user's current pagination / errors-only filter). Shared by onEvent and onResync.
+  const reloadAll = useCallback(() => {
+    const currentId = idRef.current;
+    if (!currentId) return;
+    const currentRange = rangeRef.current;
+
+    fetchMonitor(currentId).then(m => setMonitor(m)).catch(() => {});
     // Re-fetch timeline
     const params: Record<string, number> = {
-      bucket_seconds: range.bucketSeconds,
+      bucket_seconds: currentRange.bucketSeconds,
     };
-    if (range.hours != null) {
-      (params as { hours: number; bucket_seconds: number }).hours = range.hours;
-    } else if (range.days != null) {
-      (params as { days: number; bucket_seconds: number }).days = range.days;
+    if (currentRange.hours != null) {
+      (params as { hours: number; bucket_seconds: number }).hours = currentRange.hours;
+    } else if (currentRange.days != null) {
+      (params as { days: number; bucket_seconds: number }).days = currentRange.days;
     }
     fetchTimelineBuckets(
-      id,
+      currentId,
       params as { bucket_seconds: number } & ({ hours: number } | { days: number }),
     ).then(({ buckets: b }) => setBuckets(b)).catch(() => {});
     // Re-fetch latest check (unfiltered) for accuracy
-    fetchChecks(id, 1, 1).then(data => {
+    fetchChecks(currentId, 1, 1).then(data => {
       if (data.checks.length > 0) setLatestCheck(data.checks[0]);
     }).catch(() => {});
-    // Re-fetch checks table (filtered)
-    loadDataRef.current(1, 20, true);
-  }, [id, range.bucketSeconds, range.hours, range.days]));
+    // Re-fetch checks table (filtered) using the user's current pagination / filter
+    loadDataRef.current(
+      checksPageRef.current,
+      checksPerPageRef.current,
+      showErrorsOnlyRef.current,
+    );
+  }, []);
+
+  // SSE: real-time check events for this monitor. Single connection handles both
+  // per-check events and resyncs, sharing the reloadAll helper.
+  useSse(
+    useCallback((event) => {
+      if (event.monitor_id !== id || !id) return;
+      // Update latestCheck from SSE event immediately (before API calls resolve)
+      setLatestCheck({
+        id: 0,
+        monitor_id: event.monitor_id,
+        status: event.status,
+        status_code: null,
+        response_time_ms: event.response_time_ms,
+        error_message: event.error_message,
+        checked_at: event.checked_at,
+        tls_cert_expires_at: null,
+        tls_cert_days_left: null,
+      });
+      reloadAll();
+    }, [id]),
+    // SSE resync — backend dropped events; re-execute the same full reload.
+    useCallback(() => { reloadAll(); }, [id]),
+  );
 
   // Initial checks load
   useEffect(() => {
