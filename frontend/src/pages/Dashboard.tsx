@@ -206,9 +206,14 @@ export default function Dashboard() {
   }, [debouncedSearch, typeFilter, statusFilter, page, perPage, load]);
 
   // SSE: real-time updates via backend event stream
-  useSse(useCallback((event) => {
-    if (event.type === 'check') refresh();
-  }, [refresh]));
+  useSse(
+    useCallback((event) => {
+      if (event.type === 'check') refresh();
+    }, [refresh]),
+    useCallback(() => {
+      refresh();
+    }, [refresh]),
+  );
 
   // Fallback poll every 60s in case SSE disconnects, paused when modal is open
   useEffect(() => {
