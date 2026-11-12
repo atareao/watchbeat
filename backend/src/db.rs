@@ -886,7 +886,6 @@ impl Database {
         since: &str,
         _bucket_seconds: i64,
     ) -> Result<Vec<TimelineBucket>> {
-        // Always divide the REQUESTED range into exactly 80 blocks
         let since_dt = match chrono::DateTime::parse_from_rfc3339(since) {
             Ok(dt) => dt.with_timezone(&chrono::Utc),
             Err(_) => return Ok(Vec::new()),
@@ -899,59 +898,41 @@ impl Database {
             .ceil()
             .max(1.0) as i64;
 
-        // Fetch all timeline points in range (already ordered ASC)
-        let points = self.get_timeline(monitor_id, since).await?;
+        let rows = sqlx::query_as::<_, (String, f64, f64, i64)>(
+            "SELECT \
+                 strftime('%Y-%m-%dT%H:%M:%SZ', \
+                       CAST((CAST(strftime('%s', checked_at) / ? AS INTEGER) * ?) AS TEXT), \
+                 'unixepoch') AS bucket_start, \
+                 100.0 * CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS FLOAT) / COUNT(*), \
+                 AVG(CAST(response_time_ms AS FLOAT)), \
+                 COUNT(*) \
+              FROM checks \
+              WHERE monitor_id=? AND checked_at>=? \
+              GROUP BY bucket_start \
+              ORDER BY bucket_start",
+        )
+        .bind(bucket_size_secs)
+        .bind(bucket_size_secs)
+        .bind(monitor_id)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to get timeline buckets")?;
 
-        // Build bucket boundaries as RFC 3339 strings for direct comparison
-        // This avoids any chrono parsing issues with checked_at values
-        let since_ts = since_dt.timestamp();
-        let mut bucket_bounds: Vec<(i64, String)> = Vec::with_capacity(TARGET_BLOCKS + 1);
-        for i in 0..=TARGET_BLOCKS {
-            let ts = since_ts + (i as i64 * bucket_size_secs);
-            let bound = chrono::DateTime::from_timestamp(ts, 0)
-                .map(|dt| dt.to_rfc3339())
-                .unwrap_or_else(|| "unknown".to_string());
-            bucket_bounds.push((ts, bound));
-        }
-
-        let mut buckets: Vec<TimelineBucket> = Vec::with_capacity(TARGET_BLOCKS);
-
-        for i in 0..TARGET_BLOCKS {
-            let (_, start_str) = &bucket_bounds[i];
-            let (_, end_str) = &bucket_bounds[i + 1];
-
-            // Count points in this bucket using string comparison on checked_at
-            // ISO 8601 strings sort lexicographically when same timezone
-            let bucket_points: Vec<_> = points
-                .iter()
-                .filter(|p| p.checked_at >= *start_str && p.checked_at < *end_str)
-                .collect();
-
-            let count = bucket_points.len() as i64;
-
-            let (up_pct, avg_rt, dominant_status) = if count > 0 {
-                let up_count = bucket_points.iter().filter(|p| p.status == "up").count() as i64;
-                let up = (up_count as f64 / count as f64) * 100.0;
-                let avg = bucket_points
-                    .iter()
-                    .filter_map(|p| p.response_time_ms)
-                    .map(|v| v as f64)
-                    .sum::<f64>()
-                    / count as f64;
-                let status = if up >= 50.0 { "up" } else { "down" };
-                (up, avg, status.to_string())
-            } else {
-                (0.0, 0.0, "no_data".to_string())
-            };
-
-            buckets.push(TimelineBucket {
-                bucket_start: start_str.clone(),
+        let buckets: Vec<TimelineBucket> = rows
+            .into_iter()
+            .map(|(bucket_start, up_pct, avg_rt, count)| TimelineBucket {
+                bucket_start,
                 up_pct: (up_pct * 100.0).round() / 100.0,
                 avg_response_time_ms: (avg_rt * 100.0).round() / 100.0,
                 count,
-                dominant_status,
-            });
-        }
+                dominant_status: if up_pct >= 50.0 {
+                    "up".to_string()
+                } else {
+                    "down".to_string()
+                },
+            })
+            .collect();
 
         Ok(buckets)
     }
