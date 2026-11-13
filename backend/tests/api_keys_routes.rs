@@ -36,6 +36,7 @@ async fn setup() -> (Arc<AppState>, TempDir) {
         oidc_client_secret: "secret".into(),
         oidc_redirect_url: "http://localhost:3055/auth/callback".into(),
         retention_days: 30,
+        dns_upstreams: watchbeat::dns::default_upstreams(),
     };
 
     let (event_tx, _) = tokio::sync::broadcast::channel(SSE_CHANNEL_CAPACITY);
