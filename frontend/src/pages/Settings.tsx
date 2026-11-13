@@ -398,7 +398,7 @@ export default function Settings() {
           <Space>
             <Select value={retentionDays} onChange={(v) => setRetentionDays(v ?? 30)} style={{ width: 200 }}>
               <Select.Option value={7}>7 días</Select.Option>
-              <Select.Option value={15}>15 días</Select.Option>
+              <Select.Option value={14}>14 días</Select.Option>
               <Select.Option value={30}>30 días</Select.Option>
             </Select>
             <Button type="primary" icon={<SaveOutlined />} onClick={saveRetention} loading={saving}>Guardar</Button>
