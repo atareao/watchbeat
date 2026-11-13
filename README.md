@@ -128,19 +128,12 @@ just build
 just push     # si tienes registry configurado
 ```
 
-### Imagen oficial multi-arquitectura (GHCR)
+### Imagen oficial (GHCR)
 
 WatchBeat publica imagen en **GitHub Container Registry**:
 
 - `ghcr.io/atareao/watchbeat:latest` (rama `main`)
 - `ghcr.io/atareao/watchbeat:vX.Y.Z` (tags de versión)
-
-Arquitecturas soportadas en publicación automática:
-
-- `linux/amd64` (x86_64)
-- `linux/arm64` (Raspberry Pi 3/4/5 con SO de 64 bits)
-
-> ℹ️ Para Raspberry Pi, usa sistema operativo **64-bit**. En Raspberry Pi OS de 32 bits (`arm/v7`) esta imagen no está publicada oficialmente.
 
 Si el paquete es público, normalmente puedes hacer `docker pull` sin login. Si necesitas autenticación (paquete privado o políticas de tu organización):
 
@@ -150,7 +143,7 @@ echo "$GITHUB_TOKEN" | docker login ghcr.io -u TU_USUARIO_GITHUB --password-stdi
 
 Para publicar desde GitHub Actions, el workflow usa `GITHUB_TOKEN` con permisos `packages: write` y `contents: read` (no requiere secretos adicionales para GHCR).
 
-Ejemplo en Raspberry Pi 64-bit:
+Ejemplo con Docker run:
 
 ```bash
 docker pull ghcr.io/atareao/watchbeat:latest
@@ -345,6 +338,19 @@ Los heartbeats son monitores que esperan un pulso HTTP desde tu servicio:
 | **Valet** | Valet Notifications API | `base_url`, `ingest_token`, `origin` (opcional) |
 
 Cada monitor puede tener múltiples notificadores asociados (relación many-to-many).
+
+### Rendimiento
+
+WatchBeat optimiza las consultas a la base de datos SQLite para evitar cuellos de botella:
+
+| Consulta | Antes | Después |
+|---|---|---|
+| `get_timeline_buckets` (gráfica de uptime) | 3.5s (21k filas a Rust) | ~60ms (60 filas de SQL) |
+| `get_checks_filtered` (timeline filtrado) | 4.9s | ~5ms (índice cubriente) |
+
+**Bucketizado en SQL:** La agregación de datos para la gráfica de uptime se realiza directamente en SQLite con `GROUP BY`, en vez de bajar todas las filas a memoria y filtrarlas en Rust. Esto reduce el volumen transferido de 21k filas a solo 60 (los bloques de la gráfica).
+
+**Retención configurable:** Los checks antiguos se eliminan automáticamente según `WATCHBEAT_RETENTION_DAYS` (por defecto 30 días). En el panel de Ajustes puedes cambiarlo en cualquier momento.
 
 ### Plantillas de mensaje
 

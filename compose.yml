@@ -13,6 +13,15 @@
 #
 # ═══════════════════════════════════════════════════════════════
 
+# Registry
+# WatchBeat publica imágenes oficiales en GitHub Container Registry:
+#   ghcr.io/atareao/watchbeat:latest    (rama main)
+#   ghcr.io/atareao/watchbeat:vX.Y.Z   (tags de versión)
+# 
+# Si quieres usar la imagen precompilada en vez de construirla localmente,
+# cambia `image: watchbeat:latest` por `image: ghcr.io/atareao/watchbeat:latest`
+# y comenta o elimina el bloque `build:`.
+
 services:
   watchbeat:
     build:
