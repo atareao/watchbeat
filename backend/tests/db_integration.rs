@@ -108,6 +108,7 @@ async fn test_insert_and_get_checks() {
         checked_at: chrono::Utc::now().to_rfc3339(),
         tls_cert_expires_at: None,
         tls_cert_days_left: None,
+        error_kind: None,
     };
     let id = db.insert_check(&check).await.unwrap();
     assert!(id > 0);
@@ -132,6 +133,7 @@ async fn test_get_latest_check() {
             checked_at: chrono::Utc::now().to_rfc3339(),
             tls_cert_expires_at: None,
             tls_cert_days_left: None,
+            error_kind: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -185,6 +187,7 @@ async fn test_dashboard_status() {
         checked_at: chrono::Utc::now().to_rfc3339(),
         tls_cert_expires_at: None,
         tls_cert_days_left: None,
+        error_kind: None,
     };
     db.insert_check(&check).await.unwrap();
     let status = db.get_dashboard_status().await.unwrap();
@@ -210,6 +213,7 @@ async fn test_calculate_uptime() {
             checked_at: (now - chrono::Duration::hours(i)).to_rfc3339(),
             tls_cert_expires_at: None,
             tls_cert_days_left: None,
+            error_kind: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -261,6 +265,7 @@ async fn test_get_timeline() {
             checked_at: (now - chrono::Duration::hours(4 - i)).to_rfc3339(),
             tls_cert_expires_at: None,
             tls_cert_days_left: None,
+            error_kind: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -299,6 +304,7 @@ async fn test_get_timeline_since() {
             checked_at: (now - chrono::Duration::hours(10 + i * 2)).to_rfc3339(),
             tls_cert_expires_at: None,
             tls_cert_days_left: None,
+            error_kind: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -314,6 +320,7 @@ async fn test_get_timeline_since() {
             checked_at: (now - chrono::Duration::hours(i)).to_rfc3339(),
             tls_cert_expires_at: None,
             tls_cert_days_left: None,
+            error_kind: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -344,6 +351,7 @@ async fn test_get_monitor_summaries() {
             checked_at: (now - chrono::Duration::hours(i)).to_rfc3339(),
             tls_cert_expires_at: None,
             tls_cert_days_left: None,
+            error_kind: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -360,6 +368,7 @@ async fn test_get_monitor_summaries() {
             checked_at: (now - chrono::Duration::hours(i)).to_rfc3339(),
             tls_cert_expires_at: None,
             tls_cert_days_left: None,
+            error_kind: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -392,6 +401,7 @@ async fn test_calculate_uptime_50_percent() {
             checked_at: (now - chrono::Duration::hours(i)).to_rfc3339(),
             tls_cert_expires_at: None,
             tls_cert_days_left: None,
+            error_kind: None,
         };
         db.insert_check(&check).await.unwrap();
     }
@@ -416,6 +426,7 @@ async fn test_get_dashboard_status_with_mixed() {
         checked_at: now.to_rfc3339(),
         tls_cert_expires_at: None,
         tls_cert_days_left: None,
+        error_kind: None,
     };
     db.insert_check(&check).await.unwrap();
     // Monitor 2: down
@@ -432,6 +443,7 @@ async fn test_get_dashboard_status_with_mixed() {
         checked_at: now.to_rfc3339(),
         tls_cert_expires_at: None,
         tls_cert_days_left: None,
+        error_kind: None,
     };
     db.insert_check(&check).await.unwrap();
     // Monitor 3: disabled (no checks)
@@ -464,6 +476,7 @@ async fn test_cleanup_old_checks() {
         checked_at: (now - chrono::Duration::days(10)).to_rfc3339(),
         tls_cert_expires_at: None,
         tls_cert_days_left: None,
+        error_kind: None,
     };
     db.insert_check(&old_check).await.unwrap();
     // Insert a recent check
@@ -477,6 +490,7 @@ async fn test_cleanup_old_checks() {
         checked_at: now.to_rfc3339(),
         tls_cert_expires_at: None,
         tls_cert_days_left: None,
+        error_kind: None,
     };
     db.insert_check(&recent_check).await.unwrap();
     // Verify both exist before cleanup
@@ -623,4 +637,200 @@ async fn test_api_key_name_unique() {
     assert!(!db.api_key_name_unique("ci-cd", None).await.unwrap());
     // Excluyendo el propio id → true (no se cuenta a sí mismo)
     assert!(db.api_key_name_unique("ci-cd", Some("ak-1")).await.unwrap());
+}
+
+// ───── Failure cause persistence (Fase 2: error_kind) ─────
+
+/// Columns of the `checks` table, read through a separate connection so the
+/// assertion is about the schema itself and not about what the code exposes.
+async fn checks_columns(path: &std::path::Path) -> Vec<String> {
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(path);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+
+    let rows: Vec<(i64, String)> =
+        sqlx::query_as("SELECT cid, name FROM pragma_table_info('checks') ORDER BY cid")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+    pool.close().await;
+    rows.into_iter().map(|(_, name)| name).collect()
+}
+
+fn sample_check(monitor_id: &str) -> CheckResult {
+    CheckResult {
+        id: 0,
+        monitor_id: monitor_id.into(),
+        status: "down".into(),
+        status_code: None,
+        response_time_ms: 5,
+        error_message: Some("TCP connection failed".into()),
+        checked_at: chrono::Utc::now().to_rfc3339(),
+        tls_cert_expires_at: None,
+        tls_cert_days_left: None,
+        error_kind: None,
+    }
+}
+
+/// Scenario: Migración idempotente.
+#[tokio::test]
+async fn test_error_kind_migration_is_idempotent() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("legacy.db");
+
+    // A database predating the column: same `checks` table, without `error_kind`.
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            monitor_id TEXT NOT NULL,
+            status TEXT NOT NULL, status_code INTEGER,
+            response_time_ms INTEGER NOT NULL DEFAULT 0, error_message TEXT,
+            checked_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+    assert!(
+        !checks_columns(&path)
+            .await
+            .contains(&"error_kind".to_string()),
+        "the fixture must start without error_kind"
+    );
+
+    // First initialisation adds the column…
+    let db = Database::open(&path).await.unwrap();
+    assert!(
+        checks_columns(&path)
+            .await
+            .contains(&"error_kind".to_string()),
+        "opening a legacy DB must add checks.error_kind"
+    );
+    drop(db);
+
+    // …and a second one must not fail.
+    let db = Database::open(&path).await.unwrap();
+    assert!(checks_columns(&path)
+        .await
+        .contains(&"error_kind".to_string()));
+    drop(db);
+}
+
+/// Scenario: Persistir la causa de un fallo.
+#[tokio::test]
+async fn test_insert_check_persists_error_kind() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-kind")).await.unwrap();
+
+    let check = CheckResult {
+        error_kind: Some("connect_refused".into()),
+        ..sample_check("m-kind")
+    };
+    db.insert_check(&check).await.unwrap();
+
+    let latest = db
+        .get_latest_check("m-kind")
+        .await
+        .unwrap()
+        .expect("the inserted check must be readable");
+    assert_eq!(latest.error_kind.as_deref(), Some("connect_refused"));
+
+    let listed = db.get_checks("m-kind", 10, 0).await.unwrap();
+    assert_eq!(listed[0].error_kind.as_deref(), Some("connect_refused"));
+}
+
+/// Scenario: Check correcto sin causa.
+#[tokio::test]
+async fn test_insert_check_stores_null_error_kind_without_cause() {
+    let (db, dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-ok")).await.unwrap();
+
+    let mut check = sample_check("m-ok");
+    check.status = "up".into();
+    check.error_message = None;
+    db.insert_check(&check).await.unwrap();
+
+    let latest = db
+        .get_latest_check("m-ok")
+        .await
+        .unwrap()
+        .expect("the inserted check must be readable");
+    assert_eq!(latest.error_kind, None);
+
+    // NULL in the row itself, not an empty string.
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(dir.path().join("test.db"));
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let (kind,): (Option<String>,) =
+        sqlx::query_as("SELECT error_kind FROM checks WHERE monitor_id='m-ok'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    pool.close().await;
+    assert_eq!(kind, None);
+}
+
+/// Scenario: Lectura de la causa.
+#[tokio::test]
+async fn test_error_kind_is_visible_through_filtered_and_recent_reads() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-read")).await.unwrap();
+
+    let check = CheckResult {
+        error_kind: Some("dns_servfail".into()),
+        ..sample_check("m-read")
+    };
+    db.insert_check(&check).await.unwrap();
+
+    let filtered = db
+        .get_checks_filtered("m-read", 10, 0, &["down"])
+        .await
+        .unwrap();
+    assert_eq!(filtered[0].error_kind.as_deref(), Some("dns_servfail"));
+
+    let recent = db.get_recent_checks_global(10).await.unwrap();
+    assert_eq!(recent[0].error_kind.as_deref(), Some("dns_servfail"));
+}
+
+/// Scenario: un latido registra un check sin causa (Mn3).
+#[tokio::test]
+async fn test_heartbeat_pulse_records_check_without_error_kind() {
+    let (db, _dir) = setup_db().await;
+    let monitor = Monitor {
+        monitor_type: "heartbeat".into(),
+        token: Some("hb-token".into()),
+        ..sample_monitor("m-hb")
+    };
+    db.create_monitor(&monitor).await.unwrap();
+
+    let recorded = db
+        .record_heartbeat_pulse("hb-token")
+        .await
+        .unwrap()
+        .expect("the token must identify the monitor");
+    assert_eq!(recorded.id, "m-hb");
+
+    let latest = db
+        .get_latest_check("m-hb")
+        .await
+        .unwrap()
+        .expect("the pulse must record a check");
+    assert_eq!(latest.status, "up");
+    assert_eq!(latest.error_kind, None, "a heartbeat has no failure cause");
 }

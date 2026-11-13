@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::checker::{CheckOutcome, Checker};
+use crate::checker::{
+    cause_from_dns, cause_from_io, status_for, CheckOutcome, Checker, FailureCause,
+};
 use crate::models::Monitor;
 
 /// TLS certificate expiry checker.
@@ -28,11 +30,29 @@ impl Checker for TlsChecker {
     }
 }
 
-/// Why the body of a TLS check failed, so name resolution can be reported as
-/// an infrastructure error instead of a service one.
+/// Why the body of a TLS check failed, so a reaching failure can be told apart
+/// from a handshake one.
+///
+/// The two failure kinds are kept apart on purpose: a refused TCP connection
+/// and a failed handshake are different causes even though both end in `down`.
 enum TlsFailure {
-    Dns(crate::dns::DnsError),
-    Other(std::io::Error),
+    /// Reaching the endpoint failed (socket-level error).
+    Connect(std::io::Error),
+    /// The endpoint was reached but the TLS handshake failed.
+    Handshake(std::io::Error),
+}
+
+/// Failure outcome built from its cause, so the status always follows the shared
+/// `status_for` taxonomy.
+fn failure(elapsed: u64, cause: FailureCause, message: String) -> CheckOutcome {
+    CheckOutcome {
+        status: status_for(Some(cause)).into(),
+        status_code: None,
+        response_time_ms: elapsed,
+        error_message: Some(message),
+        cause: Some(cause),
+        ..Default::default()
+    }
 }
 
 impl TlsChecker {
@@ -51,16 +71,39 @@ impl TlsChecker {
         let (host, port) = parse_target(&monitor.target).unwrap_or((monitor.target.clone(), 443));
         let addr = format!("{}:{}", host, port);
 
-        let result = tokio::time::timeout(timeout, async {
-            // Own resolver: the IP comes from our TTL cache, while the SNI stays
-            // the original hostname.
-            let ip = resolve(host.clone()).await.map_err(TlsFailure::Dns)?;
+        // Same shape as TCP: one budget, but resolution and the connection are
+        // timed apart, so a resolution timeout is not reported as a connection
+        // one.
+        let ip = match tokio::time::timeout(timeout, resolve(host.clone())).await {
+            Ok(Ok(ip)) => ip,
+            Ok(Err(e)) => {
+                tracing::warn!(target = %addr, host = %host, error = %e, "TLS check: DNS failed");
+                return failure(
+                    start.elapsed().as_millis() as u64,
+                    cause_from_dns(&e),
+                    format!("DNS resolution failed for {}: {}", host, e),
+                );
+            }
+            Err(_) => {
+                tracing::warn!(target = %addr, host = %host, "TLS check: DNS timed out");
+                return failure(
+                    start.elapsed().as_millis() as u64,
+                    FailureCause::DnsTimeout,
+                    format!("DNS resolution timed out for {}", host),
+                );
+            }
+        };
 
+        // Own resolver: the IP comes from our TTL cache, while the SNI stays
+        // the original hostname.
+        let remaining = timeout.saturating_sub(start.elapsed());
+
+        let result = tokio::time::timeout(remaining, async {
             let tcp = tokio::net::TcpStream::connect(std::net::SocketAddr::new(ip, port))
                 .await
                 .map_err(|e| {
                     tracing::warn!(target = %addr, error = %e, "TLS: TCP connect failed");
-                    TlsFailure::Other(e)
+                    TlsFailure::Connect(e)
                 })?;
 
             let mut roots = rustls::RootCertStore::empty();
@@ -73,7 +116,7 @@ impl TlsChecker {
             let server_name =
                 rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| {
                     tracing::warn!(host = %host, "TLS: invalid server name");
-                    TlsFailure::Other(std::io::Error::new(
+                    TlsFailure::Handshake(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         format!("invalid host: {}", e),
                     ))
@@ -82,7 +125,7 @@ impl TlsChecker {
             let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
             let tls = connector.connect(server_name, tcp).await.map_err(|e| {
                 tracing::warn!(target = %addr, error = %e, "TLS: handshake failed");
-                TlsFailure::Other(e)
+                TlsFailure::Handshake(e)
             })?;
 
             // Extract peer certificates after handshake
@@ -105,11 +148,12 @@ impl TlsChecker {
         match result {
             Ok(Ok(info)) => {
                 let mut outcome = CheckOutcome {
-                    status: "up".into(),
+                    status: crate::checker::status_for(None).into(),
                     status_code: None,
                     response_time_ms: elapsed,
                     error_message: None,
                     tls: Some(info.clone()),
+                    cause: None,
                 };
 
                 // If cert expires soon, mark as warning
@@ -129,37 +173,31 @@ impl TlsChecker {
 
                 outcome
             }
-            // A name that cannot be resolved is an infrastructure problem, not
-            // a service that is down.
-            Ok(Err(TlsFailure::Dns(e))) => {
-                tracing::warn!(target = %addr, host = %host, error = %e, "TLS check: DNS failed");
-                CheckOutcome {
-                    status: "error".into(),
-                    status_code: None,
-                    response_time_ms: elapsed,
-                    error_message: Some(format!("DNS resolution failed for {}: {}", host, e)),
-                    ..Default::default()
-                }
+            Ok(Err(TlsFailure::Connect(e))) => {
+                tracing::warn!(target = %addr, host = %host, error = %e, "TLS check: TCP connect failed");
+                failure(
+                    elapsed,
+                    cause_from_io(&e),
+                    format!("TCP connection failed: {}", e),
+                )
             }
-            Ok(Err(TlsFailure::Other(e))) => {
+            // A failed handshake is the target's fault; `status_for` decides the
+            // observable status so TLS never disagrees with HTTP or TCP.
+            Ok(Err(TlsFailure::Handshake(e))) => {
                 tracing::warn!(target = %addr, host = %host, error = %e, "TLS check failed");
-                CheckOutcome {
-                    status: "down".into(),
-                    status_code: None,
-                    response_time_ms: elapsed,
-                    error_message: Some(format!("TLS handshake failed: {}", e)),
-                    ..Default::default()
-                }
+                failure(
+                    elapsed,
+                    FailureCause::TlsError,
+                    format!("TLS handshake failed: {}", e),
+                )
             }
             Err(_) => {
                 tracing::warn!(target = %addr, host = %host, "TLS check timed out");
-                CheckOutcome {
-                    status: "down".into(),
-                    status_code: None,
-                    response_time_ms: elapsed,
-                    error_message: Some("TLS connection timed out".into()),
-                    ..Default::default()
-                }
+                failure(
+                    elapsed,
+                    FailureCause::ConnectTimeout,
+                    "TLS connection timed out".into(),
+                )
             }
         }
     }
@@ -325,10 +363,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_check_timeout() {
-        let mut m = make_monitor("203.0.113.1:443");
+        // A resolution that never answers: the monitor timeout is what ends the
+        // attempt, and it is a *resolution* timeout, not a connection one.
+        // Injected, so it is deterministic and needs no network.
+        let mut m = make_monitor("slow.test:443");
         m.timeout_seconds = 1;
-        let outcome = TlsChecker.check(&m).await;
-        assert_eq!(outcome.status, "down");
+
+        let started = std::time::Instant::now();
+        let outcome = TlsChecker::check_with(&m, |_host| async {
+            std::future::pending::<Result<std::net::IpAddr, crate::dns::DnsError>>().await
+        })
+        .await;
+
+        assert_eq!(outcome.status, "error");
+        assert_eq!(
+            outcome.cause,
+            Some(crate::checker::FailureCause::DnsTimeout)
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "the monitor timeout must end the attempt, took {:?}",
+            started.elapsed()
+        );
     }
 
     /// Scenario: el check TLS usa el resolvedor propio.
@@ -371,18 +427,73 @@ mod tests {
         );
     }
 
-    /// A DNS failure is an infrastructure error, not a TLS/service failure.
+    /// A name that does not exist is the target's fault, so it is reported as
+    /// `down` (unlike a resolver timeout, which is `error`).
     #[tokio::test]
-    async fn test_tls_check_reports_error_when_dns_fails() {
+    async fn test_tls_check_reports_down_when_dns_nxdomain() {
         let m = make_monitor("missing.test:443");
 
         let outcome =
             TlsChecker::check_with(&m, |_host| async { Err(crate::dns::DnsError::Nxdomain) }).await;
 
-        assert_eq!(outcome.status, "error");
+        assert_eq!(outcome.status, "down");
+        assert_eq!(
+            outcome.cause,
+            Some(crate::checker::FailureCause::DnsNxdomain)
+        );
         assert!(outcome
             .error_message
             .expect("DNS failures must carry a message")
             .contains("DNS"));
+    }
+
+    // ───── Failure cause taxonomy (Fase 2, robust check engine) ─────
+
+    /// Scenario: Error TLS.
+    #[tokio::test]
+    async fn tls_check_should_report_tls_error_cause() {
+        install_crypto_provider();
+
+        // A plain TCP listener closing right away: the handshake cannot succeed.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+        });
+
+        crate::dns::resolver().prime_cache(
+            "watchbeat-tls-cause.test",
+            "127.0.0.1".parse().unwrap(),
+            Duration::from_secs(60),
+        );
+
+        let m = make_monitor(&format!("watchbeat-tls-cause.test:{port}"));
+        let outcome = TlsChecker.check(&m).await;
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(crate::checker::FailureCause::TlsError));
+        // B1: TLS derives its status the same way HTTP and TCP do.
+        assert_eq!(outcome.status, crate::checker::status_for(outcome.cause));
+    }
+
+    /// The typed DNS failure survives into the TLS outcome.
+    #[tokio::test]
+    async fn tls_check_should_report_dns_cause() {
+        let m = make_monitor("missing.test:443");
+
+        let outcome = TlsChecker::check_with(
+            &m,
+            crate::checker::dns_failure(crate::dns::DnsError::Nxdomain),
+        )
+        .await;
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(
+            outcome.cause,
+            Some(crate::checker::FailureCause::DnsNxdomain)
+        );
     }
 }

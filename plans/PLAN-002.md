@@ -60,6 +60,10 @@ Regla determinista (causa + salud de red en el instante del check):
 
 Nuevo estado `indeterminate`, visible en UI y distinguible de `down`.
 
+> La Fase 2 fija el mapeo causa→status base (`status_for`): `dns_nxdomain` →
+> `down` ya es coherente con esta tabla. El fine-tuning con salud de red y la
+> introducción de `indeterminate` son de la **Fase 3**.
+
 ### Pilar 5 · Jitter
 Desincronizar el primer tick e intervalo de cada monitor para evitar el thundering herd (hoy los 8 monitores cronan en el mismo segundo).
 
@@ -140,13 +144,13 @@ Issue paraguas [#34](https://github.com/atareao/watchbeat/issues/34): se cierra 
 - [x] PR a `development` (`Closes #35`) + archive.
 
 ### Fase 2 · Taxonomía de causas + `error_kind` — [#36](https://github.com/atareao/watchbeat/issues/36)
-- [ ] `openspec new change failure-cause-taxonomy`
-- [ ] Spec: enum `FailureCause`, mapa error→causa, columna `error_kind `.
-- [ ] RED: tests de clasificación por tipo de error (HTTP/TCP/TLS).
-- [ ] GREEN: añadir `cause` a `CheckOutcome`, clasificar en cada checker, migración + persistencia de `error_kind `.
-- [ ] REFACTOR: limpieza de la heurística `is_timeout()`.
-- [ ] Docs: `docs/failure-cause-taxonomy.md`.
-- [ ] PR a `development` (`Closes #36`) + archive.
+- [x] `openspec new change failure-cause-taxonomy`
+- [x] Spec: enum `FailureCause`, mapa error→causa, columna `error_kind `.
+- [x] RED: tests de clasificación por tipo de error (HTTP/TCP/TLS).
+- [x] GREEN: añadir `cause` a `CheckOutcome`, clasificar en cada checker, migración + persistencia de `error_kind `.
+- [x] REFACTOR: limpieza de la heurística `is_timeout()`.
+- [x] Docs: `docs/failure-cause-taxonomy.md`.
+- [x] PR a `development` (`Closes #36`) + archive.
 
 ### Fase 3 · Canario, clasificador e `indeterminate` — [#37](https://github.com/atareao/watchbeat/issues/37)
 - [ ] `openspec new change network-attribution`

@@ -316,6 +316,7 @@ pub(crate) async fn run_monitor_check(
         checked_at: now_str,
         tls_cert_expires_at: outcome.tls.as_ref().and_then(|t| t.cert_expires_at.clone()),
         tls_cert_days_left: outcome.tls.as_ref().and_then(|t| t.cert_days_left),
+        error_kind: outcome.cause.map(|cause| cause.as_str().to_string()),
     };
 
     // Write to DB when status changes OR at least once per interval_secs (time-based sampling)
@@ -673,6 +674,7 @@ mod tests {
                 response_time_ms: 42,
                 error_message: None,
                 tls: None,
+                cause: None,
             }
         }
     }
@@ -687,6 +689,7 @@ mod tests {
                 response_time_ms: 0,
                 error_message: Some("connection refused".into()),
                 tls: None,
+                cause: None,
             }
         }
     }
@@ -999,6 +1002,7 @@ mod tests {
                 response_time_ms: 200,
                 error_message: None,
                 tls: None,
+                cause: None,
             }
         }
     }

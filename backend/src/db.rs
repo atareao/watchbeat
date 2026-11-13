@@ -17,6 +17,25 @@ pub struct Database {
     db_path: String,
 }
 
+/// Run an additive `ALTER TABLE ... ADD COLUMN` migration.
+///
+/// `duplicate column name` is the normal state from the second start onwards,
+/// so it is only worth a debug line. Anything else is a real migration problem
+/// and is logged instead of being silently swallowed.
+async fn add_column_if_missing(pool: &SqlitePool, sql: &'static str, column: &str) {
+    match sqlx::raw_sql(sql).execute(pool).await {
+        Ok(_) => tracing::debug!(column, "added missing column"),
+        Err(e) => {
+            let message = e.to_string();
+            if message.contains("duplicate column name") {
+                tracing::debug!(column, "column already present");
+            } else {
+                tracing::warn!(column, error = %message, "additive migration failed");
+            }
+        }
+    }
+}
+
 impl Database {
     pub async fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -68,7 +87,7 @@ impl Database {
                 monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
                 status TEXT NOT NULL, status_code INTEGER,
                 response_time_ms INTEGER NOT NULL DEFAULT 0, error_message TEXT, checked_at TEXT NOT NULL,
-                tls_cert_expires_at TEXT, tls_cert_days_left INTEGER
+                tls_cert_expires_at TEXT, tls_cert_days_left INTEGER, error_kind TEXT
             )",
         )
         .execute(&pool)
@@ -213,6 +232,15 @@ impl Database {
         let _ = sqlx::raw_sql("ALTER TABLE checks ADD COLUMN tls_cert_days_left INTEGER")
             .execute(&pool)
             .await;
+
+        // Typed failure cause for checks (additive; NULL for healthy checks and
+        // for rows predating the column).
+        add_column_if_missing(
+            &pool,
+            "ALTER TABLE checks ADD COLUMN error_kind TEXT",
+            "checks.error_kind",
+        )
+        .await;
 
         // Consolidated metrics table for pre-aggregated uptime/response data
         let _ = sqlx::raw_sql(
@@ -770,13 +798,14 @@ impl Database {
     pub async fn insert_check(&self, check: &CheckResult) -> Result<i64> {
         let result = sqlx::query(
             "INSERT INTO checks (monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
-             tls_cert_expires_at, tls_cert_days_left) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             tls_cert_expires_at, tls_cert_days_left, error_kind) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&check.monitor_id).bind(&check.status)
         .bind(check.status_code.map(|v| v as i64))
         .bind(check.response_time_ms).bind(&check.error_message).bind(&check.checked_at)
         .bind(&check.tls_cert_expires_at).bind(check.tls_cert_days_left)
+        .bind(&check.error_kind)
         .execute(&self.pool).await
         .context("Failed to insert check")?;
         Ok(result.last_insert_rowid() as i64)
@@ -790,7 +819,7 @@ impl Database {
     ) -> Result<Vec<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
             "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
-             tls_cert_expires_at, tls_cert_days_left \
+             tls_cert_expires_at, tls_cert_days_left, error_kind \
              FROM checks WHERE monitor_id=? ORDER BY checked_at DESC LIMIT ? OFFSET ?",
         )
         .bind(monitor_id).bind(limit).bind(offset)
@@ -817,7 +846,7 @@ impl Database {
         let placeholders: Vec<String> = statuses.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
             "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
-             tls_cert_expires_at, tls_cert_days_left \
+             tls_cert_expires_at, tls_cert_days_left, error_kind \
              FROM checks WHERE monitor_id=? AND status IN ({}) ORDER BY checked_at DESC LIMIT ? OFFSET ?",
             placeholders.join(",")
         );
@@ -860,7 +889,7 @@ impl Database {
     pub async fn get_latest_check(&self, monitor_id: &str) -> Result<Option<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
             "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
-             tls_cert_expires_at, tls_cert_days_left \
+             tls_cert_expires_at, tls_cert_days_left, error_kind \
              FROM checks WHERE monitor_id=? ORDER BY checked_at DESC LIMIT 1",
         )
         .bind(monitor_id).fetch_optional(&self.pool).await
@@ -940,7 +969,7 @@ impl Database {
     pub async fn get_recent_checks_global(&self, limit: i64) -> Result<Vec<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
             "SELECT c.id, c.monitor_id, c.status, c.status_code, c.response_time_ms, c.error_message, c.checked_at, \
-             c.tls_cert_expires_at, c.tls_cert_days_left \
+             c.tls_cert_expires_at, c.tls_cert_days_left, c.error_kind \
              FROM checks c \
              INNER JOIN (SELECT monitor_id, MAX(checked_at) as max_checked FROM checks GROUP BY monitor_id) latest \
              ON c.monitor_id = latest.monitor_id AND c.checked_at = latest.max_checked \
@@ -1424,10 +1453,11 @@ impl Database {
             checked_at: now.clone(),
             tls_cert_expires_at: None,
             tls_cert_days_left: None,
+            error_kind: None,
         };
         sqlx::query(
             "INSERT INTO checks (monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
-             tls_cert_expires_at, tls_cert_days_left) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             tls_cert_expires_at, tls_cert_days_left, error_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&check.monitor_id)
         .bind(&check.status)
@@ -1437,6 +1467,7 @@ impl Database {
         .bind(&check.checked_at)
         .bind(&check.tls_cert_expires_at)
         .bind(check.tls_cert_days_left)
+        .bind(&check.error_kind)
         .execute(&self.pool)
         .await
         .context("Failed to insert heartbeat check")?;
