@@ -20,6 +20,31 @@ pub struct TlsInfo {
 #[async_trait]
 impl Checker for TlsChecker {
     async fn check(&self, monitor: &Monitor) -> CheckOutcome {
+        Self::check_with(
+            monitor,
+            |host| async move { crate::dns::resolve(&host).await },
+        )
+        .await
+    }
+}
+
+/// Why the body of a TLS check failed, so name resolution can be reported as
+/// an infrastructure error instead of a service one.
+enum TlsFailure {
+    Dns(crate::dns::DnsError),
+    Other(std::io::Error),
+}
+
+impl TlsChecker {
+    /// Check body with injectable name resolution.
+    ///
+    /// Resolution happens inside the monitor timeout and keeps the original
+    /// hostname for SNI: only the IP comes from the cache.
+    pub(crate) async fn check_with<F, Fut>(monitor: &Monitor, resolve: F) -> CheckOutcome
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<std::net::IpAddr, crate::dns::DnsError>>,
+    {
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(monitor.timeout_seconds as u64);
 
@@ -27,10 +52,16 @@ impl Checker for TlsChecker {
         let addr = format!("{}:{}", host, port);
 
         let result = tokio::time::timeout(timeout, async {
-            let tcp = tokio::net::TcpStream::connect(&addr).await.map_err(|e| {
-                tracing::warn!(target = %addr, error = %e, "TLS: TCP connect failed");
-                e
-            })?;
+            // Own resolver: the IP comes from our TTL cache, while the SNI stays
+            // the original hostname.
+            let ip = resolve(host.clone()).await.map_err(TlsFailure::Dns)?;
+
+            let tcp = tokio::net::TcpStream::connect(std::net::SocketAddr::new(ip, port))
+                .await
+                .map_err(|e| {
+                    tracing::warn!(target = %addr, error = %e, "TLS: TCP connect failed");
+                    TlsFailure::Other(e)
+                })?;
 
             let mut roots = rustls::RootCertStore::empty();
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -42,16 +73,16 @@ impl Checker for TlsChecker {
             let server_name =
                 rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| {
                     tracing::warn!(host = %host, "TLS: invalid server name");
-                    std::io::Error::new(
+                    TlsFailure::Other(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         format!("invalid host: {}", e),
-                    )
+                    ))
                 })?;
 
             let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
             let tls = connector.connect(server_name, tcp).await.map_err(|e| {
                 tracing::warn!(target = %addr, error = %e, "TLS: handshake failed");
-                e
+                TlsFailure::Other(e)
             })?;
 
             // Extract peer certificates after handshake
@@ -65,7 +96,7 @@ impl Checker for TlsChecker {
                 TlsInfo::default()
             };
 
-            Ok::<_, std::io::Error>(info)
+            Ok::<_, TlsFailure>(info)
         })
         .await;
 
@@ -98,7 +129,19 @@ impl Checker for TlsChecker {
 
                 outcome
             }
-            Ok(Err(e)) => {
+            // A name that cannot be resolved is an infrastructure problem, not
+            // a service that is down.
+            Ok(Err(TlsFailure::Dns(e))) => {
+                tracing::warn!(target = %addr, host = %host, error = %e, "TLS check: DNS failed");
+                CheckOutcome {
+                    status: "error".into(),
+                    status_code: None,
+                    response_time_ms: elapsed,
+                    error_message: Some(format!("DNS resolution failed for {}: {}", host, e)),
+                    ..Default::default()
+                }
+            }
+            Ok(Err(TlsFailure::Other(e))) => {
                 tracing::warn!(target = %addr, host = %host, error = %e, "TLS check failed");
                 CheckOutcome {
                     status: "down".into(),
@@ -170,6 +213,42 @@ pub fn parse_target(target: &str) -> Option<(String, u16)> {
 mod tests {
     use super::*;
 
+    /// Monitor fixture for TLS checks.
+    fn make_monitor(target: &str) -> Monitor {
+        Monitor {
+            id: "tls_test".into(),
+            name: "tls test".into(),
+            monitor_type: "tls".into(),
+            target: target.into(),
+            config_json: serde_json::json!({}),
+            interval_seconds: 300,
+            timeout_seconds: 5,
+            enabled: true,
+            notifier_id: None,
+            confirmations_required: 0,
+            failed_checks: 0,
+            latency_threshold_ms: None,
+            message_template_down: None,
+            message_template_latency: None,
+            message_template_up: None,
+            message_template_expiry: None,
+            tags: vec![],
+            token: None,
+            grace_seconds: None,
+            last_seen_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    /// The build links two rustls providers (`ring` from our direct deps and
+    /// `aws-lc-rs` through reqwest), so rustls cannot pick one by itself and
+    /// `ClientConfig::builder()` panics. Checkers only need *a* provider; a
+    /// deployment must select one the same way (out of scope of this change).
+    fn install_crypto_provider() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
     #[test]
     fn test_parse_target_with_port() {
         assert_eq!(
@@ -238,30 +317,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_check_connection_refused() {
-        let m = Monitor {
-            id: "tls_test".into(),
-            name: "tls test".into(),
-            monitor_type: "tls".into(),
-            target: "127.0.0.1:1".into(),
-            config_json: serde_json::json!({}),
-            interval_seconds: 300,
-            timeout_seconds: 5,
-            enabled: true,
-            notifier_id: None,
-            confirmations_required: 0,
-            failed_checks: 0,
-            latency_threshold_ms: None,
-            message_template_down: None,
-            message_template_latency: None,
-            message_template_up: None,
-            message_template_expiry: None,
-            tags: vec![],
-            token: None,
-            grace_seconds: None,
-            last_seen_at: None,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
+        let m = make_monitor("127.0.0.1:1");
         let outcome = TlsChecker.check(&m).await;
         assert_eq!(outcome.status, "down");
         assert!(outcome.error_message.is_some());
@@ -269,31 +325,64 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_check_timeout() {
-        let m = Monitor {
-            id: "tls_timeout".into(),
-            name: "tls timeout".into(),
-            monitor_type: "tls".into(),
-            target: "203.0.113.1:443".into(),
-            config_json: serde_json::json!({}),
-            interval_seconds: 300,
-            timeout_seconds: 1,
-            enabled: true,
-            notifier_id: None,
-            confirmations_required: 0,
-            failed_checks: 0,
-            latency_threshold_ms: None,
-            message_template_down: None,
-            message_template_latency: None,
-            message_template_up: None,
-            message_template_expiry: None,
-            tags: vec![],
-            token: None,
-            grace_seconds: None,
-            last_seen_at: None,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
+        let mut m = make_monitor("203.0.113.1:443");
+        m.timeout_seconds = 1;
         let outcome = TlsChecker.check(&m).await;
         assert_eq!(outcome.status, "down");
+    }
+
+    /// Scenario: el check TLS usa el resolvedor propio.
+    ///
+    /// The hostname does not exist in the public DNS, so the only way the
+    /// handshake can start is by connecting to the IP served by our cache. The
+    /// listener is closed without TLS, so the check itself cannot succeed: the
+    /// accepted connection is the assertion.
+    #[tokio::test]
+    async fn test_tls_check_resolves_with_own_resolver() {
+        install_crypto_provider();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (hit_tx, hit_rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let _ = hit_tx.send(());
+                drop(stream);
+            }
+        });
+
+        crate::dns::resolver().prime_cache(
+            "watchbeat-cache.test",
+            "127.0.0.1".parse().unwrap(),
+            Duration::from_secs(60),
+        );
+
+        let m = make_monitor(&format!("watchbeat-cache.test:{}", port));
+        let outcome = TlsChecker.check(&m).await;
+
+        assert!(
+            hit_rx.await.is_ok(),
+            "the TLS check must connect to the IP from our resolver"
+        );
+        assert_ne!(
+            outcome.status, "up",
+            "a listener without TLS cannot complete the handshake"
+        );
+    }
+
+    /// A DNS failure is an infrastructure error, not a TLS/service failure.
+    #[tokio::test]
+    async fn test_tls_check_reports_error_when_dns_fails() {
+        let m = make_monitor("missing.test:443");
+
+        let outcome =
+            TlsChecker::check_with(&m, |_host| async { Err(crate::dns::DnsError::Nxdomain) }).await;
+
+        assert_eq!(outcome.status, "error");
+        assert!(outcome
+            .error_message
+            .expect("DNS failures must carry a message")
+            .contains("DNS"));
     }
 }

@@ -16,6 +16,10 @@ async fn main() {
 
     let config = Config::load();
 
+    // ───── DNS resolver ─────
+    // Must run before the first check: the resolver is built once, lazily.
+    watchbeat::dns::init(config.dns_upstreams.clone());
+
     // ───── Tracing ─────
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));

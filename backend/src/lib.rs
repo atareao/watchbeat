@@ -2,6 +2,7 @@ pub mod auth;
 pub mod checker;
 pub mod config;
 pub mod db;
+pub mod dns;
 pub mod embed;
 pub mod models;
 pub mod notifier;

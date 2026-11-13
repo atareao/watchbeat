@@ -1,19 +1,52 @@
 use async_trait::async_trait;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::models::Monitor;
+
+/// Build a `reqwest::Client` wired to the given DNS resolver.
+///
+/// Keeping the client construction in one place is what makes the checkers use
+/// the embedded resolver (and therefore the TTL cache) instead of the OS one.
+pub(crate) fn build_http_client(
+    resolver: Arc<dyn reqwest::dns::Resolve>,
+) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .dns_resolver(resolver)
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .tls_info(true)
+        .pool_max_idle_per_host(2)
+        .build()
+}
 
 /// Shared reqwest::Client reused across all HTTP checks (created once)
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .tls_info(true)
-            .pool_max_idle_per_host(2)
-            .build()
-            .expect("Failed to build reqwest::Client")
+        build_http_client(crate::dns::reqwest_resolver()).expect("Failed to build reqwest::Client")
     })
+}
+
+/// Split a `host:port` target into its parts.
+///
+/// IPv6 must be bracketed (`[::1]:8080`): a bare `::1` is indistinguishable
+/// from `host:port`, so it is rejected instead of being silently mis-parsed.
+pub(crate) fn split_host_port(target: &str) -> Option<(String, u16)> {
+    let target = target.trim();
+
+    if let Some(bracketed) = target.strip_prefix('[') {
+        let (host, port) = bracketed.split_once("]:")?;
+        // Inside brackets only an IPv6 literal is meaningful.
+        host.parse::<std::net::Ipv6Addr>().ok()?;
+        return Some((host.to_string(), port.parse().ok()?));
+    }
+
+    let (host, port) = target.rsplit_once(':')?;
+
+    if host.is_empty() || host.contains(':') {
+        return None;
+    }
+
+    Some((host.to_string(), port.parse().ok()?))
 }
 
 /// Result of a single check.
@@ -169,23 +202,65 @@ impl Checker for HttpChecker {
 
 pub struct TcpChecker;
 
-#[async_trait]
-impl Checker for TcpChecker {
-    async fn check(&self, monitor: &Monitor) -> CheckOutcome {
+/// Why the body of a TCP check failed: telling a name-resolution problem from
+/// a connectivity one is what keeps `error` and `down` apart.
+enum TcpFailure {
+    Dns(crate::dns::DnsError),
+    Connect(std::io::Error),
+}
+
+impl TcpChecker {
+    /// Check body with injectable name resolution.
+    ///
+    /// Resolution and connection share the monitor timeout: a slow resolver
+    /// must not push the check past its budget.
+    pub(crate) async fn check_with<F, Fut>(monitor: &Monitor, resolve: F) -> CheckOutcome
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<std::net::IpAddr, crate::dns::DnsError>>,
+    {
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(monitor.timeout_seconds as u64);
 
-        let addr = monitor.target.clone();
+        let Some((host, port)) = split_host_port(&monitor.target) else {
+            return CheckOutcome {
+                status: "error".into(),
+                status_code: None,
+                response_time_ms: start.elapsed().as_millis() as u64,
+                error_message: Some(format!("Invalid TCP target: {}", monitor.target)),
+                tls: None,
+            };
+        };
 
-        match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&addr)).await {
-            Ok(Ok(_stream)) => CheckOutcome {
+        let result = tokio::time::timeout(timeout, async {
+            let ip = resolve(host.clone()).await.map_err(TcpFailure::Dns)?;
+
+            tokio::net::TcpStream::connect(std::net::SocketAddr::new(ip, port))
+                .await
+                .map_err(TcpFailure::Connect)?;
+
+            Ok::<(), TcpFailure>(())
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => CheckOutcome {
                 status: "up".into(),
                 status_code: None,
                 response_time_ms: start.elapsed().as_millis() as u64,
                 error_message: None,
                 tls: None,
             },
-            Ok(Err(e)) => CheckOutcome {
+            // A name that cannot be resolved is an infrastructure problem, not
+            // a service that is down.
+            Ok(Err(TcpFailure::Dns(e))) => CheckOutcome {
+                status: "error".into(),
+                status_code: None,
+                response_time_ms: start.elapsed().as_millis() as u64,
+                error_message: Some(format!("DNS resolution failed for {}: {}", host, e)),
+                tls: None,
+            },
+            Ok(Err(TcpFailure::Connect(e))) => CheckOutcome {
                 status: "down".into(),
                 status_code: None,
                 response_time_ms: start.elapsed().as_millis() as u64,
@@ -200,6 +275,17 @@ impl Checker for TcpChecker {
                 tls: None,
             },
         }
+    }
+}
+
+#[async_trait]
+impl Checker for TcpChecker {
+    async fn check(&self, monitor: &Monitor) -> CheckOutcome {
+        Self::check_with(
+            monitor,
+            |host| async move { crate::dns::resolve(&host).await },
+        )
+        .await
     }
 }
 
@@ -570,5 +656,104 @@ mod tests {
         m.timeout_seconds = 1;
         let outcome = TcpChecker.check(&m).await;
         assert_eq!(outcome.status, "down");
+    }
+
+    // ───── Own resolver integration ─────
+
+    #[test]
+    fn test_split_host_port_with_hostname() {
+        assert_eq!(
+            split_host_port("example.com:8443"),
+            Some(("example.com".into(), 8443))
+        );
+    }
+
+    #[test]
+    fn test_split_host_port_with_bracketed_ipv6() {
+        assert_eq!(split_host_port("[::1]:8080"), Some(("::1".into(), 8080)));
+    }
+
+    #[test]
+    fn test_split_host_port_without_port() {
+        assert_eq!(split_host_port("example.com"), None);
+    }
+
+    #[test]
+    fn test_split_host_port_rejects_bare_ipv6_without_brackets() {
+        assert_eq!(split_host_port("::1"), None);
+        assert_eq!(split_host_port("2001:db8::1"), None);
+        assert_eq!(split_host_port("[]:8080"), None);
+    }
+
+    /// Scenario: Check TCP usa el resolvedor propio.
+    ///
+    /// The hostname does not exist in the public DNS, so reaching the local
+    /// listener is only possible through the IP obtained from our resolver.
+    #[tokio::test]
+    async fn test_tcp_check_uses_ip_from_own_resolver() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+        });
+
+        crate::dns::resolver().prime_cache(
+            "watchbeat-cache.test",
+            "127.0.0.1".parse().unwrap(),
+            std::time::Duration::from_secs(60),
+        );
+
+        let m = make_monitor("tcp", &format!("watchbeat-cache.test:{}", port));
+        let outcome = TcpChecker.check(&m).await;
+
+        assert_eq!(outcome.status, "up");
+    }
+
+    #[tokio::test]
+    async fn test_tcp_check_with_invalid_target() {
+        let m = make_monitor("tcp", "no-port-here");
+        let outcome = TcpChecker.check(&m).await;
+
+        assert_eq!(outcome.status, "error");
+        assert!(outcome.error_message.is_some());
+    }
+
+    /// A hanging DNS resolution must not outlive the monitor timeout: failure
+    /// to resolve is part of the check budget, not an extra unbounded delay.
+    #[tokio::test]
+    async fn test_tcp_check_timeout_covers_dns_resolution() {
+        let mut m = make_monitor("tcp", "slow.test:80");
+        m.timeout_seconds = 1;
+
+        let resolve = |_host: String| async {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            Err(crate::dns::DnsError::Timeout)
+        };
+
+        let started = std::time::Instant::now();
+        let outcome = TcpChecker::check_with(&m, resolve).await;
+
+        assert_eq!(outcome.status, "down");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "resolution must be cut by the monitor timeout, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A DNS failure is not "service down": it is an infrastructure error.
+    #[tokio::test]
+    async fn test_tcp_check_reports_error_when_dns_fails() {
+        let m = make_monitor("tcp", "missing.test:80");
+
+        let outcome =
+            TcpChecker::check_with(&m, |_host| async { Err(crate::dns::DnsError::Nxdomain) }).await;
+
+        assert_eq!(outcome.status, "error");
+        assert!(outcome
+            .error_message
+            .expect("DNS failures must carry a message")
+            .contains("DNS"));
     }
 }

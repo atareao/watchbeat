@@ -14,6 +14,8 @@ pub struct Config {
     pub oidc_client_secret: String,
     pub oidc_redirect_url: String,
     pub retention_days: i64,
+    /// Upstream DNS servers of the embedded resolver (fallback order).
+    pub dns_upstreams: Vec<std::net::IpAddr>,
 }
 
 impl Config {
@@ -31,6 +33,7 @@ impl Config {
             oidc_client_secret: env_required("OIDC_CLIENT_SECRET"),
             oidc_redirect_url: env_or("OIDC_REDIRECT_URL", "http://localhost:3055/auth/callback"),
             retention_days: env_or_parsed("WATCHBEAT_RETENTION_DAYS", 30),
+            dns_upstreams: dns_upstreams_from_env(),
         }
     }
 }
@@ -48,6 +51,16 @@ pub fn env_or_parsed<T: std::str::FromStr>(key: &str, default: T) -> T {
 
 pub fn env_required(key: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| panic!("OIDC env var {} is required", key))
+}
+
+/// Upstream DNS servers of the embedded resolver, from
+/// [`crate::dns::UPSTREAMS_ENV`] as a comma separated list.
+///
+/// Parsing is tolerant: invalid entries are skipped and an empty list falls
+/// back to the defaults. Environment variables are read only here, so `Config`
+/// stays the single place mapping env → configuration.
+pub fn dns_upstreams_from_env() -> Vec<std::net::IpAddr> {
+    crate::dns::parse_upstreams(&env_or(crate::dns::UPSTREAMS_ENV, ""))
 }
 
 #[cfg(test)]
@@ -96,5 +109,20 @@ mod tests {
     #[should_panic]
     fn test_env_required_panics() {
         env_required("OIDC_UNSET_XYZ");
+    }
+
+    #[test]
+    fn test_dns_upstreams_from_env() {
+        std::env::remove_var(crate::dns::UPSTREAMS_ENV);
+        assert_eq!(dns_upstreams_from_env(), crate::dns::default_upstreams());
+
+        // Tolerant parsing: invalid entries are skipped.
+        std::env::set_var(crate::dns::UPSTREAMS_ENV, "9.9.9.9, not-an-ip");
+        assert_eq!(
+            dns_upstreams_from_env(),
+            vec!["9.9.9.9".parse::<std::net::IpAddr>().unwrap()]
+        );
+
+        std::env::remove_var(crate::dns::UPSTREAMS_ENV);
     }
 }
