@@ -47,6 +47,9 @@ export interface CheckResult {
   status_code: number | null;
   response_time_ms: number;
   error_message: string | null;
+  /** Machine-readable failure cause (e.g. "connect_refused", "dns_error").
+   * Omitted by the backend when there is no attributable cause. */
+  error_kind: string | null;
   checked_at: string;
   tls_cert_expires_at: string | null;
   tls_cert_days_left: number | null;
@@ -73,6 +76,9 @@ export interface DashboardStatus {
   enabled_monitors: number;
   up_monitors: number;
   down_monitors: number;
+  /** Monitors whose last check failed but not in an attributable way
+   * (e.g. host's own network/DNS down). Counted in neither up nor down. */
+  indeterminate_monitors: number;
   total_checks_24h: number;
   avg_response_time_24h: number | null;
 }

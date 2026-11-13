@@ -3,7 +3,7 @@ import { Card, Tag, Typography, Space, Button, Dropdown, Modal, Popconfirm, mess
 import {
   CheckCircleOutlined, CloseCircleOutlined, WarningOutlined,
   PlayCircleOutlined, MoreOutlined, HeartOutlined, ClockCircleOutlined, CopyOutlined,
-  GlobalOutlined, ApiOutlined, WifiOutlined, SafetyOutlined,
+  GlobalOutlined, ApiOutlined, WifiOutlined, SafetyOutlined, QuestionCircleOutlined,
 } from '@ant-design/icons';
 import type { MonitorSummary } from '../api/http';
 import { runCheck, toggleMonitor } from '../api/http';
@@ -19,6 +19,9 @@ const STATUS_CONFIG: Record<string, { color: string; icon: React.ReactNode }> = 
   up: { color: '#22c55e', icon: <CheckCircleOutlined style={{ color: '#22c55e', fontSize: 24 }} /> },
   down: { color: '#ef4444', icon: <CloseCircleOutlined style={{ color: '#ef4444', fontSize: 24 }} /> },
   error: { color: '#f59e0b', icon: <WarningOutlined style={{ color: '#f59e0b', fontSize: 24 }} /> },
+  // Failure NOT attributable to the target (e.g. host's own network/DNS is down).
+  // Violet + question mark: clearly distinct from down (red) and error (amber).
+  indeterminate: { color: '#722ed1', icon: <QuestionCircleOutlined style={{ color: '#722ed1', fontSize: 24 }} /> },
   ok: { color: '#22c55e', icon: <CheckCircleOutlined style={{ color: '#22c55e', fontSize: 24 }} /> },
   missing: { color: '#ef4444', icon: <CloseCircleOutlined style={{ color: '#ef4444', fontSize: 24 }} /> },
   pending: { color: '#f59e0b', icon: <ClockCircleOutlined style={{ color: '#f59e0b', fontSize: 24 }} /> },

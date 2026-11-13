@@ -55,6 +55,8 @@ const STATUS_TAG: Record<string, { color: string; text: string }> = {
   up: { color: "green", text: "UP" },
   down: { color: "red", text: "DOWN" },
   error: { color: "orange", text: "ERROR" },
+  // Failure not attributable to the target (e.g. host network/DNS down).
+  indeterminate: { color: "purple", text: "INDETERMINATE" },
 };
 
 const MONITOR_TYPES = [
@@ -183,12 +185,24 @@ const RANGE_OPTIONS: RangeOption[] = [
 // ── Helper: get health color for a bucket ──
 function healthColor(upPct: number, status: string): string {
   if (status === "no_data") return "#6b7280";
+  // Indeterminate = failure not attributable to the target: violet, never red,
+  // so it is not confused with a real "down" bucket.
+  if (status === "indeterminate") return "#722ed1";
   if (upPct >= 99) return "#22c55e";
   if (upPct >= 95) return "#4ade80";
   if (upPct >= 90) return "#86efac";
   if (upPct >= 75) return "#facc15";
   if (upPct >= 50) return "#fb923c";
   return "#ef4444";
+}
+
+// ── Helper: does a bucket carry attributable data? ──
+// A bucket counts towards uptime/latency averages only when its checks are
+// attributable to the target. "indeterminate" buckets (e.g. our own network/DNS
+// was down) have up_pct = 0 and no meaningful latency, so they must neither
+// penalise the target nor dilute its averages (D8).
+function isAttributableBucket(b: TimelineBucket): boolean {
+  return b.dominant_status !== "no_data" && b.dominant_status !== "indeterminate";
 }
 
 // ── Helper: format bucket time label ──
@@ -228,9 +242,7 @@ function MonitorStats({
     ])
       .then(([b24h, b7d, b30d]) => {
         const calcUptime = (buckets: TimelineBucket[]) => {
-          const withData = buckets.filter(
-            (b) => b.dominant_status !== "no_data",
-          );
+          const withData = buckets.filter(isAttributableBucket);
           if (withData.length === 0) return null;
           return (
             Math.round(
@@ -241,9 +253,7 @@ function MonitorStats({
           );
         };
         const calcLatency = (buckets: TimelineBucket[]) => {
-          const withData = buckets.filter(
-            (b) => b.dominant_status !== "no_data",
-          );
+          const withData = buckets.filter(isAttributableBucket);
           if (withData.length === 0) return null;
           return Math.round(
             withData.reduce((sum, b) => sum + b.avg_response_time_ms, 0) /
@@ -567,9 +577,7 @@ function HealthLatencyChart({
 }) {
   const range = RANGE_OPTIONS[rangeKey];
 
-  const bucketsWithData = buckets.filter(
-    (b) => b.dominant_status !== "no_data",
-  );
+  const bucketsWithData = buckets.filter(isAttributableBucket);
   const uptime =
     bucketsWithData.length > 0
       ? Math.round(
@@ -600,9 +608,13 @@ function HealthLatencyChart({
           const tooltipTitle =
             b.dominant_status === "no_data"
               ? `Sin datos · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
-              : `${b.dominant_status.toUpperCase()} · ${b.up_pct.toFixed(1)}% UP · ` +
-                `${b.avg_response_time_ms.toFixed(0)}ms media · ` +
-                `${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`;
+              : b.dominant_status === "indeterminate"
+                ? // No attributable checks in this bucket: its up_pct (0) and latency
+                  // are not the target's fault (D8), so showing them would mislead.
+                  `INDETERMINATE · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
+                : `${b.dominant_status.toUpperCase()} · ${b.up_pct.toFixed(1)}% UP · ` +
+                  `${b.avg_response_time_ms.toFixed(0)}ms media · ` +
+                  `${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`;
           return (
             <Tooltip key={i} title={tooltipTitle}>
               <div
@@ -821,7 +833,7 @@ export default function MonitorDetail() {
       setLoading(true);
       try {
         const statusFilter =
-          (errorsOnly ?? showErrorsOnly) ? "down,error" : undefined;
+          (errorsOnly ?? showErrorsOnly) ? "down,error,indeterminate" : undefined;
         const checksData = await fetchChecks(id, cp, cpp, statusFilter);
         setChecks(checksData.checks);
         setChecksPage(checksData.page);
@@ -903,6 +915,9 @@ export default function MonitorDetail() {
         status_code: null,
         response_time_ms: event.response_time_ms,
         error_message: event.error_message,
+        // The SSE 'check' event does not carry error_kind; the follow-up reloadAll()
+        // refetches the latest check unfiltered and fills it in.
+        error_kind: null,
         checked_at: event.checked_at,
         tls_cert_expires_at: null,
         tls_cert_days_left: null,
@@ -1037,6 +1052,21 @@ export default function MonitorDetail() {
             key: "error",
             ellipsis: true,
             render: (v: string | null) => v ?? "—",
+          },
+          {
+            // Machine-readable cause, e.g. "connect_refused". Discreet: empty when
+            // the backend reports no attributable cause.
+            title: "Causa",
+            dataIndex: "error_kind",
+            key: "error_kind",
+            width: 140,
+            ellipsis: true,
+            render: (v: string | null) =>
+              v ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {v}
+                </Text>
+              ) : null,
           },
         ]),
     {

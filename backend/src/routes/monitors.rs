@@ -5,6 +5,7 @@ use axum::Json;
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::attribution;
 use crate::auth::AppState;
 use crate::checker;
 use crate::models::{CheckResult, Monitor};
@@ -345,11 +346,16 @@ pub async fn run_check(
     let checker = checker::checker_for(&monitor).ok_or("Unsupported monitor type")?;
     let outcome = checker.check(&monitor).await;
 
+    // Same attribution as the scheduled path (D6): a failure caused by our own
+    // degraded egress must never surface as a `down` of the target.
+    let status = attribution::attribute(&outcome.status, outcome.cause, state.netcheck.current())
+        .to_string();
+
     let now = chrono::Utc::now().to_rfc3339();
     let check = CheckResult {
         id: 0,
         monitor_id: id.clone(),
-        status: outcome.status,
+        status,
         status_code: outcome.status_code,
         response_time_ms: outcome.response_time_ms as i64,
         error_message: outcome.error_message,

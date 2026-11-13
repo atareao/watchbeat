@@ -102,6 +102,10 @@ pub struct DashboardStatus {
     pub enabled_monitors: u64,
     pub up_monitors: u64,
     pub down_monitors: u64,
+    /// Monitors whose latest check is `indeterminate`: a failure we could not
+    /// attribute to the target. Exposed separately so the categories add up.
+    #[serde(default)]
+    pub indeterminate_monitors: u64,
     pub total_checks_24h: u64,
     pub avg_response_time_24h: Option<u64>,
 }

@@ -222,6 +222,234 @@ async fn test_calculate_uptime() {
     assert!((uptime - 80.0).abs() < 0.01);
 }
 
+/// Build a check for the given monitor, status and timestamp.
+fn check_at(monitor_id: &str, status: &str, checked_at: &str) -> CheckResult {
+    CheckResult {
+        id: 0,
+        monitor_id: monitor_id.into(),
+        status: status.into(),
+        status_code: None,
+        response_time_ms: 10,
+        error_message: None,
+        checked_at: checked_at.into(),
+        tls_cert_expires_at: None,
+        tls_cert_days_left: None,
+        error_kind: None,
+    }
+}
+
+/// Insert `count` checks with the given status, one minute apart, all inside the
+/// 7-day window.
+async fn insert_checks(db: &Database, monitor_id: &str, status: &str, count: i64) {
+    let now = chrono::Utc::now();
+    for i in 0..count {
+        let checked_at = (now - chrono::Duration::minutes(i)).to_rfc3339();
+        let check = check_at(monitor_id, status, &checked_at);
+        db.insert_check(&check).await.unwrap();
+    }
+}
+
+/// Insert `count` checks sharing the given timestamp, so they all land in a
+/// single timeline bucket.
+async fn insert_checks_at(db: &Database, monitor_id: &str, status: &str, count: i64, at: &str) {
+    for _ in 0..count {
+        let check = check_at(monitor_id, status, at);
+        db.insert_check(&check).await.unwrap();
+    }
+}
+
+/// Scenario: indeterminate no penaliza el uptime.
+#[tokio::test]
+async fn indeterminate_checks_should_not_penalize_uptime() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-indet")).await.unwrap();
+    insert_checks(&db, "m-indet", "up", 8).await;
+    insert_checks(&db, "m-indet", "indeterminate", 2).await;
+
+    let summaries = db.get_monitor_summaries().await.unwrap();
+    let uptime = summaries[0].uptime_7d.unwrap();
+    assert!(
+        (uptime - 100.0).abs() < 0.01,
+        "8 up + 2 indeterminate must be 100%, got {uptime}"
+    );
+}
+
+/// Scenario: down sí penaliza el uptime.
+#[tokio::test]
+async fn down_checks_should_still_penalize_uptime() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-down")).await.unwrap();
+    insert_checks(&db, "m-down", "up", 8).await;
+    insert_checks(&db, "m-down", "down", 2).await;
+
+    let summaries = db.get_monitor_summaries().await.unwrap();
+    let uptime = summaries[0].uptime_7d.unwrap();
+    assert!(
+        (uptime - 80.0).abs() < 0.01,
+        "8 up + 2 down must be 80%, got {uptime}"
+    );
+}
+
+/// Scenario: ventana solo con indeterminate.
+#[tokio::test]
+async fn a_window_with_only_indeterminate_checks_has_no_uptime() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-only-indet"))
+        .await
+        .unwrap();
+    insert_checks(&db, "m-only-indet", "indeterminate", 3).await;
+
+    let summaries = db.get_monitor_summaries().await.unwrap();
+    assert!(
+        summaries[0].uptime_7d.is_none(),
+        "a window without attributable checks has no uptime"
+    );
+}
+
+/// The batched uptime path (monitor list) applies the same exclusion.
+#[tokio::test]
+async fn batch_uptime_should_also_exclude_indeterminate_checks() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-batch")).await.unwrap();
+    insert_checks(&db, "m-batch", "up", 8).await;
+    insert_checks(&db, "m-batch", "indeterminate", 2).await;
+
+    let (_monitors, _total, summaries) = db
+        .list_monitors_paginated(1, 10, None, None, None)
+        .await
+        .unwrap();
+    let uptime = summaries[0].uptime_7d.unwrap();
+    assert!(
+        (uptime - 100.0).abs() < 0.01,
+        "batched uptime must exclude indeterminate, got {uptime}"
+    );
+}
+
+/// The dashboard must not report a monitor as down because of an unattributable
+/// failure.
+#[tokio::test]
+async fn dashboard_should_not_count_an_indeterminate_check_as_down() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-dash-indet"))
+        .await
+        .unwrap();
+    insert_checks(&db, "m-dash-indet", "indeterminate", 1).await;
+
+    let status = db.get_dashboard_status().await.unwrap();
+    assert_eq!(status.up_monitors, 0);
+    assert_eq!(status.down_monitors, 0);
+    assert_eq!(status.indeterminate_monitors, 1);
+}
+
+/// Scenario M3: el dashboard expone el recuento de monitores indeterminate y el
+/// total cuadra con la suma de categorías.
+#[tokio::test]
+async fn dashboard_counts_indeterminate_monitors_separately() {
+    let (db, _dir) = setup_db().await;
+    for id in ["m-d-up", "m-d-down", "m-d-indet"] {
+        db.create_monitor(&sample_monitor(id)).await.unwrap();
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    db.insert_check(&check_at("m-d-up", "up", &now))
+        .await
+        .unwrap();
+    db.insert_check(&check_at("m-d-down", "down", &now))
+        .await
+        .unwrap();
+    db.insert_check(&check_at("m-d-indet", "indeterminate", &now))
+        .await
+        .unwrap();
+
+    let status = db.get_dashboard_status().await.unwrap();
+    assert_eq!(status.up_monitors, 1);
+    assert_eq!(status.down_monitors, 1);
+    assert_eq!(status.indeterminate_monitors, 1);
+    assert_eq!(
+        status.total_monitors,
+        status.up_monitors + status.down_monitors + status.indeterminate_monitors,
+        "the total must add up to the sum of the categories"
+    );
+}
+
+// ── M2: el timeline no pinta como down un bucket sin fallos atribuibles ──
+
+/// Scenario: bucket cuyos únicos checks son `indeterminate`.
+#[tokio::test]
+async fn a_timeline_bucket_with_only_indeterminate_checks_is_not_down() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-tl-only-indet"))
+        .await
+        .unwrap();
+    let at = chrono::Utc::now().to_rfc3339();
+    insert_checks_at(&db, "m-tl-only-indet", "indeterminate", 3, &at).await;
+
+    let since = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let buckets = db
+        .get_timeline_buckets("m-tl-only-indet", &since, 60)
+        .await
+        .unwrap();
+
+    assert_eq!(buckets.len(), 1, "every check shares one bucket");
+    assert_eq!(buckets[0].dominant_status, "indeterminate");
+    assert_ne!(buckets[0].dominant_status, "down");
+}
+
+/// Scenario: bucket con up e indeterminate.
+#[tokio::test]
+async fn a_timeline_bucket_excludes_indeterminate_from_the_uptime_percentage() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-tl-mixed"))
+        .await
+        .unwrap();
+    let at = chrono::Utc::now().to_rfc3339();
+    insert_checks_at(&db, "m-tl-mixed", "up", 1, &at).await;
+    insert_checks_at(&db, "m-tl-mixed", "indeterminate", 1, &at).await;
+
+    let since = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let buckets = db
+        .get_timeline_buckets("m-tl-mixed", &since, 60)
+        .await
+        .unwrap();
+
+    assert_eq!(buckets.len(), 1);
+    assert!(
+        (buckets[0].up_pct - 100.0).abs() < 0.01,
+        "the indeterminate check must leave the denominator, got {}",
+        buckets[0].up_pct
+    );
+    assert_eq!(
+        buckets[0].dominant_status, "up",
+        "with attributable checks the dominant status stays binary"
+    );
+    assert_eq!(buckets[0].count, 2, "count still reports every check");
+}
+
+/// Scenario: bucket con caída real.
+#[tokio::test]
+async fn a_timeline_bucket_with_a_real_outage_is_down() {
+    let (db, _dir) = setup_db().await;
+    db.create_monitor(&sample_monitor("m-tl-down"))
+        .await
+        .unwrap();
+    let at = chrono::Utc::now().to_rfc3339();
+    insert_checks_at(&db, "m-tl-down", "down", 3, &at).await;
+    insert_checks_at(&db, "m-tl-down", "up", 1, &at).await;
+
+    let since = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let buckets = db
+        .get_timeline_buckets("m-tl-down", &since, 60)
+        .await
+        .unwrap();
+
+    assert_eq!(buckets.len(), 1);
+    assert_eq!(buckets[0].dominant_status, "down");
+    assert!(
+        (buckets[0].up_pct - 25.0).abs() < 0.01,
+        "one up out of four attributable checks is 25%, got {}",
+        buckets[0].up_pct
+    );
+}
+
 #[tokio::test]
 async fn test_set_failed_checks() {
     let (db, _dir) = setup_db().await;

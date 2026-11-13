@@ -5,6 +5,7 @@ use chrono::Utc;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
+use crate::attribution;
 use crate::models::{
     ApiKey, ApiKeyRow, CheckResult, DashboardStatus, Monitor, MonitorRow, MonitorSummary,
     MonitorWithSummaryRow, Notifier, NotifierRow, StatusPage, StatusPageRow, TimelineBucket,
@@ -426,7 +427,8 @@ impl Database {
             let uptime_7d: Option<(i64, i64)> = sqlx::query_as(
                 "SELECT CAST(COUNT(*) AS INTEGER) as total, \
                  CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS INTEGER) as up_count \
-                 FROM checks WHERE monitor_id=? AND checked_at>=?",
+                 FROM checks WHERE monitor_id=? AND checked_at>=? \
+                 AND status IN ('up','warning','down','error')",
             )
             .bind(id)
             .bind(&cutoff_7d)
@@ -443,7 +445,8 @@ impl Database {
             let uptime_30d: Option<(i64, i64)> = sqlx::query_as(
                 "SELECT CAST(COUNT(*) AS INTEGER) as total, \
                  CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS INTEGER) as up_count \
-                 FROM checks WHERE monitor_id=? AND checked_at>=?",
+                 FROM checks WHERE monitor_id=? AND checked_at>=? \
+                 AND status IN ('up','warning','down','error')",
             )
             .bind(id)
             .bind(&cutoff_30d)
@@ -927,12 +930,17 @@ impl Database {
             .ceil()
             .max(1.0) as i64;
 
-        let rows = sqlx::query_as::<_, (String, f64, f64, i64)>(
+        // `indeterminate` leaves the uptime denominator: a failure we cannot
+        // attribute must not paint the bucket as down (M2). `COUNT(*)` still
+        // reports every check in the bucket, and `attributable` tells us whether
+        // there is any health to report at all.
+        let rows = sqlx::query_as::<_, (String, i64, i64, f64, i64)>(
             "SELECT \
                  strftime('%Y-%m-%dT%H:%M:%SZ', \
                        CAST((CAST(strftime('%s', checked_at) / ? AS INTEGER) * ?) AS TEXT), \
                  'unixepoch') AS bucket_start, \
-                 100.0 * CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS FLOAT) / COUNT(*), \
+                 SUM(CASE WHEN status='up' THEN 1 ELSE 0 END), \
+                 SUM(CASE WHEN status IN ('up','warning','down','error') THEN 1 ELSE 0 END), \
                  AVG(CAST(response_time_ms AS FLOAT)), \
                  COUNT(*) \
               FROM checks \
@@ -950,16 +958,26 @@ impl Database {
 
         let buckets: Vec<TimelineBucket> = rows
             .into_iter()
-            .map(|(bucket_start, up_pct, avg_rt, count)| TimelineBucket {
-                bucket_start,
-                up_pct: (up_pct * 100.0).round() / 100.0,
-                avg_response_time_ms: (avg_rt * 100.0).round() / 100.0,
-                count,
-                dominant_status: if up_pct >= 50.0 {
-                    "up".to_string()
+            .map(|(bucket_start, up_count, attributable, avg_rt, count)| {
+                let up_pct = if attributable > 0 {
+                    100.0 * up_count as f64 / attributable as f64
                 } else {
-                    "down".to_string()
-                },
+                    0.0
+                };
+                TimelineBucket {
+                    bucket_start,
+                    up_pct: (up_pct * 100.0).round() / 100.0,
+                    avg_response_time_ms: (avg_rt * 100.0).round() / 100.0,
+                    count,
+                    dominant_status: if attributable == 0 {
+                        // Only unattributable checks: no verdict to render.
+                        attribution::INDETERMINATE.to_string()
+                    } else if up_pct >= 50.0 {
+                        "up".to_string()
+                    } else {
+                        "down".to_string()
+                    },
+                }
             })
             .collect();
 
@@ -1007,10 +1025,13 @@ impl Database {
 
     async fn calculate_uptime(&self, monitor_id: &str, days: i64) -> Result<Option<f64>> {
         let cutoff = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+        // `indeterminate` is excluded from BOTH the numerator and the denominator
+        // (D8): a failure we cannot attribute must not penalise the target.
         let result: Option<(i64, i64)> = sqlx::query_as(
             "SELECT CAST(COUNT(*) AS INTEGER) as total, \
              CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS INTEGER) as up_count \
-             FROM checks WHERE monitor_id=? AND checked_at>=?",
+             FROM checks WHERE monitor_id=? AND checked_at>=? \
+             AND status IN ('up','warning','down','error')",
         )
         .bind(monitor_id)
         .bind(&cutoff)
@@ -1040,6 +1061,7 @@ impl Database {
         let enabled = rows.iter().filter(|r| r.0 != 0).count() as u64;
         let mut up = 0u64;
         let mut down = 0u64;
+        let mut indeterminate = 0u64;
         let mut total_rt = 0u64;
         let mut rt_count = 0u64;
 
@@ -1073,6 +1095,9 @@ impl Database {
             } else {
                 match status.as_deref() {
                     Some("up") => up += 1,
+                    // Not attributable to the target: neither healthy nor down (D7),
+                    // but counted on its own so the categories add up (M3).
+                    Some("indeterminate") => indeterminate += 1,
                     Some(_) => down += 1,
                     None => {} // no checks yet
                 }
@@ -1095,6 +1120,7 @@ impl Database {
             enabled_monitors: enabled,
             up_monitors: up,
             down_monitors: down,
+            indeterminate_monitors: indeterminate,
             total_checks_24h: checks_24h as u64,
             avg_response_time_24h: if rt_count > 0 {
                 Some(total_rt.checked_div(rt_count).unwrap_or(0))
