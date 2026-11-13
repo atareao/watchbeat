@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::Serialize;
 use std::sync::{Arc, OnceLock};
 
 use crate::models::Monitor;
@@ -49,6 +50,172 @@ pub(crate) fn split_host_port(target: &str) -> Option<(String, u16)> {
     Some((host.to_string(), port.parse().ok()?))
 }
 
+/// Deterministic name-resolution failure, so checkers can be exercised without
+/// any DNS traffic.
+#[cfg(test)]
+pub(crate) fn dns_failure(
+    error: crate::dns::DnsError,
+) -> impl FnOnce(String) -> std::future::Ready<Result<std::net::IpAddr, crate::dns::DnsError>> {
+    move |_host| std::future::ready(Err(error))
+}
+
+/// Why a check failed.
+///
+/// Wire contract: `snake_case`, persisted as `checks.error_kind` and exposed by
+/// the API. Serialization only: nothing parses this back, so the variant set is
+/// the single source of truth and no unvalidated input can create one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureCause {
+    /// The name does not exist (NXDOMAIN).
+    DnsNxdomain,
+    /// Name resolution did not answer in time.
+    DnsTimeout,
+    /// The DNS server failed to answer the query.
+    DnsServfail,
+    /// The destination refused the connection.
+    ConnectRefused,
+    /// The connection did not complete within the monitor timeout.
+    ConnectTimeout,
+    /// The network (or host) is unreachable.
+    NetworkUnreachable,
+    /// The TLS handshake failed.
+    TlsError,
+    /// The endpoint answered with an unexpected HTTP status.
+    HttpStatus,
+    /// The response body did not match `expected_body`.
+    BodyMismatch,
+    /// Anything not covered by the taxonomy.
+    Other,
+}
+
+impl FailureCause {
+    /// Stable name of the cause, identical to its serialized form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::DnsNxdomain => "dns_nxdomain",
+            Self::DnsTimeout => "dns_timeout",
+            Self::DnsServfail => "dns_servfail",
+            Self::ConnectRefused => "connect_refused",
+            Self::ConnectTimeout => "connect_timeout",
+            Self::NetworkUnreachable => "network_unreachable",
+            Self::TlsError => "tls_error",
+            Self::HttpStatus => "http_status",
+            Self::BodyMismatch => "body_mismatch",
+            Self::Other => "other",
+        }
+    }
+}
+
+// ───── Error → cause mapping (D3) ─────
+
+/// The one place where a cause becomes an observable status.
+///
+/// Unifying it is what makes HTTP, TCP and TLS coherent: the same cause always
+/// yields the same status, whichever checker produced it.
+///
+/// `down` means the target is to blame; `error` means we could not establish
+/// anything, it is on our side, or it is ambiguous. Network health attribution
+/// (and the `indeterminate` status) belongs to a later phase.
+pub fn status_for(cause: Option<FailureCause>) -> &'static str {
+    match cause {
+        None => "up",
+        Some(
+            FailureCause::DnsNxdomain
+            | FailureCause::ConnectRefused
+            | FailureCause::TlsError
+            | FailureCause::HttpStatus
+            | FailureCause::BodyMismatch,
+        ) => "down",
+        Some(
+            FailureCause::DnsTimeout
+            | FailureCause::DnsServfail
+            | FailureCause::ConnectTimeout
+            | FailureCause::NetworkUnreachable
+            | FailureCause::Other,
+        ) => "error",
+    }
+}
+
+/// Map a typed resolution failure to its cause.
+pub(crate) fn cause_from_dns(error: &crate::dns::DnsError) -> FailureCause {
+    match error {
+        crate::dns::DnsError::Nxdomain => FailureCause::DnsNxdomain,
+        crate::dns::DnsError::Timeout => FailureCause::DnsTimeout,
+        crate::dns::DnsError::Servfail => FailureCause::DnsServfail,
+        // The taxonomy has no "any other DNS failure" bucket: `Other` is the
+        // documented catch-all for `DnsError::Other`.
+        crate::dns::DnsError::Other(_) => FailureCause::Other,
+    }
+}
+
+/// Map a connectivity `io::Error` to its cause.
+pub(crate) fn cause_from_io(error: &std::io::Error) -> FailureCause {
+    match error.kind() {
+        std::io::ErrorKind::ConnectionRefused => FailureCause::ConnectRefused,
+        std::io::ErrorKind::NetworkUnreachable | std::io::ErrorKind::HostUnreachable => {
+            FailureCause::NetworkUnreachable
+        }
+        std::io::ErrorKind::TimedOut => FailureCause::ConnectTimeout,
+        _ => FailureCause::Other,
+    }
+}
+
+/// Walk an error chain looking for the `io::Error` underneath the wrappers.
+fn io_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a std::io::Error> {
+    let mut current = Some(error);
+    while let Some(err) = current {
+        if let Some(io) = err.downcast_ref::<std::io::Error>() {
+            return Some(io);
+        }
+        current = err.source();
+    }
+    None
+}
+
+/// Classify a failed request from its error chain.
+///
+/// The `is_timeout`/`is_connect` flags come from `reqwest::Error`, so this stays
+/// testable without building one (every branch is unit-tested).
+///
+/// Only a *connect* timeout is `connect_timeout`: a response timeout (the
+/// connection was established but the server never answered) is ambiguous and
+/// therefore `other`.
+fn classify_error(
+    error: &(dyn std::error::Error + 'static),
+    is_timeout: bool,
+    is_connect: bool,
+    https: bool,
+) -> FailureCause {
+    if is_timeout {
+        return if is_connect {
+            FailureCause::ConnectTimeout
+        } else {
+            FailureCause::Other
+        };
+    }
+
+    if let Some(io) = io_error(error) {
+        let cause = cause_from_io(io);
+        if cause != FailureCause::Other {
+            return cause;
+        }
+    }
+
+    // A connect failure on an HTTPS endpoint that is not a plain socket error
+    // is a handshake problem.
+    if https && is_connect {
+        FailureCause::TlsError
+    } else {
+        FailureCause::Other
+    }
+}
+
+/// Adapter over [`classify_error`] for a real `reqwest::Error`.
+fn classify_request_error(error: &reqwest::Error, https: bool) -> FailureCause {
+    classify_error(error, error.is_timeout(), error.is_connect(), https)
+}
+
 /// Result of a single check.
 #[derive(Debug, Clone, Default)]
 pub struct CheckOutcome {
@@ -57,6 +224,7 @@ pub struct CheckOutcome {
     pub response_time_ms: u64,
     pub error_message: Option<String>,
     pub tls: Option<crate::checker::tls::TlsInfo>,
+    pub cause: Option<FailureCause>,
 }
 
 pub mod tls;
@@ -83,12 +251,69 @@ pub fn checker_for(monitor: &Monitor) -> Option<Box<dyn Checker>> {
 
 pub struct HttpChecker;
 
-#[async_trait]
-impl Checker for HttpChecker {
-    async fn check(&self, monitor: &Monitor) -> CheckOutcome {
+/// Host of an HTTP target, when the URL can be parsed at all.
+fn host_of(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()?
+        .host_str()
+        .map(str::to_string)
+}
+
+impl HttpChecker {
+    /// Check body with injectable name resolution (D2).
+    ///
+    /// Resolving first is what makes DNS failures exact: they are classified
+    /// from the typed `DnsError` instead of being inferred from reqwest's
+    /// version-dependent error strings. The lookup is nearly free thanks to the
+    /// resolver cache and only runs for hostnames (never for IP literals).
+    pub(crate) async fn check_with<F, Fut>(monitor: &Monitor, resolve: F) -> CheckOutcome
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<std::net::IpAddr, crate::dns::DnsError>>,
+    {
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(monitor.timeout_seconds as u64);
         let url = monitor.target.clone();
+        let https = url.starts_with("https://");
+
+        // The pre-resolve is a *classification probe*: it tells a DNS failure
+        // apart from a connectivity one. The actual resolution is still done by
+        // reqwest's `dns_resolver` (cached by our resolver, so it is nearly
+        // free). It only runs for hostnames, never for IP literals.
+        if let Some(host) = host_of(&url) {
+            if host.parse::<std::net::IpAddr>().is_err() {
+                let elapsed = || start.elapsed().as_millis() as u64;
+
+                match tokio::time::timeout(timeout, resolve(host.clone())).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        let cause = cause_from_dns(&e);
+                        return CheckOutcome {
+                            status: status_for(Some(cause)).into(),
+                            status_code: None,
+                            response_time_ms: elapsed(),
+                            error_message: Some(format!(
+                                "DNS resolution failed for {}: {}",
+                                host, e
+                            )),
+                            tls: None,
+                            cause: Some(cause),
+                        };
+                    }
+                    Err(_) => {
+                        let cause = FailureCause::DnsTimeout;
+                        return CheckOutcome {
+                            status: status_for(Some(cause)).into(),
+                            status_code: None,
+                            response_time_ms: elapsed(),
+                            error_message: Some(format!("DNS resolution timed out for {}", host)),
+                            tls: None,
+                            cause: Some(cause),
+                        };
+                    }
+                }
+            }
+        }
 
         let client = http_client();
 
@@ -104,17 +329,20 @@ impl Checker for HttpChecker {
             _ => client.get(&url),
         };
 
-        let req = req.header("User-Agent", "WatchBeat/0.1").timeout(timeout);
+        // One budget for the whole check: the pre-resolve above already spent
+        // part of it, so the request only gets what is left over.
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let req = req.header("User-Agent", "WatchBeat/0.1").timeout(remaining);
         let result = req.send().await;
 
         let elapsed = start.elapsed().as_millis() as u64;
 
         match result {
             Ok(resp) => {
-                let status = resp.status().as_u16();
+                let status_code = resp.status().as_u16();
 
                 // Extract TLS certificate info if the URL is HTTPS
-                let tls_info = if url.starts_with("https://") {
+                let tls_info = if https {
                     resp.extensions()
                         .get::<reqwest::tls::TlsInfo>()
                         .and_then(|info| info.peer_certificate())
@@ -129,7 +357,7 @@ impl Checker for HttpChecker {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(200) as u16;
 
-                let status_ok = (200..400).contains(&status) || status == expected;
+                let status_ok = (200..400).contains(&status_code) || status_code == expected;
 
                 if status_ok {
                     // Content validation: expected_body with optional regex
@@ -161,40 +389,61 @@ impl Checker for HttpChecker {
                     };
 
                     if body_ok {
+                        let status = status_for(None);
                         CheckOutcome {
-                            status: "up".into(),
-                            status_code: Some(status),
+                            status: status.into(),
+                            status_code: Some(status_code),
                             response_time_ms: elapsed,
                             error_message: None,
                             tls: tls_info.clone(),
+                            cause: None,
                         }
                     } else {
+                        let cause = FailureCause::BodyMismatch;
                         CheckOutcome {
-                            status: "down".into(),
-                            status_code: Some(status),
+                            status: status_for(Some(cause)).into(),
+                            status_code: Some(status_code),
                             response_time_ms: elapsed,
                             error_message: Some("Body content did not match expected".into()),
                             tls: tls_info.clone(),
+                            cause: Some(cause),
                         }
                     }
                 } else {
+                    let cause = FailureCause::HttpStatus;
                     CheckOutcome {
-                        status: "down".into(),
-                        status_code: Some(status),
+                        status: status_for(Some(cause)).into(),
+                        status_code: Some(status_code),
                         response_time_ms: elapsed,
-                        error_message: Some(format!("Unexpected HTTP status: {}", status)),
+                        error_message: Some(format!("Unexpected HTTP status: {}", status_code)),
                         tls: tls_info.clone(),
+                        cause: Some(cause),
                     }
                 }
             }
-            Err(e) => CheckOutcome {
-                status: if e.is_timeout() { "down" } else { "error" }.into(),
-                status_code: None,
-                response_time_ms: elapsed,
-                error_message: Some(format!("Request failed: {}", e)),
-                tls: None,
-            },
+            Err(e) => {
+                let cause = classify_request_error(&e, https);
+                CheckOutcome {
+                    status: status_for(Some(cause)).into(),
+                    status_code: None,
+                    response_time_ms: elapsed,
+                    error_message: Some(format!("Request failed: {}", e)),
+                    tls: None,
+                    cause: Some(cause),
+                }
+            }
         }
+    }
+}
+
+#[async_trait]
+impl Checker for HttpChecker {
+    async fn check(&self, monitor: &Monitor) -> CheckOutcome {
+        Self::check_with(
+            monitor,
+            |host| async move { crate::dns::resolve(&host).await },
+        )
+        .await
     }
 }
 
@@ -202,14 +451,20 @@ impl Checker for HttpChecker {
 
 pub struct TcpChecker;
 
-/// Why the body of a TCP check failed: telling a name-resolution problem from
-/// a connectivity one is what keeps `error` and `down` apart.
-enum TcpFailure {
-    Dns(crate::dns::DnsError),
-    Connect(std::io::Error),
-}
-
 impl TcpChecker {
+    /// Outcome for a failed check, built from its cause so the status can never
+    /// drift from the taxonomy.
+    fn failure(start: std::time::Instant, cause: FailureCause, message: String) -> CheckOutcome {
+        CheckOutcome {
+            status: status_for(Some(cause)).into(),
+            status_code: None,
+            response_time_ms: start.elapsed().as_millis() as u64,
+            error_message: Some(message),
+            tls: None,
+            cause: Some(cause),
+        }
+    }
+
     /// Check body with injectable name resolution.
     ///
     /// Resolution and connection share the monitor timeout: a slow resolver
@@ -219,61 +474,79 @@ impl TcpChecker {
         F: FnOnce(String) -> Fut,
         Fut: std::future::Future<Output = Result<std::net::IpAddr, crate::dns::DnsError>>,
     {
+        Self::check_with_connect(monitor, resolve, |addr| async move {
+            tokio::net::TcpStream::connect(addr).await.map(|_| ())
+        })
+        .await
+    }
+
+    /// Check body with both the resolver and the connector injectable, so every
+    /// connectivity cause can be classified deterministically (no network).
+    pub(crate) async fn check_with_connect<F, Fut, C, CFut>(
+        monitor: &Monitor,
+        resolve: F,
+        connect: C,
+    ) -> CheckOutcome
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<std::net::IpAddr, crate::dns::DnsError>>,
+        C: FnOnce(std::net::SocketAddr) -> CFut,
+        CFut: std::future::Future<Output = std::io::Result<()>>,
+    {
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(monitor.timeout_seconds as u64);
 
         let Some((host, port)) = split_host_port(&monitor.target) else {
-            return CheckOutcome {
-                status: "error".into(),
-                status_code: None,
-                response_time_ms: start.elapsed().as_millis() as u64,
-                error_message: Some(format!("Invalid TCP target: {}", monitor.target)),
-                tls: None,
-            };
+            return Self::failure(
+                start,
+                FailureCause::Other,
+                format!("Invalid TCP target: {}", monitor.target),
+            );
         };
 
-        let result = tokio::time::timeout(timeout, async {
-            let ip = resolve(host.clone()).await.map_err(TcpFailure::Dns)?;
+        // Resolution and connection share one budget, but are timed apart: that
+        // is what tells a resolution timeout from a connection one. Keeping the
+        // typed `DnsError` (instead of flattening it to a string) is what
+        // preserves the exact cause.
+        let ip = match tokio::time::timeout(timeout, resolve(host.clone())).await {
+            Ok(Ok(ip)) => ip,
+            Ok(Err(e)) => {
+                return Self::failure(
+                    start,
+                    cause_from_dns(&e),
+                    format!("DNS resolution failed for {}: {}", host, e),
+                );
+            }
+            Err(_) => {
+                return Self::failure(
+                    start,
+                    FailureCause::DnsTimeout,
+                    format!("DNS resolution timed out for {}", host),
+                );
+            }
+        };
 
-            tokio::net::TcpStream::connect(std::net::SocketAddr::new(ip, port))
-                .await
-                .map_err(TcpFailure::Connect)?;
+        let remaining = timeout.saturating_sub(start.elapsed());
 
-            Ok::<(), TcpFailure>(())
-        })
-        .await;
-
-        match result {
+        match tokio::time::timeout(remaining, connect(std::net::SocketAddr::new(ip, port))).await {
             Ok(Ok(())) => CheckOutcome {
-                status: "up".into(),
+                status: status_for(None).into(),
                 status_code: None,
                 response_time_ms: start.elapsed().as_millis() as u64,
                 error_message: None,
                 tls: None,
+                cause: None,
             },
-            // A name that cannot be resolved is an infrastructure problem, not
-            // a service that is down.
-            Ok(Err(TcpFailure::Dns(e))) => CheckOutcome {
-                status: "error".into(),
-                status_code: None,
-                response_time_ms: start.elapsed().as_millis() as u64,
-                error_message: Some(format!("DNS resolution failed for {}: {}", host, e)),
-                tls: None,
-            },
-            Ok(Err(TcpFailure::Connect(e))) => CheckOutcome {
-                status: "down".into(),
-                status_code: None,
-                response_time_ms: start.elapsed().as_millis() as u64,
-                error_message: Some(format!("TCP connection failed: {}", e)),
-                tls: None,
-            },
-            Err(_) => CheckOutcome {
-                status: "down".into(),
-                status_code: None,
-                response_time_ms: timeout.as_millis() as u64,
-                error_message: Some("TCP connection timed out".into()),
-                tls: None,
-            },
+            Ok(Err(e)) => Self::failure(
+                start,
+                cause_from_io(&e),
+                format!("TCP connection failed: {}", e),
+            ),
+            Err(_) => Self::failure(
+                start,
+                FailureCause::ConnectTimeout,
+                "TCP connection timed out".into(),
+            ),
         }
     }
 }
@@ -337,6 +610,7 @@ impl Checker for PingChecker {
                     response_time_ms: time_ms,
                     error_message: None,
                     tls: None,
+                    cause: None,
                 }
             }
             Ok(Ok(_out)) => CheckOutcome {
@@ -345,6 +619,7 @@ impl Checker for PingChecker {
                 response_time_ms: elapsed,
                 error_message: Some("Ping failed (no response)".into()),
                 tls: None,
+                cause: None,
             },
             Ok(Err(e)) => CheckOutcome {
                 status: "error".into(),
@@ -352,6 +627,7 @@ impl Checker for PingChecker {
                 response_time_ms: elapsed,
                 error_message: Some(format!("Ping command error: {}", e)),
                 tls: None,
+                cause: None,
             },
             Err(_) => CheckOutcome {
                 status: "down".into(),
@@ -359,6 +635,7 @@ impl Checker for PingChecker {
                 response_time_ms: timeout * 1000,
                 error_message: Some("Ping timed out".into()),
                 tls: None,
+                cause: None,
             },
         }
     }
@@ -444,9 +721,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_check_down() {
-        let m = make_monitor("http", "http://203.0.113.1:1");
+        // Nothing listens on the released port, so the connect is refused
+        // immediately: deterministic without touching any external network.
+        let port = closed_loopback_port().await;
+        let m = make_monitor("http", &format!("http://127.0.0.1:{port}/"));
+
         let outcome = HttpChecker.check(&m).await;
-        assert!(outcome.status == "down" || outcome.status == "error");
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(FailureCause::ConnectRefused));
     }
 
     #[tokio::test]
@@ -633,7 +916,10 @@ mod tests {
         });
 
         let outcome = HttpChecker.check(&m).await;
-        assert_eq!(outcome.status, "down");
+        // The connection was established, so this is *not* a connect timeout:
+        // a slow server is ambiguous (`other`), not the target refusing us.
+        assert_eq!(outcome.status, "error");
+        assert_eq!(outcome.cause, Some(FailureCause::Other));
         assert!(outcome.response_time_ms < 5000);
     }
 
@@ -651,11 +937,30 @@ mod tests {
 
     #[tokio::test]
     async fn test_tcp_check_timeout() {
-        // Connect to a non-responsive address with short timeout
-        let mut m = make_monitor("tcp", "203.0.113.1:80");
+        // The connector never answers, so the monitor timeout is what ends the
+        // attempt. Injected, so it is deterministic and needs no network.
+        let mut m = make_monitor("tcp", "127.0.0.1:80");
         m.timeout_seconds = 1;
-        let outcome = TcpChecker.check(&m).await;
-        assert_eq!(outcome.status, "down");
+
+        let connect = |_addr: std::net::SocketAddr| async {
+            std::future::pending::<std::io::Result<()>>().await
+        };
+
+        let started = std::time::Instant::now();
+        let outcome = TcpChecker::check_with_connect(
+            &m,
+            |host| async move { crate::dns::resolve(&host).await },
+            connect,
+        )
+        .await;
+
+        assert_eq!(outcome.status, "error");
+        assert_eq!(outcome.cause, Some(FailureCause::ConnectTimeout));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "the monitor timeout must end the attempt, took {:?}",
+            started.elapsed()
+        );
     }
 
     // ───── Own resolver integration ─────
@@ -734,7 +1039,8 @@ mod tests {
         let started = std::time::Instant::now();
         let outcome = TcpChecker::check_with(&m, resolve).await;
 
-        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.status, "error");
+        assert_eq!(outcome.cause, Some(FailureCause::DnsTimeout));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(3),
             "resolution must be cut by the monitor timeout, took {:?}",
@@ -742,18 +1048,702 @@ mod tests {
         );
     }
 
-    /// A DNS failure is not "service down": it is an infrastructure error.
+    /// A name that does not exist is the target's fault, so it is reported as
+    /// `down` (unlike a resolver timeout, which is `error`).
     #[tokio::test]
-    async fn test_tcp_check_reports_error_when_dns_fails() {
+    async fn test_tcp_check_reports_down_when_dns_nxdomain() {
         let m = make_monitor("tcp", "missing.test:80");
 
         let outcome =
             TcpChecker::check_with(&m, |_host| async { Err(crate::dns::DnsError::Nxdomain) }).await;
 
-        assert_eq!(outcome.status, "error");
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(FailureCause::DnsNxdomain));
         assert!(outcome
             .error_message
             .expect("DNS failures must carry a message")
             .contains("DNS"));
+    }
+
+    // ───── Failure cause taxonomy (Fase 2, robust check engine) ─────
+
+    /// Deterministic connectivity failure, so connectivity causes can be
+    /// classified without touching a socket.
+    fn io_failure(kind: std::io::ErrorKind) -> std::io::Error {
+        std::io::Error::new(kind, format!("injected {kind:?}"))
+    }
+
+    /// `rustls` gets both `ring` and `aws-lc-rs` in this tree, so the
+    /// process-level provider is ambiguous and the tests must install one
+    /// explicitly (pre-existing issue, see the Fase 1 notes).
+    fn install_crypto_provider() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    // Named builders for the DNS variants: a `fn` pointer keeps the test tables
+    // readable without tripping `clippy::type_complexity`.
+    type DnsCase = (&'static str, fn() -> crate::dns::DnsError, FailureCause);
+    type DnsErrorCase = (&'static str, fn() -> crate::dns::DnsError);
+
+    fn nxdomain() -> crate::dns::DnsError {
+        crate::dns::DnsError::Nxdomain
+    }
+
+    fn dns_timeout() -> crate::dns::DnsError {
+        crate::dns::DnsError::Timeout
+    }
+
+    fn servfail() -> crate::dns::DnsError {
+        crate::dns::DnsError::Servfail
+    }
+
+    fn dns_other() -> crate::dns::DnsError {
+        crate::dns::DnsError::Other("boom".into())
+    }
+
+    /// A loopback port with nothing listening on it (bound and released), so a
+    /// connect attempt is refused immediately by the kernel.
+    async fn closed_loopback_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    /// One-shot HTTP server answering `status_line` + `body`, so status and body
+    /// classification can be tested without leaving the loopback interface.
+    async fn spawn_http_server(
+        status_line: &'static str,
+        body: &'static str,
+    ) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let response = format!(
+                "{status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        });
+
+        addr
+    }
+
+    // ── The single cause→status table (architecture decision) ──
+
+    /// Every cause has exactly one status, and `None` means `up`. This is the
+    /// source of truth all three checkers derive their failures from.
+    #[test]
+    fn status_for_should_map_every_cause_to_its_status() {
+        let table = [
+            (None, "up"),
+            // The target is to blame.
+            (Some(FailureCause::DnsNxdomain), "down"),
+            (Some(FailureCause::ConnectRefused), "down"),
+            (Some(FailureCause::TlsError), "down"),
+            (Some(FailureCause::HttpStatus), "down"),
+            (Some(FailureCause::BodyMismatch), "down"),
+            // We could not establish anything, or it is our side / ambiguous.
+            (Some(FailureCause::DnsTimeout), "error"),
+            (Some(FailureCause::DnsServfail), "error"),
+            (Some(FailureCause::ConnectTimeout), "error"),
+            (Some(FailureCause::NetworkUnreachable), "error"),
+            (Some(FailureCause::Other), "error"),
+        ];
+
+        for (cause, expected) in table {
+            assert_eq!(
+                status_for(cause),
+                expected,
+                "cause {cause:?} must map to {expected}"
+            );
+        }
+    }
+
+    // ── Error→cause classification, without network (B2) ──
+
+    #[test]
+    fn cause_from_io_should_classify_connectivity_errors() {
+        assert_eq!(
+            cause_from_io(&io_failure(std::io::ErrorKind::ConnectionRefused)),
+            FailureCause::ConnectRefused
+        );
+        assert_eq!(
+            cause_from_io(&io_failure(std::io::ErrorKind::TimedOut)),
+            FailureCause::ConnectTimeout
+        );
+        assert_eq!(
+            cause_from_io(&io_failure(std::io::ErrorKind::NetworkUnreachable)),
+            FailureCause::NetworkUnreachable
+        );
+        assert_eq!(
+            cause_from_io(&io_failure(std::io::ErrorKind::HostUnreachable)),
+            FailureCause::NetworkUnreachable
+        );
+        assert_eq!(
+            cause_from_io(&io_failure(std::io::ErrorKind::BrokenPipe)),
+            FailureCause::Other
+        );
+    }
+
+    /// A response timeout is not a connect timeout (M1), and the HTTPS/keyword
+    /// branches are pinned without needing a real `reqwest::Error`.
+    #[test]
+    fn classify_error_should_classify_every_branch() {
+        let plain = io_failure(std::io::ErrorKind::Other);
+
+        // A connect timeout is ours-ish/ambiguous but at least about connecting.
+        assert_eq!(
+            classify_error(&plain, true, true, false),
+            FailureCause::ConnectTimeout
+        );
+        // Timeout after the connection was up (slow server): ambiguous.
+        assert_eq!(
+            classify_error(&plain, true, false, false),
+            FailureCause::Other
+        );
+        assert_eq!(
+            classify_error(
+                &io_failure(std::io::ErrorKind::ConnectionRefused),
+                false,
+                true,
+                false
+            ),
+            FailureCause::ConnectRefused
+        );
+        assert_eq!(
+            classify_error(
+                &io_failure(std::io::ErrorKind::NetworkUnreachable),
+                false,
+                true,
+                false
+            ),
+            FailureCause::NetworkUnreachable
+        );
+        // HTTPS + connect failure without a socket error: the handshake.
+        assert_eq!(
+            classify_error(&plain, false, true, true),
+            FailureCause::TlsError
+        );
+        // Anything else.
+        assert_eq!(
+            classify_error(&plain, false, true, false),
+            FailureCause::Other
+        );
+        assert_eq!(
+            classify_error(&plain, false, false, false),
+            FailureCause::Other
+        );
+    }
+
+    // ── Cause classification through the checkers ──
+
+    /// Scenario: Dominio inexistente.
+    #[tokio::test]
+    async fn http_check_should_report_dns_nxdomain_cause() {
+        let m = make_monitor("http", "http://missing.test/");
+
+        let outcome =
+            HttpChecker::check_with(&m, dns_failure(crate::dns::DnsError::Nxdomain)).await;
+
+        assert_eq!(outcome.cause, Some(FailureCause::DnsNxdomain));
+        assert_eq!(outcome.status, "down");
+    }
+
+    /// The three checkers are unified: the same cause always yields the same
+    /// status, because all of them go through `status_for`.
+    #[tokio::test]
+    async fn checkers_should_agree_on_status_per_dns_cause() {
+        let cases: [DnsCase; 3] = [
+            ("nxdomain", nxdomain, FailureCause::DnsNxdomain),
+            ("timeout", dns_timeout, FailureCause::DnsTimeout),
+            ("servfail", servfail, FailureCause::DnsServfail),
+        ];
+
+        for (name, dns_error, cause) in cases {
+            let expected = status_for(Some(cause));
+
+            let http = HttpChecker::check_with(
+                &make_monitor("http", "http://missing.test/"),
+                dns_failure(dns_error()),
+            )
+            .await;
+            let tcp = TcpChecker::check_with(
+                &make_monitor("tcp", "missing.test:80"),
+                dns_failure(dns_error()),
+            )
+            .await;
+            let tls = crate::checker::tls::TlsChecker::check_with(
+                &make_monitor("tls", "missing.test:443"),
+                dns_failure(dns_error()),
+            )
+            .await;
+
+            for (checker, outcome) in [("http", &http), ("tcp", &tcp), ("tls", &tls)] {
+                assert_eq!(
+                    outcome.cause,
+                    Some(cause),
+                    "{checker} must report cause {name}"
+                );
+                assert_eq!(
+                    outcome.status, expected,
+                    "{checker} must map {name} to {expected}, got {}",
+                    outcome.status
+                );
+            }
+
+            assert_eq!(
+                (http.status, tcp.status, tls.status),
+                (
+                    expected.to_string(),
+                    expected.to_string(),
+                    expected.to_string()
+                ),
+                "every checker must agree on the status of {name}"
+            );
+        }
+    }
+
+    /// Scenario: Conexión rechazada, en los tres checkers (M2, B1).
+    #[tokio::test]
+    async fn checkers_should_agree_on_status_for_connect_refused() {
+        let port = closed_loopback_port().await;
+
+        let http = HttpChecker
+            .check(&make_monitor("http", &format!("http://127.0.0.1:{port}/")))
+            .await;
+        let tcp = TcpChecker
+            .check(&make_monitor("tcp", &format!("127.0.0.1:{port}")))
+            .await;
+        // The connect fails before any handshake, so no crypto provider needed.
+        let tls = crate::checker::tls::TlsChecker
+            .check(&make_monitor("tls", &format!("127.0.0.1:{port}")))
+            .await;
+
+        for (checker, outcome) in [("http", &http), ("tcp", &tcp), ("tls", &tls)] {
+            assert_eq!(
+                outcome.cause,
+                Some(FailureCause::ConnectRefused),
+                "{checker} must classify a refused connection"
+            );
+            assert_eq!(outcome.status, "down", "{checker} must report `down`");
+        }
+    }
+
+    /// Scenario: Timeout de resolución de nombres.
+    #[tokio::test]
+    async fn http_check_should_report_dns_timeout_cause() {
+        let m = make_monitor("http", "http://slow.test/");
+
+        let outcome = HttpChecker::check_with(&m, dns_failure(crate::dns::DnsError::Timeout)).await;
+
+        assert_eq!(outcome.status, "error");
+        assert_eq!(outcome.cause, Some(FailureCause::DnsTimeout));
+    }
+
+    /// Scenario: Fallo del servidor DNS.
+    #[tokio::test]
+    async fn http_check_should_report_dns_servfail_cause() {
+        let m = make_monitor("http", "http://broken.test/");
+
+        let outcome =
+            HttpChecker::check_with(&m, dns_failure(crate::dns::DnsError::Servfail)).await;
+
+        assert_eq!(outcome.status, "error");
+        assert_eq!(outcome.cause, Some(FailureCause::DnsServfail));
+    }
+
+    /// Scenario: La causa se propaga en el resultado del check.
+    ///
+    /// TCP keeps the typed `DnsError`, so the exact variant survives into
+    /// `CheckOutcome` instead of being flattened into a message.
+    #[tokio::test]
+    async fn tcp_check_should_report_typed_dns_cause() {
+        let m = make_monitor("tcp", "broken.test:443");
+
+        let outcome = TcpChecker::check_with(&m, dns_failure(crate::dns::DnsError::Servfail)).await;
+
+        assert_eq!(outcome.status, "error");
+        assert_eq!(outcome.cause, Some(FailureCause::DnsServfail));
+    }
+
+    /// Scenario: Conexión rechazada.
+    #[tokio::test]
+    async fn tcp_check_should_report_connect_refused_cause() {
+        // Bind and drop: the port is free again, so the kernel resets the SYN.
+        let port = closed_loopback_port().await;
+
+        let m = make_monitor("tcp", &format!("127.0.0.1:{port}"));
+        let outcome = TcpChecker.check(&m).await;
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(FailureCause::ConnectRefused));
+    }
+
+    /// Scenario: Timeout de conexión (determinista, con el connector inyectado).
+    #[tokio::test]
+    async fn tcp_check_should_report_connect_timeout_cause() {
+        let m = make_monitor("tcp", "127.0.0.1:80");
+
+        let connect = |_addr: std::net::SocketAddr| async {
+            Err::<(), _>(io_failure(std::io::ErrorKind::TimedOut))
+        };
+        let outcome = TcpChecker::check_with_connect(
+            &m,
+            |host| async move { crate::dns::resolve(&host).await },
+            connect,
+        )
+        .await;
+
+        assert_eq!(outcome.cause, Some(FailureCause::ConnectTimeout));
+        assert_eq!(outcome.status, "error");
+    }
+
+    /// Scenario: Red inalcanzable (determinista, sin rutas IPv6).
+    #[tokio::test]
+    async fn tcp_check_should_report_network_unreachable_cause() {
+        let m = make_monitor("tcp", "127.0.0.1:80");
+
+        let connect = |_addr: std::net::SocketAddr| async {
+            Err::<(), _>(io_failure(std::io::ErrorKind::NetworkUnreachable))
+        };
+        let outcome = TcpChecker::check_with_connect(
+            &m,
+            |host| async move { crate::dns::resolve(&host).await },
+            connect,
+        )
+        .await;
+
+        assert_eq!(outcome.cause, Some(FailureCause::NetworkUnreachable));
+        assert_eq!(outcome.status, "error");
+    }
+
+    /// An unknown connectivity error falls back to `other` (and still `error`).
+    #[tokio::test]
+    async fn tcp_check_should_report_other_cause_for_unknown_connect_errors() {
+        let m = make_monitor("tcp", "127.0.0.1:80");
+
+        let connect = |_addr: std::net::SocketAddr| async {
+            Err::<(), _>(io_failure(std::io::ErrorKind::BrokenPipe))
+        };
+        let outcome = TcpChecker::check_with_connect(
+            &m,
+            |host| async move { crate::dns::resolve(&host).await },
+            connect,
+        )
+        .await;
+
+        assert_eq!(outcome.cause, Some(FailureCause::Other));
+        assert_eq!(outcome.status, "error");
+    }
+
+    /// Scenario: Status HTTP inesperado.
+    #[tokio::test]
+    async fn http_check_should_report_http_status_cause() {
+        let addr = spawn_http_server("HTTP/1.1 404 Not Found", "").await;
+        let mut m = make_monitor("http", &format!("http://{addr}/"));
+        m.config_json = serde_json::json!({ "expected_status": 200 });
+
+        let outcome = HttpChecker.check(&m).await;
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(FailureCause::HttpStatus));
+    }
+
+    /// Scenario: Contenido no esperado.
+    #[tokio::test]
+    async fn http_check_should_report_body_mismatch_cause() {
+        let addr = spawn_http_server("HTTP/1.1 200 OK", "hello").await;
+        let mut m = make_monitor("http", &format!("http://{addr}/"));
+        m.config_json = serde_json::json!({ "expected_body": "world" });
+
+        let outcome = HttpChecker.check(&m).await;
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(FailureCause::BodyMismatch));
+    }
+
+    /// Scenario: Check correcto sin causa (HTTP).
+    #[tokio::test]
+    async fn http_check_should_report_no_cause_when_up() {
+        let addr = spawn_http_server("HTTP/1.1 200 OK", "ok").await;
+        let m = make_monitor("http", &format!("http://{addr}/"));
+
+        let outcome = HttpChecker.check(&m).await;
+
+        assert_eq!(outcome.status, "up");
+        assert_eq!(outcome.cause, None);
+        assert_eq!(status_for(outcome.cause), "up");
+    }
+
+    /// Scenario: Check correcto sin causa (TCP).
+    #[tokio::test]
+    async fn tcp_check_should_report_no_cause_when_up() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let m = make_monitor("tcp", &addr.to_string());
+        let outcome = TcpChecker.check(&m).await;
+
+        assert_eq!(outcome.status, "up");
+        assert_eq!(outcome.cause, None);
+    }
+
+    /// `ping` is outside the taxonomy: whatever the outcome, it carries no cause.
+    #[tokio::test]
+    async fn ping_check_should_report_no_cause() {
+        let m = make_monitor("ping", "127.0.0.1");
+
+        let outcome = PingChecker.check(&m).await;
+
+        assert!(
+            outcome.cause.is_none(),
+            "ping is outside the taxonomy, got {:?}",
+            outcome.cause
+        );
+    }
+
+    /// Scenario: la conexión rechazada se clasifica por el camino real de
+    /// reqwest (M2), sin red externa: el puerto del loopback no tiene nadie
+    /// escuchando, así que el kernel rechaza el connect de inmediato.
+    #[tokio::test]
+    async fn http_check_should_classify_a_refused_connection() {
+        let port = closed_loopback_port().await;
+        let m = make_monitor("http", &format!("http://127.0.0.1:{port}/"));
+
+        let outcome = HttpChecker.check(&m).await;
+
+        assert_eq!(outcome.cause, Some(FailureCause::ConnectRefused));
+        assert_eq!(outcome.status, status_for(outcome.cause));
+        assert_eq!(outcome.status, "down");
+    }
+
+    /// M3: el pre-resolve es una *sonda de clasificación*, no un presupuesto
+    /// aparte. El presupuesto del monitor es único, así que un probe lento deja
+    /// al request solo el tiempo restante (antes se sumaban los dos).
+    #[tokio::test]
+    async fn http_check_should_share_a_single_timeout_budget_with_the_probe() {
+        use tokio::io::AsyncReadExt;
+
+        // Acepta pero nunca responde: el request solo puede terminar por timeout.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                std::future::pending::<()>().await;
+            }
+        });
+        // El nombre lo resuelve reqwest con nuestro resolver cacheado, así que el
+        // request sí llega a nuestro listener.
+        crate::dns::resolver().prime_cache(
+            "watchbeat-budget.test",
+            "127.0.0.1".parse().unwrap(),
+            std::time::Duration::from_secs(60),
+        );
+
+        let mut m = make_monitor("http", &format!("http://watchbeat-budget.test:{port}/"));
+        m.timeout_seconds = 1;
+
+        // La sonda se come 800 ms de los 1000 ms del monitor.
+        let outcome = HttpChecker::check_with(&m, |_host| async {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+        })
+        .await;
+
+        assert_ne!(
+            outcome.status, "up",
+            "a server that never answers cannot be up"
+        );
+        assert_eq!(outcome.status, status_for(outcome.cause));
+        assert!(
+            outcome.response_time_ms < 1500,
+            "sonda y request deben compartir un solo presupuesto, tardó {} ms",
+            outcome.response_time_ms
+        );
+    }
+
+    /// B1: los tres checkers derivan el status de `status_for`, así que no
+    /// pueden discrepar sobre una misma causa. Cubre las 10 causas.
+    #[tokio::test]
+    async fn checkers_should_derive_status_from_status_for() {
+        let mut outcomes: Vec<(String, CheckOutcome)> = Vec::new();
+
+        // Causas DNS, en los tres checkers.
+        let dns_cases: [DnsErrorCase; 4] = [
+            ("dns_nxdomain", nxdomain),
+            ("dns_timeout", dns_timeout),
+            ("dns_servfail", servfail),
+            ("dns_other", dns_other),
+        ];
+        for (name, error) in dns_cases {
+            outcomes.push((
+                format!("http/{name}"),
+                HttpChecker::check_with(
+                    &make_monitor("http", "http://missing.test/"),
+                    dns_failure(error()),
+                )
+                .await,
+            ));
+            outcomes.push((
+                format!("tcp/{name}"),
+                TcpChecker::check_with(
+                    &make_monitor("tcp", "missing.test:80"),
+                    dns_failure(error()),
+                )
+                .await,
+            ));
+            outcomes.push((
+                format!("tls/{name}"),
+                crate::checker::tls::TlsChecker::check_with(
+                    &make_monitor("tls", "missing.test:443"),
+                    dns_failure(error()),
+                )
+                .await,
+            ));
+        }
+
+        // Causas de conectividad, con el connector inyectado (sin red).
+        let connect_cases: [(&str, std::io::ErrorKind); 3] = [
+            ("connect_timeout", std::io::ErrorKind::TimedOut),
+            (
+                "network_unreachable",
+                std::io::ErrorKind::NetworkUnreachable,
+            ),
+            ("other", std::io::ErrorKind::BrokenPipe),
+        ];
+        for (name, kind) in connect_cases {
+            let outcome = TcpChecker::check_with_connect(
+                &make_monitor("tcp", "127.0.0.1:80"),
+                |host| async move { crate::dns::resolve(&host).await },
+                move |_addr| async move { Err::<(), _>(io_failure(kind)) },
+            )
+            .await;
+            outcomes.push((format!("tcp/{name}"), outcome));
+        }
+
+        // Refused, en HTTP (ruta real de reqwest) y TCP.
+        let port = closed_loopback_port().await;
+        outcomes.push((
+            "http/connect_refused".into(),
+            HttpChecker
+                .check(&make_monitor("http", &format!("http://127.0.0.1:{port}/")))
+                .await,
+        ));
+        outcomes.push((
+            "tcp/connect_refused".into(),
+            TcpChecker
+                .check(&make_monitor("tcp", &format!("127.0.0.1:{port}")))
+                .await,
+        ));
+
+        // Causas de protocolo (HTTP) y el caso correcto.
+        let not_found = spawn_http_server("HTTP/1.1 404 Not Found", "").await;
+        let mut status_monitor = make_monitor("http", &format!("http://{not_found}/"));
+        status_monitor.config_json = serde_json::json!({ "expected_status": 200 });
+        outcomes.push((
+            "http/http_status".into(),
+            HttpChecker.check(&status_monitor).await,
+        ));
+
+        let wrong_body = spawn_http_server("HTTP/1.1 200 OK", "hello").await;
+        let mut body_monitor = make_monitor("http", &format!("http://{wrong_body}/"));
+        body_monitor.config_json = serde_json::json!({ "expected_body": "world" });
+        outcomes.push((
+            "http/body_mismatch".into(),
+            HttpChecker.check(&body_monitor).await,
+        ));
+
+        let healthy = spawn_http_server("HTTP/1.1 200 OK", "ok").await;
+        outcomes.push((
+            "http/up".into(),
+            HttpChecker
+                .check(&make_monitor("http", &format!("http://{healthy}/")))
+                .await,
+        ));
+
+        // Causa TLS: un listener TCP plano que cierra sin handshake.
+        install_crypto_provider();
+        let tls_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tls_port = tls_listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = tls_listener.accept().await {
+                drop(stream);
+            }
+        });
+        crate::dns::resolver().prime_cache(
+            "watchbeat-equivalence.test",
+            "127.0.0.1".parse().unwrap(),
+            std::time::Duration::from_secs(60),
+        );
+        outcomes.push((
+            "tls/tls_error".into(),
+            crate::checker::tls::TlsChecker
+                .check(&make_monitor(
+                    "tls",
+                    &format!("watchbeat-equivalence.test:{tls_port}"),
+                ))
+                .await,
+        ));
+
+        // La equivalencia no puede ser vacua: debe cubrir toda la taxonomía.
+        let mut seen: Vec<FailureCause> = outcomes
+            .iter()
+            .filter_map(|(_, outcome)| outcome.cause)
+            .collect();
+        seen.sort_by_key(|cause| cause.as_str());
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            10,
+            "the equivalence test must exercise the whole taxonomy, saw {seen:?}"
+        );
+
+        for (label, outcome) in &outcomes {
+            assert_eq!(
+                outcome.status,
+                status_for(outcome.cause),
+                "{label} must derive its status from status_for (cause {:?})",
+                outcome.cause
+            );
+        }
+    }
+
+    /// The wire contract of the taxonomy is frozen: `snake_case`, and the name
+    /// exposed to the API matches the serialized one.
+    #[test]
+    fn failure_cause_should_serialize_in_snake_case() {
+        let taxonomy = [
+            (FailureCause::DnsNxdomain, "dns_nxdomain"),
+            (FailureCause::DnsTimeout, "dns_timeout"),
+            (FailureCause::DnsServfail, "dns_servfail"),
+            (FailureCause::ConnectRefused, "connect_refused"),
+            (FailureCause::ConnectTimeout, "connect_timeout"),
+            (FailureCause::NetworkUnreachable, "network_unreachable"),
+            (FailureCause::TlsError, "tls_error"),
+            (FailureCause::HttpStatus, "http_status"),
+            (FailureCause::BodyMismatch, "body_mismatch"),
+            (FailureCause::Other, "other"),
+        ];
+
+        for (cause, name) in &taxonomy {
+            assert_eq!(
+                serde_json::to_value(cause).unwrap(),
+                serde_json::json!(name)
+            );
+            assert_eq!(cause.as_str(), *name);
+        }
+
+        assert_eq!(taxonomy.len(), 10, "taxonomy must match the documented set");
     }
 }
