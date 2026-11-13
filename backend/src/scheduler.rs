@@ -11,10 +11,43 @@ use crate::checker;
 use crate::checker::Checker;
 use crate::db::Database;
 use crate::models::{CheckResult, Monitor, Notifier};
+use crate::netcheck::NetworkHealthHandle;
 use crate::notifier;
 use crate::template::{self, TemplateContext};
 
+use crate::attribution;
+
 // ───── Commands ─────
+
+/// The last *observable* status the scheduler saw for a monitor.
+///
+/// Deliberately distinct from the notification state (`was_up`): an
+/// unattributable failure is [`ObservedStatus::Indeterminate`], which is a real
+/// change worth persisting and emitting **once**, yet must NOT flip `was_up`
+/// (D7). Keeping the two apart is what stops a sustained egress outage from
+/// writing a row and emitting an SSE event on every single check (M5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObservedStatus {
+    /// No check has run yet for this monitor task.
+    Unknown,
+    Up,
+    Down,
+    Indeterminate,
+}
+
+impl ObservedStatus {
+    /// Classify a persisted status string. `is_up` is the notification-state
+    /// reading of the very same status (`up`/`warning`).
+    fn from_status(status: &str, is_up: bool) -> Self {
+        if status == attribution::INDETERMINATE {
+            Self::Indeterminate
+        } else if is_up {
+            Self::Up
+        } else {
+            Self::Down
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum SchedulerCommand {
@@ -36,7 +69,14 @@ pub struct SchedulerManager {
 
 impl SchedulerManager {
     /// Start the scheduler. Loads existing monitors and begins monitoring.
-    pub async fn spawn(db: Database, event_tx: broadcast::Sender<String>) -> Self {
+    ///
+    /// `health` is the publication handle of the `netcheck` canary; it is read
+    /// (never awaited) on every check to attribute failures.
+    pub async fn spawn(
+        db: Database,
+        event_tx: broadcast::Sender<String>,
+        health: NetworkHealthHandle,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(64);
         let active_tasks = Arc::new(AtomicU64::new(0));
         let last_check_at = Arc::new(AtomicI64::new(0));
@@ -48,7 +88,7 @@ impl SchedulerManager {
         };
 
         tokio::spawn(async move {
-            manager_loop(rx, db, event_tx, active_tasks, last_check_at).await;
+            manager_loop(rx, db, event_tx, active_tasks, last_check_at, health).await;
         });
 
         mgr
@@ -83,6 +123,7 @@ async fn manager_loop(
     event_tx: broadcast::Sender<String>,
     active_tasks: Arc<AtomicU64>,
     last_check_at: Arc<AtomicI64>,
+    health: NetworkHealthHandle,
 ) {
     let notifier_cache: Arc<RwLock<HashMap<String, Notifier>>> =
         Arc::new(RwLock::new(HashMap::new()));
@@ -108,6 +149,7 @@ async fn manager_loop(
                     notifier_cache.clone(),
                     event_tx.clone(),
                     last_check_at.clone(),
+                    health.clone(),
                 );
                 task_map.insert(id, handle);
             }
@@ -133,6 +175,7 @@ async fn manager_loop(
                         notifier_cache.clone(),
                         event_tx.clone(),
                         last_check_at.clone(),
+                        health.clone(),
                     );
                     task_map.insert(id, handle);
                 }
@@ -170,6 +213,7 @@ fn monitor_task(
     notifier_cache: Arc<RwLock<HashMap<String, Notifier>>>,
     event_tx: broadcast::Sender<String>,
     last_check_at: Arc<AtomicI64>,
+    health: NetworkHealthHandle,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let interval_secs = monitor.interval_seconds.max(1) as u64;
@@ -180,6 +224,7 @@ fn monitor_task(
                 notifier_cache.clone(),
                 event_tx.clone(),
                 last_check_at.clone(),
+                health.clone(),
                 interval_secs,
             ))
             .catch_unwind()
@@ -216,6 +261,7 @@ async fn monitor_task_inner(
     notifier_cache: Arc<RwLock<HashMap<String, Notifier>>>,
     event_tx: broadcast::Sender<String>,
     last_check_at: Arc<AtomicI64>,
+    health: NetworkHealthHandle,
     interval_secs: u64,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
@@ -236,6 +282,7 @@ async fn monitor_task_inner(
     // Track last DB write timestamp for time-based sampling:
     // write at least once per interval_secs to maintain latency data
     let mut last_write_at: i64 = 0;
+    let mut observed = ObservedStatus::Unknown;
 
     loop {
         interval.tick().await;
@@ -246,9 +293,11 @@ async fn monitor_task_inner(
             &event_tx,
             &last_check_at,
             checker.as_deref(),
+            &health,
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
         )
         .await;
@@ -265,9 +314,11 @@ pub(crate) async fn run_monitor_check(
     event_tx: &broadcast::Sender<String>,
     last_check_at: &Arc<AtomicI64>,
     checker: Option<&dyn Checker>,
+    health: &NetworkHealthHandle,
     was_up: bool,
     notifier_ids: &[String],
     last_write_at: &mut i64,
+    observed: &mut ObservedStatus,
     interval_secs: u64,
 ) -> bool {
     let now = chrono::Utc::now();
@@ -283,27 +334,35 @@ pub(crate) async fn run_monitor_check(
 
     let outcome = checker.check(monitor).await;
 
+    // ── Attribution (Fase 3, D6): combine the failure cause with the health of
+    // our own egress. `indeterminate` means the failure is not the target's.
+    let attributed = attribution::attribute(&outcome.status, outcome.cause, health.current());
+    let is_indeterminate = attributed == attribution::INDETERMINATE;
+
     // Confirmation logic
-    let is_up_raw = outcome.status == "up" || outcome.status == "warning";
-    let mut effective_status = outcome.status.clone();
+    let mut effective_status = attributed.to_string();
 
-    if !is_up_raw && monitor.confirmations_required > 0 {
-        let new_failed = monitor.failed_checks + 1;
-        let _ = db.set_failed_checks(&monitor.id, new_failed).await;
+    if !is_indeterminate {
+        let is_up_raw = attributed == "up" || attributed == "warning";
 
-        if new_failed < monitor.confirmations_required {
-            tracing::info!(
-                "Scheduler: {} failed check {}/{} (pending confirmation)",
-                monitor.name,
-                new_failed,
-                monitor.confirmations_required
-            );
-            effective_status = "error".into();
-        } else {
-            effective_status = "down".into();
+        if !is_up_raw && monitor.confirmations_required > 0 {
+            let new_failed = monitor.failed_checks + 1;
+            let _ = db.set_failed_checks(&monitor.id, new_failed).await;
+
+            if new_failed < monitor.confirmations_required {
+                tracing::info!(
+                    "Scheduler: {} failed check {}/{} (pending confirmation)",
+                    monitor.name,
+                    new_failed,
+                    monitor.confirmations_required
+                );
+                effective_status = "error".into();
+            } else {
+                effective_status = "down".into();
+            }
+        } else if is_up_raw && monitor.failed_checks > 0 {
+            let _ = db.reset_failed_checks(&monitor.id).await;
         }
-    } else if is_up_raw && monitor.failed_checks > 0 {
-        let _ = db.reset_failed_checks(&monitor.id).await;
     }
 
     let check = CheckResult {
@@ -321,7 +380,15 @@ pub(crate) async fn run_monitor_check(
 
     // Write to DB when status changes OR at least once per interval_secs (time-based sampling)
     let is_up = check.status == "up" || check.status == "warning";
-    let status_changed = was_up != is_up;
+    let observed_now = ObservedStatus::from_status(&check.status, is_up);
+    // M5: a sustained `indeterminate` period counts as a single change. The
+    // transition is persisted and emitted once; the checks that follow fall back
+    // to the sampling cadence. `Unknown` means "no check yet": the first check is
+    // already covered by the first-check heuristic below.
+    let status_changed = match *observed {
+        ObservedStatus::Unknown => false,
+        previous => previous != observed_now,
+    };
     // Heuristic for the first check of this monitor after task startup:
     // monitor_task_inner initialises last_write_at to 0; the first check always
     // writes to DB (time_elapsed from epoch >= interval_secs) which then updates
@@ -337,9 +404,13 @@ pub(crate) async fn run_monitor_check(
                 monitor.name,
                 e
             );
+            // N5: `observed` is deliberately left untouched, so the transition is
+            // retried on the next check instead of being silently lost.
             return was_up;
         }
         *last_write_at = now.timestamp();
+        // N5: the observed state advances only once the transition is durable.
+        *observed = observed_now;
     }
 
     // Latency breach: emitted when a configured threshold is met (>=), independent
@@ -369,7 +440,12 @@ pub(crate) async fn run_monitor_check(
 
     // Detect status changes and latency breaches
     let notification_type: Option<(&str, String)> = {
-        if was_up && !is_up {
+        if is_indeterminate {
+            // D7: an unattributable failure is observability, not an incident.
+            // It must not notify, not flip the monitor's notification state and
+            // not count as a recovery.
+            None
+        } else if was_up && !is_up {
             let template = monitor
                 .message_template_down
                 .as_deref()
@@ -652,7 +728,11 @@ pub(crate) async fn run_monitor_check(
     }
 
     last_check_at.store(now.timestamp(), Ordering::Relaxed);
-    is_up
+    if is_indeterminate {
+        was_up
+    } else {
+        is_up
+    }
 }
 
 // ──── Characterization tests (current behavior) ─────
@@ -660,7 +740,8 @@ pub(crate) async fn run_monitor_check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checker::CheckOutcome;
+    use crate::checker::{CheckOutcome, FailureCause};
+    use crate::netcheck::NetworkHealth;
     use async_trait::async_trait;
     use tempfile::TempDir;
 
@@ -728,9 +809,15 @@ mod tests {
         (db, dir)
     }
 
-    /// Characterizes current sampling: only every 10th check is written when status is stable.
+    /// A handle that never ran a cycle: attribution falls back to the base status.
+    fn unknown_health() -> NetworkHealthHandle {
+        NetworkHealthHandle::new()
+    }
+
+    /// Characterizes current sampling: with a stable status only the time-based
+    /// write happens, i.e. at most one row per interval (N6).
     #[tokio::test]
-    async fn test_count_based_sampling_writes_every_10th_check() {
+    async fn test_time_based_sampling_writes_once_per_interval() {
         let (db, _dir) = setup_db().await;
         db.create_monitor(&sample_monitor("m-sampling"))
             .await
@@ -745,6 +832,7 @@ mod tests {
 
         let mut was_up = true;
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
 
         // Run 15 checks with stable UP status
         for _ in 1..=15 {
@@ -755,20 +843,23 @@ mod tests {
                 &event_tx,
                 &last_check_at,
                 Some(&checker),
+                &unknown_health(),
                 was_up,
                 &notifier_ids,
                 &mut last_write_at,
+                &mut observed,
                 interval_secs,
             )
             .await;
         }
 
-        // Current behavior: only 1 write at check_count=10
+        // Time-based sampling: the whole loop runs well inside `interval_secs`, so
+        // only the first check (which always writes) reaches the DB.
         let checks = db.get_checks("m-sampling", 100, 0).await.unwrap();
         assert_eq!(
             checks.len(),
             1,
-            "Only 1 in 10 checks should be written with count-based sampling"
+            "a stable monitor writes once per interval, not once per check"
         );
     }
 
@@ -790,6 +881,7 @@ mod tests {
 
         let mut was_up = true;
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
 
         // 3 checks UP (stable, none written because rapid succession)
         for _ in 1..=3 {
@@ -800,9 +892,11 @@ mod tests {
                 &event_tx,
                 &last_check_at,
                 Some(&up_checker),
+                &unknown_health(),
                 was_up,
                 &notifier_ids,
                 &mut last_write_at,
+                &mut observed,
                 interval_secs,
             )
             .await;
@@ -816,9 +910,11 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&down_checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
         )
         .await;
@@ -852,6 +948,7 @@ mod tests {
         let last_check_at = Arc::new(AtomicI64::new(0));
         let notifier_ids = vec![];
         let mut last_write_at: i64 = 0; // epoch — time_elapsed will be >= interval_secs
+        let mut observed = ObservedStatus::Unknown;
         let interval_secs: u64 = 60;
 
         let was_up = run_monitor_check(
@@ -861,9 +958,11 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&checker),
+            &unknown_health(),
             true,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
         )
         .await;
@@ -894,6 +993,7 @@ mod tests {
 
         // First call: last_write_at=0 → time_elapsed >= 60 → writes
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
         let was_up = run_monitor_check(
             &db,
             &sample_monitor("m-time-2"),
@@ -901,9 +1001,11 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&checker),
+            &unknown_health(),
             true,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
         )
         .await;
@@ -916,9 +1018,11 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
         )
         .await;
@@ -949,6 +1053,7 @@ mod tests {
 
         // First call: writes (interval elapsed from epoch), status=UP
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
         let was_up = run_monitor_check(
             &db,
             &sample_monitor("m-time-3"),
@@ -956,9 +1061,11 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&up_checker),
+            &unknown_health(),
             true,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
         )
         .await;
@@ -971,9 +1078,11 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&down_checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
         )
         .await;
@@ -1038,6 +1147,7 @@ mod tests {
         let interval_secs: u64 = 60;
         let mut was_up = true;
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
 
         for _ in 1..=3 {
             was_up = run_monitor_check(
@@ -1047,9 +1157,11 @@ mod tests {
                 &event_tx,
                 &last_check_at,
                 Some(&checker),
+                &unknown_health(),
                 was_up,
                 &notifier_ids,
                 &mut last_write_at,
+                &mut observed,
                 interval_secs,
             )
             .await;
@@ -1082,6 +1194,7 @@ mod tests {
         let interval_secs: u64 = 60;
         let mut was_up = true;
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
 
         // Check 1: UP (initial event)
         was_up = run_monitor_check(
@@ -1091,9 +1204,11 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&up_checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
         )
         .await;
@@ -1105,9 +1220,11 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&up_checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
         )
         .await;
@@ -1119,9 +1236,11 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&down_checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
         )
         .await;
@@ -1151,6 +1270,7 @@ mod tests {
         let interval_secs: u64 = 60;
         let mut was_up = true;
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
 
         for _ in 1..=3 {
             was_up = run_monitor_check(
@@ -1160,9 +1280,11 @@ mod tests {
                 &event_tx,
                 &last_check_at,
                 Some(&checker),
+                &unknown_health(),
                 was_up,
                 &notifier_ids,
                 &mut last_write_at,
+                &mut observed,
                 interval_secs,
             )
             .await;
@@ -1175,5 +1297,626 @@ mod tests {
             "Every latency-breaching check should emit an SSE event (got {:?})",
             events
         );
+    }
+
+    // ──── Attribution (feature: network-attribution) ─────
+
+    /// Checker that fails with a real cause, following the phase 2 contract
+    /// (`status` is `status_for(cause)`).
+    struct CauseFailureChecker {
+        status: &'static str,
+        cause: FailureCause,
+    }
+
+    #[async_trait]
+    impl Checker for CauseFailureChecker {
+        async fn check(&self, _monitor: &Monitor) -> CheckOutcome {
+            CheckOutcome {
+                status: self.status.into(),
+                status_code: None,
+                response_time_ms: 0,
+                error_message: Some("boom".into()),
+                tls: None,
+                cause: Some(self.cause),
+            }
+        }
+    }
+
+    /// Loopback HTTP server that captures the first request it receives, plus a
+    /// notifier cache wired to it. Lets a test observe whether a notification was
+    /// actually dispatched.
+    async fn webhook_notifier() -> (
+        Arc<RwLock<HashMap<String, Notifier>>>,
+        tokio::sync::oneshot::Receiver<String>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // reqwest may need an explicit rustls provider to build its client.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let mut total = 0usize;
+                while let Ok(n) = stream.read(&mut buf[total..]).await {
+                    if n == 0 {
+                        break;
+                    }
+                    total += n;
+                    if String::from_utf8_lossy(&buf[..total]).contains("POST /hook") {
+                        break;
+                    }
+                }
+                let _ = tx.send(String::from_utf8_lossy(&buf[..total]).to_string());
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                    .await;
+            }
+        });
+
+        let notifier = Notifier {
+            id: "n-hook".into(),
+            name: "test webhook".into(),
+            notifier_type: "webhook".into(),
+            config_json: serde_json::json!({ "url": format!("http://{addr}/hook") }),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let mut cache = HashMap::new();
+        cache.insert(notifier.id.clone(), notifier);
+        (Arc::new(RwLock::new(cache)), rx)
+    }
+
+    /// Scenario: caída real con red sana se registra como down (y notifica).
+    #[tokio::test]
+    async fn a_real_failure_with_a_healthy_network_is_recorded_as_down_and_notifies() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-attr-target"))
+            .await
+            .unwrap();
+
+        let (notifier_cache, request_rx) = webhook_notifier().await;
+        let checker = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let (event_tx, _) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec!["n-hook".to_string()];
+        let interval_secs: u64 = 60;
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+
+        let was_up = run_monitor_check(
+            &db,
+            &sample_monitor("m-attr-target"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            interval_secs,
+        )
+        .await;
+
+        assert!(!was_up, "a real failure must leave the monitor not-up");
+        let checks = db.get_checks("m-attr-target", 10, 0).await.unwrap();
+        assert_eq!(checks[0].status, "down");
+        assert_eq!(checks[0].error_kind.as_deref(), Some("connect_refused"));
+
+        let request = tokio::time::timeout(Duration::from_secs(5), request_rx)
+            .await
+            .expect("down notification was not dispatched in time")
+            .expect("notification channel closed");
+        assert!(
+            request.starts_with("POST /hook"),
+            "unexpected notification request: {request}"
+        );
+    }
+
+    /// Scenario: fallo por DNS degradado se registra como indeterminate, no
+    /// notifica y no cambia el estado de notificación del monitor.
+    #[tokio::test]
+    async fn a_dns_failure_with_degraded_dns_is_recorded_as_indeterminate_without_notifying() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-attr-indet"))
+            .await
+            .unwrap();
+
+        let (notifier_cache, request_rx) = webhook_notifier().await;
+        let checker = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+        let (event_tx, _) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec!["n-hook".to_string()];
+        let interval_secs: u64 = 60;
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::DnsDegraded);
+
+        let was_up = run_monitor_check(
+            &db,
+            &sample_monitor("m-attr-indet"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            interval_secs,
+        )
+        .await;
+
+        assert!(
+            was_up,
+            "indeterminate must not change the monitor's notification state"
+        );
+        let checks = db.get_checks("m-attr-indet", 10, 0).await.unwrap();
+        assert_eq!(checks[0].status, "indeterminate");
+        assert_eq!(
+            checks[0].error_kind.as_deref(),
+            Some("dns_timeout"),
+            "the cause must be persisted even when the status is indeterminate"
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), request_rx)
+                .await
+                .is_err(),
+            "indeterminate must not dispatch a down notification"
+        );
+    }
+
+    // ──── M5/M7: secuencias de transición y no amplificación ─────
+
+    /// Run one check with the given checker and health, threading the mutable
+    /// per-monitor bookkeeping. No notifiers are wired: these tests observe
+    /// persistence and SSE emission, not delivery.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_check_with(
+        db: &Database,
+        monitor: &Monitor,
+        event_tx: &broadcast::Sender<String>,
+        checker: &dyn Checker,
+        health: &NetworkHealthHandle,
+        was_up: bool,
+        last_write_at: &mut i64,
+        observed: &mut ObservedStatus,
+    ) -> bool {
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids: Vec<String> = vec![];
+        run_monitor_check(
+            db,
+            monitor,
+            &notifier_cache,
+            event_tx,
+            &last_check_at,
+            Some(checker),
+            health,
+            was_up,
+            &notifier_ids,
+            last_write_at,
+            observed,
+            60,
+        )
+        .await
+    }
+
+    /// Scenario M7: `indeterminate` como primer check. No altera el estado de
+    /// notificación y queda registrado.
+    #[tokio::test]
+    async fn indeterminate_as_the_first_check_keeps_the_monitor_up_and_is_recorded() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-first-indet");
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, _rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::DnsDegraded);
+        let checker = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        let was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &checker,
+            &health,
+            true,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+
+        assert!(was_up, "indeterminate must not flip the notification state");
+        let checks = db.get_checks(&monitor.id, 10, 0).await.unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, "indeterminate");
+    }
+
+    /// Scenario M7: `up → indeterminate → up`. El fallo no atribuible no alerta
+    /// ni cambia el estado de notificación, y cada transición queda registrada.
+    #[tokio::test]
+    async fn the_sequence_up_indeterminate_up_stays_up_and_records_every_transition() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-seq-up");
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, _rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let up = AlwaysUpChecker;
+        let dns_failure = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        let mut was_up = true;
+
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &up,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        health.publish(NetworkHealth::DnsDegraded);
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &dns_failure,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        health.publish(NetworkHealth::Healthy);
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &up,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+
+        assert!(
+            was_up,
+            "an unattributable blip must not flip the notification state"
+        );
+        let statuses: Vec<String> = db
+            .get_checks(&monitor.id, 10, 0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.status)
+            .collect();
+        assert_eq!(
+            statuses.len(),
+            3,
+            "every transition must be persisted (got {statuses:?})"
+        );
+        assert!(
+            statuses.iter().any(|s| s == "indeterminate"),
+            "the unattributable check must be recorded (got {statuses:?})"
+        );
+    }
+
+    /// Scenario M7: `down → indeterminate → down`. El estado de notificación
+    /// permanece caído y cada transición queda registrada.
+    #[tokio::test]
+    async fn the_sequence_down_indeterminate_down_records_every_transition() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-seq-down");
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, _rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let down = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let dns_failure = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        let mut was_up = true;
+
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &down,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        health.publish(NetworkHealth::DnsDegraded);
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &dns_failure,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        health.publish(NetworkHealth::Healthy);
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &down,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+
+        assert!(!was_up, "the monitor stays down throughout the sequence");
+        let statuses: Vec<String> = db
+            .get_checks(&monitor.id, 10, 0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.status)
+            .collect();
+        assert_eq!(
+            statuses,
+            vec!["down", "indeterminate", "down"],
+            "each transition must be persisted"
+        );
+    }
+
+    /// Scenario M5: un corte sostenido de `indeterminate` no emite un evento SSE
+    /// por check ni escribe una fila por check.
+    #[tokio::test]
+    async fn a_sustained_indeterminate_period_emits_a_single_event() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-sustained-indet");
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, mut rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let up = AlwaysUpChecker;
+        let dns_failure = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        let mut was_up = true;
+
+        // Check 1: up (initial event, first write).
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &up,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        // Checks 2..=4: our egress stays down — one transition, then sampling.
+        health.publish(NetworkHealth::DnsDegraded);
+        for _ in 0..3 {
+            was_up = run_check_with(
+                &db,
+                &monitor,
+                &event_tx,
+                &dns_failure,
+                &health,
+                was_up,
+                &mut last_write_at,
+                &mut observed,
+            )
+            .await;
+        }
+
+        assert!(was_up);
+        let events = drain_events(&mut rx).await;
+        assert_eq!(
+            events.len(),
+            2,
+            "only the initial check and the transition emit an event (got {events:?})"
+        );
+        let checks = db.get_checks(&monitor.id, 10, 0).await.unwrap();
+        assert_eq!(
+            checks.len(),
+            2,
+            "only the transition is written; the rest follow the sampling cadence"
+        );
+    }
+
+    /// Scenario M7: `indeterminate` no incrementa ni resetea `failed_checks`
+    /// aunque el monitor exija confirmaciones.
+    #[tokio::test]
+    async fn indeterminate_does_not_touch_the_confirmation_counter() {
+        let (db, _dir) = setup_db().await;
+        let mut monitor = sample_monitor("m-conf-indet");
+        monitor.confirmations_required = 2;
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, _rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::DnsDegraded);
+        let dns_failure = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        let was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &dns_failure,
+            &health,
+            true,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+
+        assert!(was_up);
+        let stored = db.get_monitor(&monitor.id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.failed_checks, 0,
+            "indeterminate must not increment the confirmation counter"
+        );
+
+        // Contrast: a real failure does advance the counter (legacy behaviour).
+        health.publish(NetworkHealth::Healthy);
+        let real_failure = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &real_failure,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+
+        assert!(!was_up);
+        let stored = db.get_monitor(&monitor.id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.failed_checks, 1,
+            "a real failure must still be counted"
+        );
+        let checks = db.get_checks(&monitor.id, 10, 0).await.unwrap();
+        assert_eq!(
+            checks[0].status, "error",
+            "a pending confirmation is recorded as error"
+        );
+    }
+
+    // ── N5: una escritura fallida no adelanta el estado observado ──
+
+    /// Si el `insert_check` falla, la transición no puede darse por vista: el
+    /// siguiente check debe reintentar la escritura en lugar de perderla.
+    #[tokio::test]
+    async fn a_failed_write_does_not_advance_the_observed_state() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-n5");
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, _rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let up = AlwaysUpChecker;
+        let down = AlwaysDownChecker;
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+
+        // Check 1: `up` — persisted, so `observed` advances and `last_write_at` is set.
+        let mut was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &up,
+            &health,
+            true,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        assert!(was_up);
+
+        // The monitor disappears: the next write violates the foreign key. The
+        // failed write aborts the check, so the notification state is untouched.
+        db.delete_monitor(&monitor.id).await.unwrap();
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &down,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        assert!(was_up, "a failed write aborts the check before notifying");
+
+        // The monitor is back. The transition must still be pending, so this check
+        // persists it. Had the failed write advanced `observed`, nothing would be
+        // written: the sampling window has not elapsed.
+        db.create_monitor(&monitor).await.unwrap();
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &down,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        assert!(!was_up);
+
+        let checks = db.get_checks(&monitor.id, 10, 0).await.unwrap();
+        assert_eq!(
+            checks.len(),
+            1,
+            "the pending transition must be retried and persisted (got {checks:?})"
+        );
+        assert_eq!(checks[0].status, "down");
     }
 }

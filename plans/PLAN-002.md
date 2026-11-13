@@ -153,13 +153,13 @@ Issue paraguas [#34](https://github.com/atareao/watchbeat/issues/34): se cierra 
 - [x] PR a `development` (`Closes #36`) + archive.
 
 ### Fase 3 · Canario, clasificador e `indeterminate` — [#37](https://github.com/atareao/watchbeat/issues/37)
-- [ ] `openspec new change network-attribution`
-- [ ] Spec: `NetworkHealth`, task canario, `classify()`, semántica de `indeterminate`, efectos en notificación.
-- [ ] RED: tests de `classify()` (tabla de verdad completa) y del canario (probes por IP, sin DNS).
-- [ ] GREEN: `netcheck.rs`, `classify.rs`, integrar en `run_monitor_check`, estado `indeterminate` en DB/API, frontend (badges + timeline + tipos).
-- [ ] REFACTOR: clippy/tsc/build.
-- [ ] Docs: `docs/network-attribution.md`.
-- [ ] PR a `development` (`Closes #37`) + archive.
+- [x] `openspec new change network-attribution`
+- [x] Spec: `NetworkHealth`, task canario, `classify()`, semántica de `indeterminate`, efectos en notificación.
+- [x] RED: tests de `classify()` (tabla de verdad completa) y del canario (probes por IP, sin DNS).
+- [x] GREEN: `netcheck.rs`, `classify.rs`, integrar en `run_monitor_check`, estado `indeterminate` en DB/API, frontend (badges + timeline + tipos).
+- [x] REFACTOR: clippy/tsc/build.
+- [x] Docs: `docs/network-attribution.md`.
+- [x] PR a `development` (`Closes #37`) + archive.
 
 ### Fase 4 · Jitter — [#38](https://github.com/atareao/watchbeat/issues/38)
 - [ ] `openspec new change scheduler-jitter`

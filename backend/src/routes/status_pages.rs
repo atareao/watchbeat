@@ -187,6 +187,10 @@ fn render_status_page(
         let (dot, status_text) = match m.last_status.as_deref() {
             Some("up") => ("#22c55e", "Operativo"),
             Some("down") => ("#ef4444", "Caído"),
+            // A failure we could not attribute to the target is not an outage of
+            // the service: it gets its own colour and wording (M4/N4). The status
+            // value stays `indeterminate`; only the visible label is localised.
+            Some("indeterminate") => ("#8b5cf6", "Indeterminado"),
             _ => ("#f59e0b", "Sin datos"),
         };
         let uptime = m
@@ -324,6 +328,10 @@ pub async fn public_page_json(
 /// que la página HTML: `"down"` si alguno está caído, `"up"` si todos están up
 /// y hay al menos uno, sino `"unknown"`.
 ///
+/// Overall page status.
+///
+/// `indeterminate` is neither a health nor an outage: it must never make the page
+/// report a global `down` (M4). It is reported by the monitor's own row instead.
 fn overall_status(monitors: &[MonitorSummary]) -> &'static str {
     if monitors
         .iter()
@@ -552,6 +560,50 @@ mod tests {
             summary("m-2", "B", "t2", None),
         ];
         assert_eq!(overall_status(&monitors), "unknown");
+    }
+
+    // ── Scenario M4: la página pública distingue indeterminate ──
+
+    #[test]
+    fn render_status_page_shows_indeterminate_as_its_own_state() {
+        let monitors = vec![summary("m-1", "A", "t1", Some("indeterminate"))];
+        let html = render_status_page(&page(true), &monitors, "unknown");
+
+        assert!(
+            html.contains("Indeterminado"),
+            "the row must name its own state, in the page's language"
+        );
+        assert!(
+            !html.contains(">indeterminate<"),
+            "the raw token must not leak into the page (i18n)"
+        );
+        assert!(
+            html.contains("#8b5cf6"),
+            "indeterminate must have a colour of its own"
+        );
+        assert!(
+            !html.contains("Sin datos"),
+            "indeterminate is not 'no data'"
+        );
+        assert!(
+            !html.contains("Caído"),
+            "indeterminate must not be rendered as a real outage"
+        );
+    }
+
+    #[test]
+    fn overall_status_does_not_count_indeterminate_as_down() {
+        let monitors = vec![
+            summary("m-1", "A", "t1", Some("up")),
+            summary("m-2", "B", "t2", Some("indeterminate")),
+        ];
+        assert_ne!(overall_status(&monitors), "down");
+    }
+
+    #[test]
+    fn overall_status_of_only_indeterminate_is_not_down() {
+        let monitors = vec![summary("m-1", "A", "t1", Some("indeterminate"))];
+        assert_ne!(overall_status(&monitors), "down");
     }
 
     // ── Scenario 5: API key no configurada → público ──

@@ -156,6 +156,8 @@ pub struct AppState {
     pub oidc_states: OidcStates,
     pub scheduler_mgr: SchedulerManager,
     pub event_tx: tokio::sync::broadcast::Sender<String>,
+    /// Health of our own egress, published by the `netcheck` canary.
+    pub netcheck: crate::netcheck::NetworkHealthHandle,
 }
 
 #[derive(Debug, Clone, Default)]

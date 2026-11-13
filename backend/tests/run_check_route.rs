@@ -40,7 +40,9 @@ async fn setup() -> (Arc<AppState>, TempDir) {
     };
 
     let (event_tx, _) = tokio::sync::broadcast::channel(SSE_CHANNEL_CAPACITY);
-    let scheduler_mgr = SchedulerManager::spawn(db.clone(), event_tx.clone()).await;
+    let netcheck_handle = watchbeat::netcheck::NetworkHealthHandle::new();
+    let scheduler_mgr =
+        SchedulerManager::spawn(db.clone(), event_tx.clone(), netcheck_handle.clone()).await;
 
     let state = Arc::new(AppState {
         config,
@@ -50,6 +52,7 @@ async fn setup() -> (Arc<AppState>, TempDir) {
         oidc_states: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         scheduler_mgr,
         event_tx,
+        netcheck: netcheck_handle,
     });
     (state, dir)
 }
@@ -119,6 +122,29 @@ async fn run_check_returns_error_kind_when_the_check_fails() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "down");
+    assert_eq!(body["error_kind"], "connect_refused");
+}
+
+/// Scenario: el run-check manual usa la misma atribución (D6). With our egress
+/// down, a failure of the target must not surface as a `down`.
+#[tokio::test]
+async fn run_check_uses_the_same_attribution_as_the_scheduler() {
+    let (state, _dir) = setup().await;
+    let port = closed_loopback_port().await;
+    state
+        .db
+        .create_monitor(&sample_monitor("m-indet", &format!("127.0.0.1:{port}")))
+        .await
+        .unwrap();
+    state
+        .netcheck
+        .publish(watchbeat::netcheck::NetworkHealth::Down);
+
+    let app = routes::api_routes().with_state(state);
+    let (status, body) = run_check(&app, "m-indet").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "indeterminate");
     assert_eq!(body["error_kind"], "connect_refused");
 }
 

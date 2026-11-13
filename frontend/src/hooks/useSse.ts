@@ -4,7 +4,7 @@ export interface CheckEvent {
   type: 'check';
   monitor_id: string;
   monitor_name: string;
-  status: 'up' | 'down' | 'error' | 'warning';
+  status: 'up' | 'down' | 'error' | 'warning' | 'indeterminate';
   response_time_ms: number;
   error_message: string | null;
   checked_at: string;

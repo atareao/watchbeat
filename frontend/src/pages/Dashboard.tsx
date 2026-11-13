@@ -5,7 +5,7 @@ import {
 import {
   RocketOutlined, CheckCircleOutlined, CloseCircleOutlined,
   FieldTimeOutlined, DashboardOutlined, PlusOutlined, SearchOutlined, SettingOutlined,
-  HeartOutlined,
+  HeartOutlined, QuestionCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router';
 import {
@@ -41,6 +41,9 @@ const STATUS_FILTER_OPTIONS = [
   { value: 'up', label: 'UP' },
   { value: 'down', label: 'DOWN' },
   { value: 'error', label: 'Error' },
+  // Failure not attributable to the target (host network/DNS down): kept as a
+  // separate filter so it can be distinguished from real DOWN/ERROR monitors.
+  { value: 'indeterminate', label: 'INDETERMINATE' },
 ];
 
 interface ConfigField {
@@ -225,6 +228,9 @@ export default function Dashboard() {
   // ── Stats (monitors only — heartbeats are monitors) ──
   const healthyItems = (status?.up_monitors ?? 0);
   const problemItems = (status?.down_monitors ?? 0);
+  // Failure not attributable to the target: neither healthy nor down. Kept as its
+  // own card so Total = En línea + Con problemas + Indeterminados (no mismatch).
+  const indeterminateItems = (status?.indeterminate_monitors ?? 0);
 
   // ── Modal handlers ──
 
@@ -370,7 +376,7 @@ export default function Dashboard() {
 
       {/* Stats row */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={12} sm={12} lg={6}>
+        <Col xs={12} sm={12} lg={6} xl={4}>
           <Card>
             <Statistic
               title="Total"
@@ -379,7 +385,7 @@ export default function Dashboard() {
             />
           </Card>
         </Col>
-        <Col xs={12} sm={12} lg={6}>
+        <Col xs={12} sm={12} lg={6} xl={4}>
           <Card>
             <Statistic
               title="En línea"
@@ -389,7 +395,7 @@ export default function Dashboard() {
             />
           </Card>
         </Col>
-        <Col xs={12} sm={12} lg={6}>
+        <Col xs={12} sm={12} lg={6} xl={4}>
           <Card>
             <Statistic
               title="Con problemas"
@@ -399,7 +405,17 @@ export default function Dashboard() {
             />
           </Card>
         </Col>
-        <Col xs={12} sm={12} lg={6}>
+        <Col xs={12} sm={12} lg={6} xl={4}>
+          <Card>
+            <Statistic
+              title="Indeterminados"
+              value={indeterminateItems}
+              prefix={<QuestionCircleOutlined style={{ color: '#722ed1' }} />}
+              valueStyle={{ color: '#722ed1' }}
+            />
+          </Card>
+        </Col>
+        <Col xs={12} sm={12} lg={6} xl={4}>
           <Card>
             <Statistic
               title="Latencia media"
