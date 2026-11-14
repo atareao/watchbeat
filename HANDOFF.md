@@ -2,7 +2,7 @@
 
 ## Estado (14 Nov 2026)
 
-- **#70 ✅ COMPLETADO** (rama `feature/sse-error-kind`, PR **#75** abierto a `development`):
+- **#70 ✅ COMPLETADO** (PR **#75** mergeado a `development` en `71bc2c4d`; rama borrada):
   `error_kind` (wire de `FailureCause`) en el evento SSE `type:"check"`; payload extraído a
   `check_event_payload` (función pura testeable), guarda `receiver_count() > 0` intacta.
   Frontend: `CheckEvent.error_kind`; `MonitorDetail` deja de refetchear el último check en el
@@ -30,14 +30,14 @@
 
 ### #62 — Follow-ups Robust Check Engine (sub-issues)
 - **#69** ✅ canario de red configurable (PR #74 mergeado).
-- **#70** ✅ `error_kind` en el evento SSE (PR #75 abierto).
+- **#70** ✅ `error_kind` en el evento SSE (PR #75 mergeado).
 - **#71** 🚦 estado del breaker (closed/open) en API y dashboard (**siguiente**).
 - **#72** 📬 agrupar notificaciones latency/expiry en el breaker.
 - **#63** ♿ a11y del timeline + test SNI real.
 
 ### Pendiente inmediato
-- Revisar y mergear el PR **#75** de #70. Después, seguir por **#71** y el resto de sub-issues
-  de #62, cada uno en sesión separada (change OpenSpec + TDD).
+- **#71** 🚦 estado del breaker (closed/open) en API y dashboard — **siguiente**, en **sesión nueva**
+  (change OpenSpec + TDD). Después, el resto de sub-issues de #62, cada uno en sesión separada.
 - **Follow-ups #70:** refinamientos del poll (no refrescar con `document.hidden`; saltar si hubo
   evento SSE reciente) y, opcionalmente, incluir `tls_cert_*` en el payload SSE para eliminarlo.
 
