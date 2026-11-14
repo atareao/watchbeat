@@ -51,10 +51,10 @@ pub enum DnsError {
     Other(String),
 }
 
-/// A single successful upstream answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A successful upstream answer: every address plus the TTL that bounds them.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpstreamAnswer {
-    pub ip: IpAddr,
+    pub ips: Vec<IpAddr>,
     pub ttl: Duration,
 }
 
@@ -110,9 +110,9 @@ pub fn parse_upstreams(raw: &str) -> Vec<IpAddr> {
 }
 
 /// A cached resolution, valid until `expires_at`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct CacheEntry {
-    ip: IpAddr,
+    ips: Vec<IpAddr>,
     expires_at: Instant,
 }
 
@@ -165,18 +165,35 @@ impl DnsResolver {
         }
     }
 
-    /// Resolve `host` to an IP, serving it from the cache when possible.
+    /// Resolve `host` to its first address, serving it from the cache when
+    /// possible.
     ///
-    /// IP literals are returned as-is without querying any upstream.
+    /// Kept for the classification probe and `netcheck`, which only need to
+    /// know whether the name resolves. The HTTP client uses [`Self::resolve_all`]
+    /// so it can fall back between addresses.
     pub async fn resolve(&self, host: &str) -> Result<IpAddr, DnsError> {
+        self.resolve_all(host)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| DnsError::Other(format!("no address for {host}")))
+    }
+
+    /// Resolve `host` to **every** address, serving them from the cache when
+    /// possible.
+    ///
+    /// IP literals are returned as-is without querying any upstream. The order
+    /// is the upstream's (IPv4 first, per `LookupIpStrategy::Ipv4thenIpv6`),
+    /// with duplicates removed.
+    pub async fn resolve_all(&self, host: &str) -> Result<Vec<IpAddr>, DnsError> {
         let host = normalize_host(host);
 
         if let Ok(ip) = host.parse::<IpAddr>() {
-            return Ok(ip);
+            return Ok(vec![ip]);
         }
 
-        if let Some(ip) = self.cached_ip(&host) {
-            return Ok(ip);
+        if let Some(ips) = self.cached_ips(&host) {
+            return Ok(ips);
         }
 
         self.query_upstreams(&host).await
@@ -188,15 +205,16 @@ impl DnsResolver {
     /// NXDOMAIN is authoritative and stops the fallback. When nothing answers,
     /// the most informative error is returned (a timeout only if every upstream
     /// timed out).
-    async fn query_upstreams(&self, host: &str) -> Result<IpAddr, DnsError> {
+    async fn query_upstreams(&self, host: &str) -> Result<Vec<IpAddr>, DnsError> {
         let mut first_non_timeout: Option<DnsError> = None;
 
         for upstream in &self.upstreams {
             match tokio::time::timeout(self.attempt_timeout, upstream.query(host)).await {
                 Ok(Ok(answer)) => {
                     let ttl = answer.ttl.clamp(self.min_ttl, self.max_ttl);
-                    self.store(host, answer.ip, ttl);
-                    return Ok(answer.ip);
+                    let ips = dedupe(answer.ips);
+                    self.store(host, ips.clone(), ttl);
+                    return Ok(ips);
                 }
                 Ok(Err(DnsError::Nxdomain)) => return Err(DnsError::Nxdomain),
                 Ok(Err(error)) => {
@@ -212,13 +230,13 @@ impl DnsResolver {
         Err(first_non_timeout.unwrap_or(DnsError::Timeout))
     }
 
-    /// Cached IP for `host`, if the entry is still valid.
-    fn cached_ip(&self, host: &str) -> Option<IpAddr> {
+    /// Cached addresses for `host`, if the entry is still valid.
+    fn cached_ips(&self, host: &str) -> Option<Vec<IpAddr>> {
         let now = Instant::now();
         self.lock_cache()
             .get(host)
             .filter(|entry| entry.expires_at > now)
-            .map(|entry| entry.ip)
+            .map(|entry| entry.ips.clone())
     }
 
     /// Store a resolution, keeping the cache within [`MAX_CACHE_ENTRIES`].
@@ -226,7 +244,7 @@ impl DnsResolver {
     /// Refreshing a known host never grows the map, so only new hosts can hit
     /// the bound: expired entries are dropped first, and if the cache is still
     /// full the soonest-to-expire entry makes room.
-    fn store(&self, host: &str, ip: IpAddr, ttl: Duration) {
+    fn store(&self, host: &str, ips: Vec<IpAddr>, ttl: Duration) {
         let now = Instant::now();
         let mut cache = self.lock_cache();
 
@@ -248,7 +266,7 @@ impl DnsResolver {
         cache.insert(
             host.to_string(),
             CacheEntry {
-                ip,
+                ips,
                 expires_at: now + ttl,
             },
         );
@@ -262,12 +280,19 @@ impl DnsResolver {
     /// Insert an entry directly, simulating a warm cache.
     #[cfg(test)]
     pub(crate) fn prime_cache(&self, host: &str, ip: IpAddr, ttl: Duration) {
-        self.store(&normalize_host(host), ip, ttl);
+        self.prime_cache_all(host, vec![ip], ttl);
+    }
+
+    /// Insert several addresses directly, simulating a warm multi-A cache.
+    #[cfg(test)]
+    pub(crate) fn prime_cache_all(&self, host: &str, ips: Vec<IpAddr>, ttl: Duration) {
+        self.store(&normalize_host(host), ips, ttl);
     }
 
     #[cfg(test)]
     fn cached(&self, host: &str) -> Option<IpAddr> {
-        self.cached_ip(&normalize_host(host))
+        self.cached_ips(&normalize_host(host))
+            .and_then(|ips| ips.into_iter().next())
     }
 
     #[cfg(test)]
@@ -326,6 +351,17 @@ pub async fn resolve(host: &str) -> Result<IpAddr, DnsError> {
     resolver().resolve(host).await
 }
 
+/// Remove duplicate addresses while preserving the upstream's order.
+fn dedupe(ips: Vec<IpAddr>) -> Vec<IpAddr> {
+    let mut unique = Vec::with_capacity(ips.len());
+    for ip in ips {
+        if !unique.contains(&ip) {
+            unique.push(ip);
+        }
+    }
+    unique
+}
+
 /// Lower-case, dot-less and bracket-less key for the cache.
 fn normalize_host(host: &str) -> String {
     let host = host.trim();
@@ -355,13 +391,16 @@ impl reqwest::dns::Resolve for ReqwestDnsResolver {
         let resolver = Arc::clone(&self.0);
 
         Box::pin(async move {
-            let ip = resolver
-                .resolve(&host)
+            let ips = resolver
+                .resolve_all(&host)
                 .await
                 .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
 
             // Port 0 lets reqwest fill in the URL port (or the scheme default).
-            let addrs: reqwest::dns::Addrs = Box::new(std::iter::once(SocketAddr::new(ip, 0)));
+            // Returning every address lets hyper retry with the next one when a
+            // connection fails (e.g. a stale A record).
+            let addrs: reqwest::dns::Addrs =
+                Box::new(ips.into_iter().map(|ip| SocketAddr::new(ip, 0)));
             Ok(addrs)
         })
     }
@@ -415,10 +454,12 @@ impl Upstream for HickoryUpstream {
             .await
             .map_err(classify_hickory_error)?;
 
-        let ip = lookup
-            .iter()
-            .next()
-            .ok_or_else(|| DnsError::Other(format!("no address for {host}")))?;
+        // Every address, in the upstream's order (IPv4 first). A single stale
+        // record must not hide the healthy ones; the resolver deduplicates.
+        let ips: Vec<IpAddr> = lookup.iter().collect();
+        if ips.is_empty() {
+            return Err(DnsError::Other(format!("no address for {host}")));
+        }
 
         // The shortest TTL among the address records bounds the cache entry.
         let ttl_secs = lookup
@@ -431,7 +472,7 @@ impl Upstream for HickoryUpstream {
             .unwrap_or(0);
 
         Ok(UpstreamAnswer {
-            ip,
+            ips,
             ttl: Duration::from_secs(u64::from(ttl_secs)),
         })
     }
@@ -479,6 +520,8 @@ mod tests {
     enum Behaviour {
         /// Answer with an IP and a TTL (in seconds).
         Answer(IpAddr, u64),
+        /// Answer with several IPs and a TTL (in seconds).
+        AnswerMany(Vec<IpAddr>, u64),
         /// Behave like an upstream that never answers.
         Hang(Duration),
         /// Fail with a scripted error.
@@ -489,6 +532,13 @@ mod tests {
         fn answer(ip: IpAddr, ttl_secs: u64) -> Self {
             Self {
                 behaviour: Behaviour::Answer(ip, ttl_secs),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn answer_many(ips: Vec<IpAddr>, ttl_secs: u64) -> Self {
+            Self {
+                behaviour: Behaviour::AnswerMany(ips, ttl_secs),
                 calls: AtomicUsize::new(0),
             }
         }
@@ -518,7 +568,11 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             match &self.behaviour {
                 Behaviour::Answer(ip, ttl_secs) => Ok(UpstreamAnswer {
-                    ip: *ip,
+                    ips: vec![*ip],
+                    ttl: Duration::from_secs(*ttl_secs),
+                }),
+                Behaviour::AnswerMany(ips, ttl_secs) => Ok(UpstreamAnswer {
+                    ips: ips.clone(),
                     ttl: Duration::from_secs(*ttl_secs),
                 }),
                 Behaviour::Hang(how_long) => {
@@ -807,5 +861,98 @@ mod tests {
                 .contains(&format!("host: {TEST_HOST}:{port}")),
             "Host header must keep the hostname, got: {head}"
         );
+    }
+
+    // ───── Requirement: Resolución multi-dirección con fallback ─────
+
+    /// Scenario: resolve_all devuelve todas las direcciones.
+    #[tokio::test]
+    async fn resolve_all_should_return_every_address_without_duplicates() {
+        let upstream = Arc::new(FakeUpstream::answer_many(
+            vec![
+                ip(203, 0, 113, 40),
+                ip(203, 0, 113, 41),
+                ip(203, 0, 113, 40),
+            ],
+            60,
+        ));
+        let resolver = resolver_with(vec![Arc::clone(&upstream)], 0, 300);
+
+        let resolved = resolver.resolve_all(TEST_HOST).await;
+
+        assert_eq!(
+            resolved,
+            Ok(vec![ip(203, 0, 113, 40), ip(203, 0, 113, 41)]),
+            "all addresses must be returned, deduplicated and in order"
+        );
+    }
+
+    /// Scenario: La cache guarda todas las direcciones.
+    #[tokio::test]
+    async fn resolve_all_should_cache_every_address_without_requerying() {
+        let upstream = Arc::new(FakeUpstream::answer_many(
+            vec![ip(203, 0, 113, 42), ip(203, 0, 113, 43)],
+            60,
+        ));
+        let resolver = resolver_with(vec![Arc::clone(&upstream)], 0, 300);
+
+        let first = resolver.resolve_all(TEST_HOST).await;
+        let second = resolver.resolve_all(TEST_HOST).await;
+
+        assert_eq!(first, Ok(vec![ip(203, 0, 113, 42), ip(203, 0, 113, 43)]));
+        assert_eq!(second, first);
+        assert_eq!(upstream.calls(), 1, "the cache must serve every address");
+    }
+
+    /// Scenario: Compatibilidad de resolve.
+    #[tokio::test]
+    async fn resolve_should_return_the_first_address_for_compatibility() {
+        let upstream = Arc::new(FakeUpstream::answer_many(
+            vec![ip(203, 0, 113, 44), ip(203, 0, 113, 45)],
+            60,
+        ));
+        let resolver = resolver_with(vec![Arc::clone(&upstream)], 0, 300);
+
+        assert_eq!(resolver.resolve(TEST_HOST).await, Ok(ip(203, 0, 113, 44)));
+    }
+
+    /// Scenario: Host con dos A, una muerta y una viva.
+    #[tokio::test]
+    async fn http_client_should_fall_back_to_the_next_cached_address() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const FALLBACK_HOST: &str = "watchbeat-fallback.test";
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 1024];
+            let _ = stream.read(&mut buf).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        // 127.0.0.2 has no listener: the first address must fail and hyper must
+        // retry with 127.0.0.1, where the server is.
+        resolver().prime_cache_all(
+            FALLBACK_HOST,
+            vec![ip(127, 0, 0, 2), ip(127, 0, 0, 1)],
+            Duration::from_secs(60),
+        );
+
+        let client = crate::checker::build_http_client(reqwest_resolver())
+            .expect("client with the custom resolver must build");
+
+        let response = client
+            .get(format!("http://{FALLBACK_HOST}:{port}/"))
+            .send()
+            .await
+            .expect("the client must fall back to the reachable address");
+
+        assert_eq!(response.status(), 200);
     }
 }
