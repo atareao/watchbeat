@@ -5,7 +5,12 @@
 - **Release v0.15.2 publicada** (tag `v0.15.2`, merge a `main` + sync `development`).
   Incluye el **Robust Check Engine** (v0.15.0), la optimización de queries (#33,
   v0.15.1), el DNS multi-dirección (#52) y el diagnóstico/permisos de ping (#31).
-- `main` y `development` sincronizados. Tests: **254** lib + 9 + 45 + 8 + 3 verdes.
+- `main` y `development` sincronizados. Tests: **266** lib + 9 + 45 + 8 + 3 verdes.
+- **#55** ✅ (PR #56): flaky de conexión rechazada eliminado (puerto 1, fuera del
+  rango efímero). Doc `docs/testing-connect-refused.md`, PLAN-006 archivado.
+- **#57** ✅ (PR #58): fallback multi-dirección en TCP/TLS (`resolve_all` + bucle
+  por dirección, timeout compartido, causa + resumen). Doc
+  `docs/tcp-tls-multi-address.md`, PLAN-007 archivado. Auditado 2 veces (APROBADO).
 - Ramas de feature/hotfix/release limpiadas (locales y remotas).
 
 ### Producción (co1) — DESPLEGADO v0.15.2
@@ -15,9 +20,10 @@
 - Verificado: `healthy`, `CAP_NET_RAW` activo, `ping` como usuario `app` OK,
   `/health` → `{"status":"ok"}`. Monitores sin `down`/`error` desde el fix
   (todo `up`; `laeradelasdistros` estable).
-- **Caveat**: el compose de producción `/opt/stacks/watchbeat/compose.yaml`
-  (referenciado por labels) ya no existe en el host. Recreaciones futuras
-  deben hacerse con `docker run` o restaurando ese compose.
+- **Despliegue gestionado por Dockge**: no hay compose visible en
+  `/opt/stacks/watchbeat` porque Dockge administra el stack. Recreaciones
+  futuras deben hacerse desde Dockge (o `docker run` puntual preservando env,
+  red `proxy`, volumen `watchbeat_watchbeat_data` y `--cap-add NET_RAW`).
 
 ## Robust Check Engine (PLAN-002) — COMPLETADO
 
@@ -60,7 +66,9 @@ PR #49: `vite` → 8.3.8, `source-map-js` → 1.2.2, `rustls` → 0.23.46.
   `docs/checks-query-perf.md`.
 - **#52** ✅ (PR #53): DNS multi-dirección con fallback en hyper. Plan archivado
   en `plans/PLAN-005-ARCHIVED.md`; doc en `docs/dns-multi-address.md`.
-- **#31** ✅ (PR #54): diagnóstico y permisos de la sonda ping. `PingChecker`
+- **#31** ✅ (PR #54 + validación en producción): monitor `ping-validacion-31`
+  → `1.1.1.1` reporta `up` con `response_time_ms=9` (parseado de `time=`).
+  Diagnóstico y permisos de la sonda ping. `PingChecker`
   captura stderr/exit code, clasifica permisos y binario ausente como `error`,
   DNS como `down`, y pasa el target tras `--`. Imagen con `iputils`/`libcap`/
   `setcap` + `chmod u-s`, compose con `cap_add: [NET_RAW]`. Plan archivado en
@@ -73,18 +81,21 @@ PR #49: `vite` → 8.3.8, `source-map-js` → 1.2.2, `rustls` → 0.23.46.
 - `error_kind` en el evento SSE (hoy se rellena con refetch).
 - a11y del timeline (barras distinguibles solo por color).
 - Agrupar `latency`/`expiry` en el breaker.
-- Test flaky preexistente `tcp_check_should_report_connect_refused_cause`
-  (`closed_loopback_port` reutiliza puerto efímero bajo paralelismo).
 - SNI real no assertado con handshake TLS completo.
 
 ### Housekeeping
 - Doble lockfile `package-lock.json` + `pnpm-lock.yaml` (el build usa npm; pnpm redundante).
 - CHANGELOG auto-generado desactualizado (entradas hasta 0.11.0; ahora con `[0.15.0]`).
 
+### Pendiente inmediato
+- Release **v0.15.3** con #55 y #57 (están en `development`, no en `main`).
+- Decidir si el monitor `ping-validacion-31` de producción se elimina o queda
+  como canario permanente.
+
 ## Comandos
 
 ```bash
 just check                 # fmt + clippy
-cd backend && cargo test   # 238 + 9 + 45 + 3
+cd backend && cargo test   # 266 + 9 + 45 + 8 + 3
 cd frontend && npx tsc --noEmit && npm run build
 ```
