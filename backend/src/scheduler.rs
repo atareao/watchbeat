@@ -7,9 +7,12 @@ use std::time::Duration;
 use futures::future::FutureExt;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
+use async_trait::async_trait;
+
 use crate::checker;
 use crate::checker::Checker;
 use crate::db::Database;
+use crate::jitter;
 use crate::models::{CheckResult, Monitor, Notifier};
 use crate::netcheck::NetworkHealthHandle;
 use crate::notifier;
@@ -264,10 +267,6 @@ async fn monitor_task_inner(
     health: NetworkHealthHandle,
     interval_secs: u64,
 ) {
-    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    interval.tick().await;
-
     // Cache checker once (reused across all checks for this monitor)
     let checker = checker::checker_for(&monitor);
 
@@ -277,28 +276,76 @@ async fn monitor_task_inner(
         .await
         .unwrap_or_default();
 
-    // Track previous status in memory (avoids get_latest_check query per check)
-    let mut was_up = true;
-    // Track last DB write timestamp for time-based sampling:
-    // write at least once per interval_secs to maintain latency data
-    let mut last_write_at: i64 = 0;
-    let mut observed = ObservedStatus::Unknown;
+    let mut cycle = MonitorCycle {
+        db: &db,
+        monitor: &monitor,
+        notifier_cache: &notifier_cache,
+        event_tx: &event_tx,
+        last_check_at: &last_check_at,
+        checker: checker.as_deref(),
+        health: &health,
+        notifier_ids: &notifier_ids,
+        interval_secs,
+        // Track previous status in memory (avoids get_latest_check query per check)
+        was_up: true,
+        // Track last DB write timestamp for time-based sampling:
+        // write at least once per interval_secs to maintain latency data
+        last_write_at: 0,
+        observed: ObservedStatus::Unknown,
+    };
 
-    loop {
-        interval.tick().await;
-        was_up = run_monitor_check(
-            &db,
-            &monitor,
-            &notifier_cache,
-            &event_tx,
-            &last_check_at,
-            checker.as_deref(),
-            &health,
-            was_up,
-            &notifier_ids,
-            &mut last_write_at,
-            &mut observed,
-            interval_secs,
+    // Fase 4 (D1–D3): the cycle is jittered and sequential. The RNG is injectable
+    // — the jitter itself is unit-tested — so here we only pick the production
+    // source of randomness. `StdRng` (seeded from the OS) rather than `rand::rng()`
+    // because the monitor task runs on the multithreaded runtime, so it must be
+    // `Send`.
+    let mut rng = rand::make_rng::<rand::rngs::StdRng>();
+    jitter::jittered_cycle(
+        Duration::from_secs(interval_secs),
+        &mut rng,
+        &mut cycle,
+        tokio::time::sleep,
+    )
+    .await;
+}
+
+/// The production cycle of a monitor task: one check plus the in-memory
+/// bookkeeping the scheduler keeps between checks (Fase 4, D3).
+struct MonitorCycle<'a> {
+    db: &'a Database,
+    monitor: &'a Monitor,
+    notifier_cache: &'a Arc<RwLock<HashMap<String, Notifier>>>,
+    event_tx: &'a broadcast::Sender<String>,
+    last_check_at: &'a Arc<AtomicI64>,
+    checker: Option<&'a dyn Checker>,
+    health: &'a NetworkHealthHandle,
+    notifier_ids: &'a [String],
+    interval_secs: u64,
+    /// Notification state: an `indeterminate` check never flips it (D7, Fase 3).
+    was_up: bool,
+    /// Last DB write timestamp, for the time-based sampling in `run_monitor_check`.
+    last_write_at: i64,
+    /// Last *observable* status, so a sustained `indeterminate` period is recorded
+    /// once instead of on every check (M5, Fase 3).
+    observed: ObservedStatus,
+}
+
+#[async_trait]
+impl jitter::Cycle for MonitorCycle<'_> {
+    async fn check(&mut self) {
+        self.was_up = run_monitor_check(
+            self.db,
+            self.monitor,
+            self.notifier_cache,
+            self.event_tx,
+            self.last_check_at,
+            self.checker,
+            self.health,
+            self.was_up,
+            self.notifier_ids,
+            &mut self.last_write_at,
+            &mut self.observed,
+            self.interval_secs,
         )
         .await;
     }
@@ -741,8 +788,11 @@ pub(crate) async fn run_monitor_check(
 mod tests {
     use super::*;
     use crate::checker::{CheckOutcome, FailureCause};
+    use crate::jitter;
     use crate::netcheck::NetworkHealth;
     use async_trait::async_trait;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
     use tempfile::TempDir;
 
     struct AlwaysUpChecker;
@@ -1918,5 +1968,38 @@ mod tests {
             "the pending transition must be retried and persisted (got {checks:?})"
         );
         assert_eq!(checks[0].status, "down");
+    }
+
+    // ── Fase 4 · D5: el jitter no cambia el intervalo configurado ──
+
+    /// Scenario: el `interval_seconds` configurado y persistido sigue igual.
+    #[tokio::test]
+    async fn the_jitter_should_not_change_the_configured_interval() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-jitter-d5");
+        db.create_monitor(&monitor).await.unwrap();
+
+        // The same derivation the production cycle uses.
+        let interval = Duration::from_secs(monitor.interval_seconds.max(1) as u64);
+        let mut rng = StdRng::seed_from_u64(3);
+        let offset = jitter::initial_offset(interval, &mut rng);
+        let delay = jitter::next_delay(interval, &mut rng);
+
+        assert!(offset < interval, "the offset is inside the interval");
+        assert!(
+            delay >= Duration::from_secs(54) && delay <= Duration::from_secs(66),
+            "the wait is jittered, got {delay:?}"
+        );
+        assert_ne!(delay, interval, "the wait is not the plain interval");
+
+        assert_eq!(
+            monitor.interval_seconds, 60,
+            "the in-memory value is untouched"
+        );
+        let stored = db.get_monitor("m-jitter-d5").await.unwrap().unwrap();
+        assert_eq!(
+            stored.interval_seconds, 60,
+            "the persisted interval is untouched"
+        );
     }
 }
