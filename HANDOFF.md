@@ -2,6 +2,15 @@
 
 ## Estado (14 Nov 2026)
 
+- **#71 ✅ COMPLETADO** (PR **#76** mergeado a `development` en `562ccff9`; rama borrada):
+  estado del storm breaker (`closed`/`open`) + config expuesto en `GET /api/breaker` (protegido);
+  breaker compartido desde `SchedulerManager` (`breaker()`), `manager_loop` usa el mismo `Arc`.
+  Frontend: `fetchBreaker()` + `BreakerBadge` en el Dashboard + indicador «Suprimido» en `MonitorCard`;
+  degradación no bloqueante. Tests: **362 verdes** (4 de ruta); `clippy`/`fmt` limpios; `tsc`+build OK.
+  Auditado por `@rust-reviewer` y `@react-reviewer` (**APROBADOS**).
+  Docs `docs/breaker-state.md`; plan `plans/PLAN-014-ARCHIVED.md`.
+  Change OpenSpec archivado: `openspec/changes/archive/2026-11-14-breaker-state/`.
+  Nota: rearme perezoso (`open` puede quedar vigente sin transiciones) — follow-up `snapshot(now)`.
 - **#70 ✅ COMPLETADO** (PR **#75** mergeado a `development` en `71bc2c4d`; rama borrada):
   `error_kind` (wire de `FailureCause`) en el evento SSE `type:"check"`; payload extraído a
   `check_event_payload` (función pura testeable), guarda `receiver_count() > 0` intacta.
@@ -31,13 +40,13 @@
 ### #62 — Follow-ups Robust Check Engine (sub-issues)
 - **#69** ✅ canario de red configurable (PR #74 mergeado).
 - **#70** ✅ `error_kind` en el evento SSE (PR #75 mergeado).
-- **#71** 🚦 estado del breaker (closed/open) en API y dashboard (**siguiente**).
-- **#72** 📬 agrupar notificaciones latency/expiry en el breaker.
+- **#71** ✅ estado del breaker (closed/open) en API y dashboard (PR #76 mergeado).
+- **#72** 📬 agrupar notificaciones latency/expiry en el breaker (**siguiente**).
 - **#63** ♿ a11y del timeline + test SNI real.
 
 ### Pendiente inmediato
-- **#71** 🚦 estado del breaker (closed/open) en API y dashboard — **siguiente**, en **sesión nueva**
-  (change OpenSpec + TDD). Después, el resto de sub-issues de #62, cada uno en sesión separada.
+- **#72** 📬 agrupar notificaciones latency/expiry en el breaker — **siguiente**, en **sesión nueva**
+  (change OpenSpec + TDD). Después, #63 y el resto de sub-issues de #62, cada uno en sesión separada.
 - **Follow-ups #70:** refinamientos del poll (no refrescar con `document.hidden`; saltar si hubo
   evento SSE reciente) y, opcionalmente, incluir `tls_cert_*` en el payload SSE para eliminarlo.
 
