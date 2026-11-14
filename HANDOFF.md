@@ -29,10 +29,8 @@ caídas reales de los servicios.
 
 ## Pendiente / riesgo residual
 
-- **Issue #41** (abierto): monitores TLS pueden paniquear por `CryptoProvider` ambiguo de
-  rustls (`ring` + `aws-lc-rs`). **Fuera del alcance** del PLAN-002. Requiere fijar el
-  proveedor criptográfico explícitamente (p. ej. `rustls::crypto::ring::default_provider()`
-  instalado como default al arrancar).
+- **Issue #41** ✅ **resuelto** (hotfix PR #48): se instala `ring` como `CryptoProvider`
+  por defecto al arrancar (`main.rs`), evitando el panic de los monitores TLS.
 - Follow-ups menores: intervalo del canario configurable; exponer estado del breaker en la
   API/dashboard; dedupe de consultas DNS en vuelo.
 
