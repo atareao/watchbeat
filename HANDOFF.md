@@ -1,33 +1,43 @@
-# HANDOFF — Diagnóstico y optimización de queries lentas
+# HANDOFF — Robust Check Engine (PLAN-002)
 
-## Estado actual (13 Nov 2026)
+## Estado actual (14 Nov 2026)
 
-### Problema original
-WatchBeat en Co1 mostraba errores esporádicos en todos los monitores. Causa raíz: la DB SQLite acumuló **300k checks (134 MB)** y 3 queries en `backend/src/db.rs` tardaban 1-5s. Al concurrir con los checks del scheduler, sqlite bloqueaba → timeouts → falsos positivos.
+Objetivo: blindar WatchBeat para que las **caídas de infraestructura/DNS del host**
+nunca se confundan con caídas reales de los servicios.
 
-### Medidas aplicadas
+- Issue paraguas: [#34](https://github.com/atareao/watchbeat/issues/34)
+- Plan: `plans/PLAN-002.md` (6 fases, una a una)
+- Bug colateral: [#41](https://github.com/atareao/watchbeat/issues/41) (rustls CryptoProvider)
 
-| Medida | Dónde | Detalle |
+## Fases
+
+| Fase | Issue | Estado |
 |---|---|---|
-| Retención 14d (urgente) | Co1 — settings DB | Manual via sqlite3 en Co1 el 12 Nov |
-| Bucketing SQL | `backend/src/db.rs` — `get_timeline_buckets` | GROUP BY SQL en vez de bajar 21k filas a Rust (3.5s → ~60ms) |
-| Opciones retención | `frontend/src/pages/Settings.tsx` | Select: 7 y 14 días (en vez de 7, 15, 30) |
-| CI simplificado | `.github/workflows/docker-multiarch.yml` | Solo amd64, sin QEMU/arm64 |
-| Docs | `docs/checks-perf.md` | Detalle técnico del cambio |
+| 1 · Resolver DNS propio | #35 | ✅ mergeada (PR #42) |
+| 2 · Taxonomía `FailureCause` + `error_kind` | #36 | ✅ mergeada (PR #43) |
+| 3 · Canario `NetworkHealth` + atribución `indeterminate` | #37 | ✅ mergeada (PR #44) |
+| 4 · Jitter de ticks | #38 | ✅ mergeada (PR #45) |
+| 5 · Breaker / anti-tormenta | #39 | ⏳ pendiente |
+| 6 · Documentación final + razones | #40 | ⏳ pendiente |
 
-### Releases
-- `v0.14.1` — bucketing SQL + CI amd64 (desplegado en Co1)
-- `v0.14.2` — opciones retención 7/14 días (desplegado en Co1)
+## Última fase cerrada — Fase 4 (jitter)
 
-### Para revisar más adelante
+- `backend/src/jitter.rs` (nuevo): desplazamiento inicial uniforme en `[0, intervalo)`
+  + jitter por ciclo ±10 % (cota ≥ 1 s); RNG y reloj inyectables.
+- `scheduler.rs`: `monitor_task_inner` usa `jittered_cycle`; bucle secuencial con
+  `sleep` sustituye a `tokio::time::interval` (anti-ráfagas).
+- Dep `rand = "0.10"`. Spec `scheduler` actualizada. Doc `docs/scheduler-jitter.md`.
+- Tests: lib 212 + api_keys 9 + db_integration 45 + run_check_route 3. Clippy/fmt limpios.
+- Auditoría `@rust-reviewer`: APROBADO.
 
-1. **¿Siguen apareciendo errores falsos?** Si el problema persiste, hay que investigar si el scheduler sigue teniendo timeouts por concurrencia sqlite (buscar en logs de Co1 `slow statement` o `error` en los checks).
-2. **Retención automática:** Verificar que el cleanup `cleanup_old_checks` se ejecuta cada 24h (no hay log específico de cleanup — si se necesita, añadir un `tracing::info!`).
-3. **Migración del compose en Co1:** El compose de producción está en `/home/lorenzo/docker/dockge/stacks/watchbeat/`, gestionado por Dockge. La raíz del repo tiene `compose.yml` de ejemplo.
-4. **Próximo paso opcional:** Keyset pagination en `get_checks` y `get_checks_filtered` para eliminar `OFFSET` en tablas grandes (issue [#33](https://github.com/atareao/watchbeat/issues/33) abierto).
+## Próximo paso
 
-### Archivos relevantes
-- `backend/src/db.rs` (get_timeline_buckets reescrita)
-- `docs/checks-perf.md` (documentación técnica)
-- `openspec/specs/db/spec.md` (spec consolidada)
-- `openspec/specs/settings/spec.md` (spec retención)
+Arrancar **Fase 5 · Breaker / anti-tormenta (#39)**: un change proposal OpenSpec
+nuevo, TDD RED-GREEN-REFACTOR, PR a `development` con `Closes #39`.
+
+## Contexto técnico clave
+
+- Estados de `checks.status`: `up`, `warning`, `down`, `error`, `indeterminate`.
+- `indeterminate` = observabilidad, no incidente (no notifica, no toca `was_up`).
+- Rechazados por diseño: reintentos/`confirmations_required` como atribución.
+- Git Flow: features desde `development`, PR con `Closes #NN`, `--merge`.
