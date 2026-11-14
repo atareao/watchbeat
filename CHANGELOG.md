@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.15.3] - 2026-11-14
+
+### Bug Fixes
+
+- **TCP/TLS multi-dirección (#57)**: `TcpChecker` y `TlsChecker` resuelven todas
+  las A/AAAA y prueban cada dirección con un timeout compartido. Un registro
+  obsoleto ya no provoca falsos `down`; si todas fallan, se conserva la primera
+  causa y un resumen de intentos (acotado a 1 KiB).
+- **Test flaky (#55)**: `closed_loopback_port` usa el puerto 1, fuera del rango
+  efímero, eliminando la carrera con otros tests en paralelo.
+
+### Security
+
+- **Dependencias (#59)**: `jsonwebtoken` 12 (rsa 0.10, crypto-bigint 0.7,
+  ctutils 0.4.8), `rustls-webpki` 0.103.17, `webpki-roots`/`webpki-root-certs`
+  1.0.12 y `vite ^8.3.8`. `cargo audit` deja solo `libsqlite3-sys` 0.37
+  (bloqueado por sqlx 0.9.0); `npm audit` = 0. 18 alertas Dependabot cerradas.
+
+### Documentation
+
+- `docs/tcp-tls-multi-address.md`, `docs/testing-connect-refused.md` y
+  `docs/security-deps.md`.
+
+
 ## [0.15.2] - 2026-11-14
 
 ### Bug Fixes
