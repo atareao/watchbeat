@@ -1,7 +1,7 @@
 # Network attribution y estado `indeterminate` (Fase 3 · Robust Check Engine)
 
 - **Issue**: [#37](https://github.com/atareao/watchbeat/issues/37)
-- **Plan**: `plans/PLAN-002.md` — Robust Check Engine (Fase 3 de 6)
+- **Plan**: `plans/PLAN-002-ARCHIVED.md` — Robust Check Engine (Fase 3 de 6)
 - **Change OpenSpec**: `openspec/changes/archive/…-network-attribution/`
 
 ## Qué es

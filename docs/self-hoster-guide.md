@@ -896,6 +896,28 @@ docker compose exec watchbeat ls -la /app/data
 docker compose exec watchbeat touch /app/data/test
 ```
 
+### 19.11. Falsos positivos: caídas simultáneas de muchos monitores
+
+Si **muchos monitores caen a la vez** (mismo segundo) y los servicios funcionan, el
+problema suele ser la **red/DNS del host**, no los servicios. WatchBeat lo trata así:
+
+- Los fallos no atribuibles se marcan **`indeterminate`** (badge violeta): no alertan ni
+  penalizan el uptime. Si ves muchos `indeterminate`, revisa la conectividad de salida del
+  host (DNS, firewall, ruta).
+- El **breaker anti-tormenta** agrupa una caída en cascada en **una sola alerta agregada**.
+  Se configura en **Ajustes → Tormenta** (`storm_threshold_percent`, `storm_window_seconds`,
+  `storm_min_monitors`). Desactívalo (`storm_breaker_enabled = false`) si prefieres una
+  alerta por monitor.
+- El **DNS propio** cachea las resoluciones (TTL 30–300 s): un microcorte del DNS del host
+  no rompe los checks. Puedes fijar upstreams con `WATCHBEAT_DNS_UPSTREAMS`.
+
+```bash
+# Ver la salud de red del canario y los checks recientes
+docker compose logs watchbeat | grep -iE "netcheck|indeterminate|storm"
+```
+
+📖 Detalle: [`docs/robust-check-engine.md`](robust-check-engine.md).
+
 ---
 
 ## Consejos finales

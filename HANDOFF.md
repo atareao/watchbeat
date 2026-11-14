@@ -6,7 +6,7 @@ Objetivo: blindar WatchBeat para que las **caídas de infraestructura/DNS del ho
 nunca se confundan con caídas reales de los servicios.
 
 - Issue paraguas: [#34](https://github.com/atareao/watchbeat/issues/34)
-- Plan: `plans/PLAN-002.md` (6 fases, una a una)
+- Plan: `plans/PLAN-002-ARCHIVED.md` (6 fases, una a una)
 - Bug colateral: [#41](https://github.com/atareao/watchbeat/issues/41) (rustls CryptoProvider)
 
 ## Fases
@@ -37,7 +37,7 @@ nunca se confundan con caídas reales de los servicios.
 
 Arrancar **Fase 6 · Documentación integral y cierre (#40)**: `docs/robust-check-engine.md`
 (visiones + razones), ADR de decisiones clave, actualizar README/CHANGELOG/env example,
-informe final, cerrar #35-#40 y #34, renombrar `plans/PLAN-002.md` → `-ARCHIVED`.
+informe final, cerrar #35-#40 y #34, renombrar `plans/PLAN-002-ARCHIVED.md` → `-ARCHIVED`.
 
 ## Contexto técnico clave
 
