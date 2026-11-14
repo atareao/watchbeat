@@ -95,20 +95,36 @@ impl Database {
         .await
         .context("Failed to create checks table")?;
 
-        let _ = sqlx::raw_sql(
-            "CREATE INDEX IF NOT EXISTS idx_checks_monitor ON checks(monitor_id, checked_at DESC)",
+        // Single covering index for every per-monitor query (#33):
+        //   - `get_checks` / `get_latest_check` / `get_timeline` (prefix + DESC order)
+        //   - `get_checks_filtered` (status filter, no sort thanks to the DESC order)
+        //   - `get_timeline_buckets` / `calculate_uptime` (covering: status + response_time_ms)
+        // It subsumes the former `idx_checks_monitor` and `idx_checks_uptime`, which are
+        // dropped below to avoid redundant write amplification.
+        let timeline_index_created = sqlx::raw_sql(
+            "CREATE INDEX IF NOT EXISTS idx_checks_timeline
+             ON checks(monitor_id, checked_at DESC, status, response_time_ms)",
         )
         .execute(&pool)
-        .await;
+        .await
+        .is_ok();
+        if timeline_index_created {
+            // Only drop the legacy indexes once the replacement exists: dropping
+            // them after a failed CREATE would leave the table without any
+            // per-monitor index.
+            let _ = sqlx::raw_sql("DROP INDEX IF EXISTS idx_checks_monitor")
+                .execute(&pool)
+                .await;
+            let _ = sqlx::raw_sql("DROP INDEX IF EXISTS idx_checks_uptime")
+                .execute(&pool)
+                .await;
+        } else {
+            tracing::warn!("Failed to create idx_checks_timeline; keeping legacy checks indexes");
+        }
         let _ =
             sqlx::raw_sql("CREATE INDEX IF NOT EXISTS idx_checks_checked_at ON checks(checked_at)")
                 .execute(&pool)
                 .await;
-        // Covering index for uptime queries (COUNT/SUM by monitor_id + date range)
-        let _ = sqlx::raw_sql(
-            "CREATE INDEX IF NOT EXISTS idx_checks_uptime ON checks(monitor_id, checked_at, status)")
-            .execute(&pool)
-            .await;
         let _ = sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS notifiers (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, notifier_type TEXT NOT NULL,
@@ -264,6 +280,10 @@ impl Database {
         )
         .execute(&pool)
         .await;
+
+        // Refresh planner statistics so SQLite picks the covering index (#33).
+        // `ANALYZE` is cheap on an empty/small DB and idempotent.
+        let _ = sqlx::raw_sql("ANALYZE").execute(&pool).await;
 
         Ok(Self {
             pool,
