@@ -811,7 +811,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_check_down() {
-        // Nothing listens on the released port, so the connect is refused
+        // Nothing listens on the unused port, so the connect is refused
         // immediately: deterministic without touching any external network.
         let port = closed_loopback_port().await;
         let m = make_monitor("http", &format!("http://127.0.0.1:{port}/"));
@@ -1488,7 +1488,7 @@ mod tests {
     /// Scenario: Conexión rechazada.
     #[tokio::test]
     async fn tcp_check_should_report_connect_refused_cause() {
-        // Bind and drop: the port is free again, so the kernel resets the SYN.
+        // Port 1 has no listener, so the kernel resets the SYN.
         let port = closed_loopback_port().await;
 
         let m = make_monitor("tcp", &format!("127.0.0.1:{port}"));

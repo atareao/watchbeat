@@ -2,7 +2,7 @@
 
 - **Issue**: [#55](https://github.com/atareao/watchbeat/issues/55)
 - **Rama**: `feature/flaky-connect-refused-tests`
-- **Change OpenSpec**: `openspec/changes/flaky-connect-refused-tests/`
+- **Change OpenSpec**: `openspec/changes/archive/2026-11-14-flaky-connect-refused-tests/`
 
 ## Causa
 

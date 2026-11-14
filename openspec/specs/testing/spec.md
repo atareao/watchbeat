@@ -1,7 +1,9 @@
 # testing Specification
 
 ## Purpose
-TBD - created by archiving change flaky-connect-refused-tests. Update Purpose after archive.
+
+Mantener deterministas los tests de red: los que esperan una conexión rechazada
+no deben depender de puertos efímeros que otros tests puedan reocupar.
 
 ## Requirements
 
