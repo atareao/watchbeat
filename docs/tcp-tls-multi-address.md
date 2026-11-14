@@ -60,6 +60,13 @@ Tests deterministas (sin red externa, con resolver y conector inyectados):
   `#[cfg(test)]` para los tests de una sola dirección; producción usa `check_all`.
 - **Timeout compartido**: las direcciones no reinician el presupuesto; un host
   con muchas IPs no puede alargar el check indefinidamente.
+- **Connector TLS tras el connect**: el `TlsConnector` (roots + config) se
+  construye solo cuando el TCP connect ha tenido éxito. Así un fallo de conexión
+  no exige crypto provider instalado (los tests de `connect_refused` no
+  paniquean) y el check construye el connector como máximo una vez.
+- **Tests sobre la ruta real**: además de los injectables, se cubre `check_all`
+  con un listener TCP real (up), una IP sin listener (down/refused) y un servidor
+  TCP plano (handshake → `tls_error`).
 
 ## Follow-ups
 

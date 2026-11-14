@@ -449,6 +449,20 @@ impl Checker for HttpChecker {
 
 // ───── TCP Checker ─────
 
+/// Cap an error message before it reaches the DB and SSE (1 KiB).
+pub(crate) fn truncate_message(message: String) -> String {
+    const MAX: usize = 1024;
+    if message.len() <= MAX {
+        message
+    } else {
+        let mut cut = MAX;
+        while !message.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…", &message[..cut])
+    }
+}
+
 pub struct TcpChecker;
 
 impl TcpChecker {
@@ -467,8 +481,7 @@ impl TcpChecker {
 
     /// Check body with injectable name resolution.
     ///
-    /// Resolution and connection share the monitor timeout: a slow resolver
-    /// must not push the check past its budget.
+    /// Thin wrapper over the production path so tests exercise the real loop.
     #[cfg(test)]
     pub(crate) async fn check_with<F, Fut>(monitor: &Monitor, resolve: F) -> CheckOutcome
     where
@@ -483,6 +496,8 @@ impl TcpChecker {
 
     /// Check body with both the resolver and the connector injectable, so every
     /// connectivity cause can be classified deterministically (no network).
+    ///
+    /// Wraps the production loop with a single-address resolver.
     #[cfg(test)]
     pub(crate) async fn check_with_connect<F, Fut, C, CFut>(
         monitor: &Monitor,
@@ -492,64 +507,15 @@ impl TcpChecker {
     where
         F: FnOnce(String) -> Fut,
         Fut: std::future::Future<Output = Result<std::net::IpAddr, crate::dns::DnsError>>,
-        C: FnOnce(std::net::SocketAddr) -> CFut,
+        C: Fn(std::net::SocketAddr) -> CFut,
         CFut: std::future::Future<Output = std::io::Result<()>>,
     {
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(monitor.timeout_seconds as u64);
-
-        let Some((host, port)) = split_host_port(&monitor.target) else {
-            return Self::failure(
-                start,
-                FailureCause::Other,
-                format!("Invalid TCP target: {}", monitor.target),
-            );
-        };
-
-        // Resolution and connection share one budget, but are timed apart: that
-        // is what tells a resolution timeout from a connection one. Keeping the
-        // typed `DnsError` (instead of flattening it to a string) is what
-        // preserves the exact cause.
-        let ip = match tokio::time::timeout(timeout, resolve(host.clone())).await {
-            Ok(Ok(ip)) => ip,
-            Ok(Err(e)) => {
-                return Self::failure(
-                    start,
-                    cause_from_dns(&e),
-                    format!("DNS resolution failed for {}: {}", host, e),
-                );
-            }
-            Err(_) => {
-                return Self::failure(
-                    start,
-                    FailureCause::DnsTimeout,
-                    format!("DNS resolution timed out for {}", host),
-                );
-            }
-        };
-
-        let remaining = timeout.saturating_sub(start.elapsed());
-
-        match tokio::time::timeout(remaining, connect(std::net::SocketAddr::new(ip, port))).await {
-            Ok(Ok(())) => CheckOutcome {
-                status: status_for(None).into(),
-                status_code: None,
-                response_time_ms: start.elapsed().as_millis() as u64,
-                error_message: None,
-                tls: None,
-                cause: None,
-            },
-            Ok(Err(e)) => Self::failure(
-                start,
-                cause_from_io(&e),
-                format!("TCP connection failed: {}", e),
-            ),
-            Err(_) => Self::failure(
-                start,
-                FailureCause::ConnectTimeout,
-                "TCP connection timed out".into(),
-            ),
-        }
+        Self::check_with_connect_all(
+            monitor,
+            move |host| async move { resolve(host).await.map(|ip| vec![ip]) },
+            connect,
+        )
+        .await
     }
 
     /// Check body resolving every address and trying them in order.
@@ -640,14 +606,13 @@ impl TcpChecker {
         }
 
         let cause = first_cause.unwrap_or(FailureCause::Other);
-        Self::failure(
-            start,
-            cause,
-            format!(
-                "TCP connection failed for all addresses: {}",
-                attempts.join("; ")
-            ),
-        )
+        let detail = attempts.join("; ");
+        let message = if attempts.len() == 1 {
+            format!("TCP connection failed: {detail}")
+        } else {
+            format!("TCP connection failed for all addresses: {detail}")
+        };
+        Self::failure(start, cause, truncate_message(message))
     }
 
     /// Production entry: resolve every address and fall back between them.
@@ -1599,6 +1564,33 @@ mod tests {
 
         let m = make_monitor("tcp", &format!("127.0.0.1:{port}"));
         let outcome = TcpChecker.check(&m).await;
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(FailureCause::ConnectRefused));
+    }
+
+    /// Production path (`check_all`) against a real listener: the loop, the
+    /// resolver short-circuit for IP literals and the connector are exercised.
+    #[tokio::test]
+    async fn production_tcp_check_all_should_connect_to_a_real_listener() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let m = make_monitor("tcp", &format!("127.0.0.1:{port}"));
+        let outcome = TcpChecker::check_all(&m).await;
+
+        assert_eq!(outcome.status, "up");
+    }
+
+    /// Production path refused: a literal IP with nothing listening must yield
+    /// `connect_refused`, not a wrapper-specific result.
+    #[tokio::test]
+    async fn production_tcp_check_all_should_report_connect_refused() {
+        let m = make_monitor("tcp", "127.0.0.1:1");
+        let outcome = TcpChecker::check_all(&m).await;
 
         assert_eq!(outcome.status, "down");
         assert_eq!(outcome.cause, Some(FailureCause::ConnectRefused));
