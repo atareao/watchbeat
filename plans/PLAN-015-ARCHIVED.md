@@ -2,7 +2,7 @@
 
 **Issue:** [#72](https://github.com/atareao/watchbeat/issues/72) (sub-issue `e` de #62)
 **Change OpenSpec:** `openspec/changes/latency-expiry-aggregation/`
-**Estado:** EN CURSO — pendiente de aprobación de la spec (Fase 1 SDD)
+**Estado:** COMPLETADO — PR #77 mergeado en `development` (`7c75e1db`). Change archivado.
 
 ## Objetivo
 

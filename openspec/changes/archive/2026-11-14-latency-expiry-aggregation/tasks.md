@@ -28,7 +28,7 @@
 
 ## 4. Cierre
 
-- [ ] 4.1 `docs/latency-expiry-aggregation.md`.
-- [ ] 4.2 `@rust-reviewer` sobre el diff.
-- [ ] 4.3 PR a `development` con `Closes #72`.
+- [x] 4.1 `docs/latency-expiry-aggregation.md`.
+- [x] 4.2 `@rust-reviewer` sobre el diff.
+- [x] 4.3 PR a `development` con `Closes #72`.
 - [ ] 4.4 Archivar change en `openspec/changes/archive/` y marcar `plans/PLAN-015.md` → `-ARCHIVED.md`.
