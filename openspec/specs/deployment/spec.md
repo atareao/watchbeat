@@ -1,7 +1,9 @@
 # deployment Specification
 
 ## Purpose
-TBD - created by archiving change ping-checker-diagnostics. Update Purpose after archive.
+
+Garantizar que el contenedor, ejecutado como usuario no-root, disponga de las
+capacidades necesarias para la sonda ICMP (ping) sin privilegios de root.
 
 ## Requirements
 

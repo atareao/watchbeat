@@ -572,9 +572,11 @@ pub(crate) fn parse_ping_time(stdout: &str) -> Option<u64> {
     for line in stdout.lines() {
         for marker in ["time=", "tiempo="] {
             if let Some(rest) = line.split(marker).nth(1) {
-                let value = rest.split_whitespace().next()?.trim_end_matches("ms");
-                if let Ok(ms) = value.parse::<f64>() {
-                    return Some(ms as u64);
+                if let Some(token) = rest.split_whitespace().next() {
+                    let value = token.strip_suffix("ms").unwrap_or(token);
+                    if let Ok(ms) = value.parse::<f64>() {
+                        return Some(ms as u64);
+                    }
                 }
             }
         }
@@ -610,7 +612,10 @@ pub(crate) fn classify_ping_failure(
         );
     }
 
-    if exit_code == Some(127) || lower.contains("not found") || lower.contains("no such file") {
+    if exit_code == Some(127)
+        || lower.contains("command not found")
+        || lower.contains("no such file")
+    {
         return (
             "error",
             format!(
@@ -625,6 +630,27 @@ pub(crate) fn classify_ping_failure(
         ("down", format!("Ping failed (no response){exit}"))
     } else {
         ("down", format!("Ping failed: {}{exit}", stderr.trim()))
+    }
+}
+
+/// Classify a failure to *spawn* the ping process (I/O error), as opposed to a
+/// failed run. The typed `io::ErrorKind` avoids depending on localized messages.
+pub(crate) fn classify_ping_spawn_error(error: &std::io::Error) -> (&'static str, String) {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => (
+            "error",
+            "ping binary is not available. Install iputils in the image.".to_string(),
+        ),
+        std::io::ErrorKind::PermissionDenied => (
+            "error",
+            format!(
+                "ping could not be executed: {error}. Check the binary permissions (execute bit and CAP_NET_RAW)."
+            ),
+        ),
+        _ => (
+            "error",
+            format!("ping could not be started: {error}"),
+        ),
     }
 }
 
@@ -645,6 +671,7 @@ impl Checker for PingChecker {
                 .arg("1")
                 .arg("-W")
                 .arg(timeout.to_string())
+                .arg("--")
                 .arg(&target)
                 .output(),
         )
@@ -681,7 +708,7 @@ impl Checker for PingChecker {
             }
             Ok(Err(e)) => {
                 // The binary could not be spawned at all (e.g. not installed).
-                let (status, message) = classify_ping_failure(&e.to_string(), None);
+                let (status, message) = classify_ping_spawn_error(&e);
 
                 CheckOutcome {
                     status: status.into(),
@@ -1834,6 +1861,22 @@ mod tests {
             parse_ping_time("64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time<1 ms"),
             Some(0)
         );
+    }
+
+    #[test]
+    fn classify_ping_failure_treats_dns_failure_as_down() {
+        let (status, message) =
+            classify_ping_failure("ping: bad address 'does-not-exist.invalid'", Some(2));
+        assert_eq!(status, "down", "a target DNS failure is not a config error");
+        assert!(message.contains("bad address"));
+    }
+
+    #[test]
+    fn classify_ping_spawn_error_detects_missing_binary() {
+        let error = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let (status, message) = classify_ping_spawn_error(&error);
+        assert_eq!(status, "error");
+        assert!(message.contains("iputils"));
     }
 
     #[test]

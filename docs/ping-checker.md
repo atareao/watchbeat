@@ -35,7 +35,9 @@ denied (are you root?)`). `docker exec` funcionaba porque entra como root.
    - cualquier otro caso → `down` con el `stderr` y el código de salida.
 3. Si el binario no se puede lanzar (`Command::output` falla), el error de
    spawn se clasifica igual (sin código de salida).
-4. En el camino `up`, `parse_ping_time` extrae el RTT de `time=` o `tiempo=`
+4. El target se pasa tras `--`, de modo que un valor que empiece por `-` nunca
+   se interpreta como flag de `ping`.
+5. En el camino `up`, `parse_ping_time` extrae el RTT de `time=` o `tiempo=`
    (locale) y trata `time<1 ms` como `0`.
 
 ## Imagen y compose
@@ -45,8 +47,10 @@ denied (are you root?)`). `docker exec` funcionaba porque entra como root.
 | `apk add iputils libcap` + `setcap cap_net_raw+ep` al `ping` | `Dockerfile` |
 | `cap_add: [NET_RAW]` | `compose.yml` |
 
-`setcap` basta en Docker; `NET_RAW` es defensa en profundidad y el requisito
-real en Podman rootless.
+`setcap` basta para ejecutar `ping` como usuario no-root. `cap_add: [NET_RAW]`
+es defensa en profundidad: garantiza la capacidad aunque el filesystem pierda
+los xattrs. En Podman rootless el comportamiento depende del backend de red
+(pasta/slirp4netns), así que `NET_RAW` no siempre sustituye al `setcap`.
 
 ## Ficheros implicados
 
@@ -55,6 +59,9 @@ real en Podman rootless.
 | `backend/src/checker/mod.rs` | `parse_ping_time`, `classify_ping_failure`, `PingChecker` |
 | `Dockerfile` | `iputils`, `libcap`, `setcap` |
 | `compose.yml` | `cap_add: [NET_RAW]` (y entrecomillado de `OIDC_REDIRECT_URL`, fix YAML) |
+
+El `Dockerfile` elimina el bit setuid de `ping` (`chmod u-s`) antes de aplicar
+`setcap`, para que el binario no sea setuid-root dentro del contenedor.
 
 ## Cómo verificar
 
