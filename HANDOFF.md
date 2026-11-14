@@ -2,6 +2,15 @@
 
 ## Estado (14 Nov 2026)
 
+- **#70 ✅ COMPLETADO** (rama `feature/sse-error-kind`, PR **#75** abierto a `development`):
+  `error_kind` (wire de `FailureCause`) en el evento SSE `type:"check"`; payload extraído a
+  `check_event_payload` (función pura testeable), guarda `receiver_count() > 0` intacta.
+  Frontend: `CheckEvent.error_kind`; `MonitorDetail` deja de refetchear el último check en el
+  camino SSE + **poll de fallback de 60 s** (frescura TLS + caída de SSE). Sin migración ni
+  cambios de API REST. Tests: **358 verdes**; `clippy`/`fmt` limpios; `tsc`+`build` OK.
+  Auditado por `@rust-reviewer` y `@react-reviewer` (**APROBADOS**; 1 hallazgo ALTO frontend resuelto).
+  Docs `docs/sse-error-kind.md`; plan `plans/PLAN-013-ARCHIVED.md`.
+  Change OpenSpec archivado: `openspec/changes/archive/2026-11-14-sse-error-kind/`.
 - **#69 ✅ COMPLETADO** (PR **#74** mergeado a `development` en `48670f79`; rama borrada):
   canario de red configurable vía setting `canary_interval_secs` (default 30 s, rango [5, 3600],
   clamp), con recarga en caliente (patrón del breaker). `main.rs` resuelve el intervalo desde la
@@ -21,14 +30,16 @@
 
 ### #62 — Follow-ups Robust Check Engine (sub-issues)
 - **#69** ✅ canario de red configurable (PR #74 mergeado).
-- **#70** 📡 `error_kind` en el evento SSE (**siguiente**).
-- **#71** 🚦 estado del breaker (closed/open) en API y dashboard.
+- **#70** ✅ `error_kind` en el evento SSE (PR #75 abierto).
+- **#71** 🚦 estado del breaker (closed/open) en API y dashboard (**siguiente**).
 - **#72** 📬 agrupar notificaciones latency/expiry en el breaker.
 - **#63** ♿ a11y del timeline + test SNI real.
 
 ### Pendiente inmediato
-- **#70** 📡 `error_kind` en el evento SSE — **siguiente**, en **sesión nueva** (change OpenSpec + TDD).
-  Después, el resto de sub-issues de #62, cada uno en sesión separada.
+- Revisar y mergear el PR **#75** de #70. Después, seguir por **#71** y el resto de sub-issues
+  de #62, cada uno en sesión separada (change OpenSpec + TDD).
+- **Follow-ups #70:** refinamientos del poll (no refrescar con `document.hidden`; saltar si hubo
+  evento SSE reciente) y, opcionalmente, incluir `tls_cert_*` en el payload SSE para eliminarlo.
 
 ### Housekeeping
 - `just check-spec` NO existe como receta del `.justfile` pese a referenciarla AGENTS.md; la
