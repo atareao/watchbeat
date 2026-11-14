@@ -1,7 +1,7 @@
 # Fallback multi-dirección en TCP y TLS (#57)
 
 - **Issue**: [#57](https://github.com/atareao/watchbeat/issues/57)
-- **Plan**: `plans/PLAN-007.md`
+- **Plan**: `plans/PLAN-007-ARCHIVED.md`
 - **Change OpenSpec**: `openspec/changes/archive/…-tcp-tls-multi-address-fallback/`
 
 ## Qué es
