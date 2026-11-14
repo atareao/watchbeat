@@ -91,8 +91,8 @@ check TCP/TLS con el resolvedor propio y fallo DNS → `error`.
 ## Follow-ups
 
 - **Fase 2** (`#36`): mapear `DnsError` a `FailureCause`.
-- **Issue #41**: bug preexistente — `rustls` paniquea por `CryptoProvider` ambiguo
-  (`ring` + `aws-lc-rs`); los monitores TLS revientan en producción.
+- **Issue #41** ✅ resuelto (hotfix #48): `rustls` paniqueaba por `CryptoProvider`
+  ambiguo (`ring` + `aws-lc-rs`); ahora `ring` se instala como default al arrancar.
 - El **SNI real** no se asserta con handshake TLS completo (se preserva por
   diseño al no reescribir la URL).
 - Sin deduplicación de consultas en vuelo (thundering herd): N resolves
