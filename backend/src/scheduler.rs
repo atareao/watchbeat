@@ -477,6 +477,14 @@ async fn storm_notifier_ids(
     ids
 }
 
+/// Map a notification label to the breaker's signal kind (#72).
+///
+/// Delegates to `SignalKind::from_label` so the label ↔ kind mapping has a single
+/// source of truth (m5); `down`/`up` are the storm episode, not signals.
+fn signal_kind_of(kind: &str) -> Option<breaker::SignalKind> {
+    breaker::SignalKind::from_label(kind)
+}
+
 /// Serialize the SSE `type:"check"` event for a monitor/check pair.
 ///
 /// Pure and side-effect free so the wire shape is directly testable. The
@@ -501,9 +509,9 @@ fn check_event_payload(monitor: &Monitor, check: &CheckResult) -> String {
 ///
 /// `enabled_monitors` is the number of enabled monitors (heartbeats excluded) and
 /// is the base of the storm breaker's percentage threshold. `breaker` is the
-/// shared storm breaker (Fase 5): the decision for a `down`/`up` transition is
-/// taken here, before dispatching, and its lock is always released before any
-/// `await`.
+/// shared storm breaker (Fase 5): the decision for a `down`/`up` transition and,
+/// since #72, for a `latency`/`expiry` signal is taken here, before dispatching,
+/// and its lock is always released before any `await`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_monitor_check(
     db: &Database,
@@ -701,17 +709,31 @@ pub(crate) async fn run_monitor_check(
     };
 
     // ── Fase 5 (D7–D8): the storm breaker rules on this transition before anything
-    // is dispatched. Only `down`/`up` take part in a storm; `latency`/`expiry`
-    // always pass. The lock is taken, the decision computed (synchronous work) and
-    // released — never held across an `await`.
+    // is dispatched. `down`/`up` take part in a storm and, since #72, so do the
+    // `latency`/`expiry` signals (each with its own independent episode). The lock
+    // is taken, the decision computed (synchronous work) and released — never held
+    // across an `await`.
+    let notif_kind = notification_type.as_ref().map(|(kind, _)| *kind);
+    let signal = notif_kind.and_then(signal_kind_of);
     let (decision, threshold_percent) = {
         let mut guard = breaker.lock().await;
-        let decision = match notification_type.as_ref().map(|(kind, _)| *kind) {
+        // `decision_at`: do not shadow the outer `now` (the check timestamp).
+        let decision_at = Instant::now();
+        let decision = match notif_kind {
             Some("down") => {
-                guard.on_down(Instant::now(), &monitor.id, &monitor.name, enabled_monitors)
+                guard.on_down(decision_at, &monitor.id, &monitor.name, enabled_monitors)
             }
-            Some("up") => guard.on_up(Instant::now()),
-            _ => BreakerDecision::Pass,
+            Some("up") => guard.on_up(decision_at),
+            _ => match signal {
+                Some(kind) => guard.on_signal(
+                    decision_at,
+                    kind,
+                    &monitor.id,
+                    &monitor.name,
+                    enabled_monitors,
+                ),
+                None => BreakerDecision::Pass,
+            },
         };
         (decision, guard.config().threshold_percent)
     };
@@ -744,29 +766,45 @@ pub(crate) async fn run_monitor_check(
                 );
                 None
             } else {
-                // D7: render `default_template_storm` (settings), falling back to
-                // the built-in template. Exactly one aggregated message per storm.
-                // A failed read is logged (not swallowed) and falls back too.
-                let configured = match db.get_setting(breaker::SETTING_TEMPLATE_STORM).await {
-                    Ok(value) => value,
-                    Err(e) => {
-                        tracing::warn!(
-                            "Scheduler: cannot read '{}': {}",
-                            breaker::SETTING_TEMPLATE_STORM,
-                            e
-                        );
-                        None
-                    }
-                };
-                let template = configured.unwrap_or_else(|| template::defaults::STORM.to_string());
+                // D7: render the aggregated template of the episode's kind. The
+                // downs episode keeps `default_template_storm` (settings) and the
+                // built-in fallback; the latency/expiry episodes (#72) use their
+                // built-in `STORM_LATENCY`/`STORM_EXPIRY` (no new settings). Exactly
+                // one aggregated message per storm. A failed read is logged (not
+                // swallowed) and falls back too.
                 let ctx = TemplateContext::for_storm(
                     alert.count,
                     &alert.monitors,
                     alert.window_seconds,
                     threshold_percent,
                 );
+                let (kind, message) = match signal {
+                    Some(kind) => {
+                        let template = match kind {
+                            breaker::SignalKind::Latency => template::defaults::STORM_LATENCY,
+                            breaker::SignalKind::Expiry => template::defaults::STORM_EXPIRY,
+                        };
+                        (kind.as_str(), template::render_template(template, &ctx))
+                    }
+                    None => {
+                        let configured = match db.get_setting(breaker::SETTING_TEMPLATE_STORM).await
+                        {
+                            Ok(value) => value,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Scheduler: cannot read '{}': {}",
+                                    breaker::SETTING_TEMPLATE_STORM,
+                                    e
+                                );
+                                None
+                            }
+                        };
+                        let template = configured.as_deref().unwrap_or(template::defaults::STORM);
+                        ("down", template::render_template(template, &ctx))
+                    }
+                };
                 storm_ids = Some(ids);
-                Some(("down", template::render_template(&template, &ctx)))
+                Some((kind, message))
             }
         }
     };
@@ -2027,6 +2065,311 @@ mod tests {
                 .is_err(),
             "a down inside the storm must not be notified (the listener is still \
              waiting for a further request)"
+        );
+    }
+
+    /// Feature #72: las notificaciones de latencia pasan por el breaker — cada
+    /// monitor brecha su umbral por debajo del agregado (Pass individual), el que
+    /// cruza el umbral emite UNA única alerta agregada y las señales siguientes del
+    /// mismo tipo se descartan (Suppress).
+    #[tokio::test]
+    async fn latency_notifications_are_grouped_by_the_breaker() {
+        let (db, _dir) = setup_db().await;
+        // Slots 1..=3: los avisos individuales pre-umbral. Slot 4: el agregado. El
+        // quinto sólo se usaría si la señal suprimida notificase, que es lo que la
+        // última aserción descarta.
+        let (notifier_cache, mut request_rx) = webhook_notifier_multi(5).await;
+        let checker = LatencyUpChecker;
+        let (event_tx, _) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let notifier_ids = vec!["n-hook".to_string()];
+
+        // 4 monitores y umbral del 100 %: los cuatro deben brechar para agrupar.
+        let breaker = Arc::new(Mutex::new(StormBreaker::new(BreakerConfig {
+            enabled: true,
+            threshold_percent: 100,
+            // Ventana amplia: el test no depende del reloj real (m1).
+            window_seconds: 3600,
+            min_monitors: 3,
+        })));
+        let enabled_monitors = 4usize;
+        let last_check_at = Arc::new(AtomicI64::new(0));
+
+        let check = |id: &str| {
+            let mut monitor = sample_monitor(id);
+            monitor.latency_threshold_ms = Some(100);
+            monitor
+        };
+
+        // Los tres primeros pasan individualmente (por debajo del umbral).
+        for i in 0..3 {
+            let monitor = check(&format!("m-lat-{i}"));
+            db.create_monitor(&monitor).await.unwrap();
+            let mut last_write_at: i64 = 0;
+            let mut observed = ObservedStatus::Unknown;
+            run_monitor_check(
+                &db,
+                &monitor,
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&checker),
+                &health,
+                true,
+                &notifier_ids,
+                &mut last_write_at,
+                &mut observed,
+                60,
+                enabled_monitors,
+                &breaker,
+            )
+            .await;
+
+            let request = next_request(&mut request_rx, "aviso de latencia individual").await;
+            assert!(
+                request.contains("High latency"),
+                "the pre-threshold signal is the individual latency notice: {request}"
+            );
+            assert!(
+                !request.contains("Latencia degradada"),
+                "pre-threshold latencies are notified individually: {request}"
+            );
+        }
+
+        // El cuarto abre el episodio: una única alerta agregada de latencia.
+        let opener = check("m-lat-3");
+        db.create_monitor(&opener).await.unwrap();
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &opener,
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            enabled_monitors,
+            &breaker,
+        )
+        .await;
+
+        let aggregate = next_request(&mut request_rx, "agregado de latencia").await;
+        assert!(
+            aggregate.contains("Latencia degradada"),
+            "the latency episode opens with the aggregated template: {aggregate}"
+        );
+        assert!(
+            aggregate.contains("4 monitores con latencia alta"),
+            "the aggregate carries the count: {aggregate}"
+        );
+        assert!(
+            aggregate.contains("Monitor m-lat-0"),
+            "the aggregate lists the affected monitors: {aggregate}"
+        );
+
+        // Una quinta señal del mismo tipo dentro del episodio se suprime.
+        let suppressed = check("m-lat-4");
+        db.create_monitor(&suppressed).await.unwrap();
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &suppressed,
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            enabled_monitors,
+            &breaker,
+        )
+        .await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), request_rx.recv())
+                .await
+                .is_err(),
+            "a latency signal inside the episode must not be notified (the listener \
+             is still waiting for a further request)"
+        );
+    }
+
+    /// Checker whose TLS certificate is about to expire (`cert_days_left`).
+    struct ExpiringCertChecker {
+        days_left: i64,
+    }
+
+    #[async_trait]
+    impl Checker for ExpiringCertChecker {
+        async fn check(&self, _monitor: &Monitor) -> CheckOutcome {
+            CheckOutcome {
+                status: "up".into(),
+                status_code: Some(200),
+                response_time_ms: 10,
+                error_message: None,
+                tls: Some(crate::checker::tls::TlsInfo {
+                    cert_expires_at: None,
+                    cert_days_left: Some(self.days_left),
+                }),
+                cause: None,
+            }
+        }
+    }
+
+    /// One-shot check convenience for the routing tests: fresh bookkeeping, healthy
+    /// network and the notification state before the check (`was_up = true`).
+    #[allow(clippy::too_many_arguments)] // mirrors `run_monitor_check`
+    async fn run_one_check(
+        db: &Database,
+        monitor: &Monitor,
+        notifier_cache: &Arc<RwLock<HashMap<String, Notifier>>>,
+        event_tx: &broadcast::Sender<String>,
+        last_check_at: &Arc<AtomicI64>,
+        checker: &dyn Checker,
+        breaker: &Arc<Mutex<StormBreaker>>,
+        enabled_monitors: usize,
+        notifier_ids: &[String],
+    ) {
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            db,
+            monitor,
+            notifier_cache,
+            event_tx,
+            last_check_at,
+            Some(checker),
+            &unknown_health(),
+            true,
+            notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            enabled_monitors,
+            breaker,
+        )
+        .await;
+    }
+
+    /// #72 / M1: las señales de **expiración** también pasan por el breaker: pasan
+    /// individualmente por debajo del umbral, la que lo cruza emite UNA agregada de
+    /// expiración y la siguiente se suprime — sin tocar el episodio de latencia.
+    #[tokio::test]
+    async fn expiry_notifications_are_grouped_by_the_breaker() {
+        let (db, _dir) = setup_db().await;
+        let (notifier_cache, mut request_rx) = webhook_notifier_multi(5).await;
+        let checker = ExpiringCertChecker { days_left: 5 };
+        let (event_tx, _) = broadcast::channel(16);
+        let notifier_ids = vec!["n-hook".to_string()];
+        let last_check_at = Arc::new(AtomicI64::new(0));
+
+        let breaker = Arc::new(Mutex::new(StormBreaker::new(BreakerConfig {
+            enabled: true,
+            threshold_percent: 100,
+            window_seconds: 3600,
+            min_monitors: 3,
+        })));
+        let enabled_monitors = 4usize;
+
+        let expiring = |id: &str| {
+            let mut monitor = sample_monitor(id);
+            // Certificado con 5 días para un umbral de 10 → señal de expiración.
+            monitor.config_json = serde_json::json!({ "expiry_days": 10 });
+            monitor
+        };
+
+        // Los tres primeros pasan individualmente (por debajo del umbral).
+        for i in 0..3 {
+            let monitor = expiring(&format!("m-exp-{i}"));
+            db.create_monitor(&monitor).await.unwrap();
+            run_one_check(
+                &db,
+                &monitor,
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                &checker,
+                &breaker,
+                enabled_monitors,
+                &notifier_ids,
+            )
+            .await;
+
+            let request = next_request(&mut request_rx, "aviso de expiración individual").await;
+            assert!(
+                request.contains("Certificate expires in"),
+                "the pre-threshold signal is the individual expiry notice: {request}"
+            );
+            assert!(
+                !request.contains("Certificados próximos a expirar"),
+                "pre-threshold expirations are notified individually: {request}"
+            );
+        }
+
+        // El cuarto abre el episodio de expiración: una única agregada de su tipo.
+        let opener = expiring("m-exp-3");
+        db.create_monitor(&opener).await.unwrap();
+        run_one_check(
+            &db,
+            &opener,
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            &checker,
+            &breaker,
+            enabled_monitors,
+            &notifier_ids,
+        )
+        .await;
+
+        let aggregate = next_request(&mut request_rx, "agregado de expiración").await;
+        assert!(
+            aggregate.contains("Certificados próximos a expirar"),
+            "the expiry episode opens with its own aggregated template: {aggregate}"
+        );
+        assert!(
+            aggregate.contains("4 monitores con certificado"),
+            "the aggregate carries the count: {aggregate}"
+        );
+        assert!(
+            aggregate.contains("Monitor m-exp-0"),
+            "the aggregate lists the affected monitors: {aggregate}"
+        );
+
+        // Y una quinta señal de expiración dentro del episodio se suprime.
+        let suppressed = expiring("m-exp-4");
+        db.create_monitor(&suppressed).await.unwrap();
+        run_one_check(
+            &db,
+            &suppressed,
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            &checker,
+            &breaker,
+            enabled_monitors,
+            &notifier_ids,
+        )
+        .await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), request_rx.recv())
+                .await
+                .is_err(),
+            "an expiry signal inside the episode must not be notified (the listener \
+             is still waiting for a further request)"
         );
     }
 

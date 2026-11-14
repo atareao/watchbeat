@@ -9,6 +9,10 @@
 //!
 //! La máquina de estados es **pura**: recibe `now: Instant` en cada llamada, así
 //! los tests avanzan el reloj a mano y no necesitan `sleep` real.
+//!
+//! Desde #72 la misma lógica agrupa además las señales de `latency` y `expiry`,
+//! cada tipo con su **episodio independiente** (ver [`SignalKind`] y
+//! [`StormBreaker::on_signal`]).
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -144,7 +148,8 @@ impl BreakerState {
 /// The aggregated alert emitted exactly once per storm episode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregateAlert {
-    /// Number of **unique** monitors that went down inside the window.
+    /// Number of **unique** monitors that triggered the episode inside the window:
+    /// downs for the storm episode, `latency`/`expiry` signals for theirs (#72).
     pub count: usize,
     /// The affected monitors' ids, unique and in order of appearance.
     pub monitor_ids: Vec<String>,
@@ -167,120 +172,81 @@ pub enum BreakerDecision {
     OpenAggregate(AggregateAlert),
 }
 
-/// A down transition observed by the breaker: when it happened and to whom.
-type DownEvent = (Instant, String, String);
-
-/// Pure, clock-injected state machine detecting alert storms.
-pub struct StormBreaker {
-    cfg: BreakerConfig,
-    state: BreakerState,
-    /// Down transitions still inside the window, oldest first.
-    events: VecDeque<DownEvent>,
+/// The kind of signal the breaker can aggregate, besides downs (feature #72).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalKind {
+    /// A monitor breached its latency threshold.
+    Latency,
+    /// A monitor's TLS certificate is about to expire.
+    Expiry,
 }
 
-impl StormBreaker {
-    /// Build a breaker in the `Closed` state with the given configuration.
-    pub fn new(cfg: BreakerConfig) -> Self {
+impl SignalKind {
+    /// Stable label, used by the scheduler to pick the aggregated template.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SignalKind::Latency => "latency",
+            SignalKind::Expiry => "expiry",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]: the single source of truth for label ↔ kind.
+    ///
+    /// Returns `None` for the labels that are not signals (`down`, `up`, …).
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "latency" => Some(SignalKind::Latency),
+            "expiry" => Some(SignalKind::Expiry),
+            _ => None,
+        }
+    }
+}
+
+/// How an episode treats a new transition while it is already `Open`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhileOpen {
+    /// Refresh the monitor's event (keeps the episode alive while it keeps falling).
+    Refresh,
+    /// Do not record it: the aggregated alert is already out and refreshing would
+    /// only stretch the episode (M2).
+    Ignore,
+}
+
+/// A transition observed by the breaker: when it happened and to whom.
+type Event = (Instant, String, String);
+
+/// One aggregation episode: the state plus the transitions still inside the
+/// window. The breaker keeps one per kind (`down`, `latency`, `expiry`), so the
+/// kinds never interfere with each other (feature #72).
+struct Episode {
+    state: BreakerState,
+    /// Transitions inside the window, unique per monitor. *Not* sorted by instant:
+    /// an in-place refresh can leave a stale entry behind a fresher one.
+    events: VecDeque<Event>,
+}
+
+impl Episode {
+    /// A closed episode with no observed transitions.
+    fn new() -> Self {
         Self {
-            cfg,
             state: BreakerState::Closed,
             events: VecDeque::new(),
         }
     }
 
-    /// Apply a new configuration in place (hot reload). Disabling the breaker
-    /// closes it and forgets the current episode.
-    pub fn configure(&mut self, cfg: BreakerConfig) {
-        self.cfg = cfg;
-        if !cfg.enabled {
-            self.state = BreakerState::Closed;
-            self.events.clear();
-        }
+    /// Rearm the episode and forget its transitions (lazy rearm or shutdown).
+    fn clear(&mut self) {
+        self.state = BreakerState::Closed;
+        self.events.clear();
     }
 
-    /// The configuration currently in use.
-    pub fn config(&self) -> BreakerConfig {
-        self.cfg
-    }
-
-    /// The current state.
-    pub fn state(&self) -> BreakerState {
-        self.state
-    }
-
-    /// Report a monitor going down and get the decision for this transition.
-    pub fn on_down(
-        &mut self,
-        now: Instant,
-        monitor_id: &str,
-        monitor_name: &str,
-        enabled_monitors: usize,
-    ) -> BreakerDecision {
-        // Disabled: classic behaviour, nothing is aggregated nor suppressed.
-        if !self.cfg.enabled {
-            return BreakerDecision::Pass;
-        }
-
-        // Lazy rearm (D2): a storm that saw no new down for a whole window is over
-        // by the time of this call.
-        self.maybe_close(now);
-
-        self.record_down(now, monitor_id, monitor_name);
-
-        // Storm in progress: the aggregated alert is already out (D4).
-        if self.state == BreakerState::Open {
-            return BreakerDecision::Suppress;
-        }
-
-        // Too few enabled monitors to ever declare a storm (D3).
-        if enabled_monitors < self.cfg.min_monitors {
-            return BreakerDecision::Pass;
-        }
-
-        // The threshold counts monitors, not transitions (MAYOR-1): `events` holds
-        // one entry per unique monitor inside the window.
-        let threshold = self.threshold(enabled_monitors);
-        if self.events.len() >= threshold {
-            self.state = BreakerState::Open;
-            BreakerDecision::OpenAggregate(self.aggregate(threshold))
-        } else {
-            BreakerDecision::Pass
-        }
-    }
-
-    /// Report a monitor recovering and get the decision for this transition.
-    pub fn on_up(&mut self, now: Instant) -> BreakerDecision {
-        if !self.cfg.enabled {
-            return BreakerDecision::Pass;
-        }
-
-        self.maybe_close(now);
-        if self.state == BreakerState::Open {
-            BreakerDecision::Suppress
-        } else {
-            BreakerDecision::Pass
-        }
-    }
-
-    /// Absolute threshold for the given number of enabled monitors:
-    /// `max(min_monitors, ceil(threshold_percent · enabled / 100))`.
-    fn threshold(&self, enabled_monitors: usize) -> usize {
-        let by_percent = (enabled_monitors * self.cfg.threshold_percent as usize).div_ceil(100);
-        by_percent.max(self.cfg.min_monitors)
-    }
-
-    /// The detection window as a duration.
-    fn window(&self) -> Duration {
-        Duration::from_secs(self.cfg.window_seconds)
-    }
-
-    /// Record a down transition, keyed by monitor.
+    /// Record a transition, keyed by monitor.
     ///
     /// The threshold counts **monitors**, not transitions (MAYOR-1): when the same
     /// monitor is already inside the window its event is refreshed in place (new
     /// instant and name) instead of being pushed again, so one flapping monitor can
     /// never declare a storm on its own and silence the rest of the fleet.
-    fn record_down(&mut self, now: Instant, monitor_id: &str, monitor_name: &str) {
+    fn record(&mut self, now: Instant, monitor_id: &str, monitor_name: &str) {
         if let Some(event) = self
             .events
             .iter_mut()
@@ -294,31 +260,28 @@ impl StormBreaker {
             .push_back((now, monitor_id.to_string(), monitor_name.to_string()));
     }
 
-    /// Drop the events that fell out of the window.
+    /// Drop the transitions that fell out of the window.
     ///
-    /// An event exactly `window_seconds` old is already *out*: the boundary is
-    /// closed, which is the same criterion [`Self::maybe_close`] uses to rearm
-    /// (NIT-2).
+    /// An event exactly `window` old is already *out*: the boundary is closed,
+    /// which is the same criterion [`Self::maybe_close`] uses to rearm (NIT-2).
     ///
-    /// `retain` instead of popping from the front: [`Self::record_down`] refreshes
+    /// `retain` instead of popping from the front: [`Self::record`] refreshes
     /// events **in place**, so the deque is no longer sorted by instant and a stale
     /// entry can sit behind a fresher one (REGRESIÓN MAYOR-1).
-    fn prune(&mut self, now: Instant) {
-        let window = self.window();
+    fn prune(&mut self, now: Instant, window: Duration) {
         self.events
             .retain(|(at, _, _)| now.saturating_duration_since(*at) < window);
     }
 
-    /// Lazily rearm the breaker once the window elapsed without new downs.
-    fn maybe_close(&mut self, now: Instant) {
-        self.prune(now);
+    /// Lazily rearm the episode once the window elapsed without new transitions.
+    fn maybe_close(&mut self, now: Instant, window: Duration) {
+        self.prune(now, window);
         if self.state != BreakerState::Open {
             return;
         }
 
-        let window = self.window();
-        // The latest down is the maximum instant, not `back()`: in-place refreshes
-        // mean the deque is not sorted (REGRESIÓN MAYOR-1).
+        // The latest transition is the maximum instant, not `back()`: in-place
+        // refreshes mean the deque is not sorted (REGRESIÓN MAYOR-1).
         let rearmed = match self.events.iter().map(|(at, _, _)| *at).max() {
             Some(last) => now.saturating_duration_since(last) >= window,
             // No event left inside the window: the episode is over.
@@ -326,8 +289,7 @@ impl StormBreaker {
         };
 
         if rearmed {
-            self.state = BreakerState::Closed;
-            self.events.clear();
+            self.clear();
         }
     }
 
@@ -335,7 +297,7 @@ impl StormBreaker {
     ///
     /// `events` already holds one entry per unique monitor, so both the count and
     /// the lists describe *distinct* monitors (MAYOR-1).
-    fn aggregate(&self, threshold: usize) -> AggregateAlert {
+    fn aggregate(&self, threshold: usize, window_seconds: u64) -> AggregateAlert {
         let mut monitor_ids: Vec<String> = Vec::new();
         let mut monitors: Vec<String> = Vec::new();
         for (_, id, name) in &self.events {
@@ -349,8 +311,192 @@ impl StormBreaker {
             count: self.events.len(),
             monitor_ids,
             monitors,
-            window_seconds: self.cfg.window_seconds,
+            window_seconds,
             threshold,
+        }
+    }
+}
+
+/// Absolute threshold for the given number of enabled monitors:
+/// `max(min_monitors, ceil(threshold_percent · enabled / 100))`, never zero.
+fn threshold(cfg: &BreakerConfig, enabled_monitors: usize) -> usize {
+    let by_percent = (enabled_monitors * cfg.threshold_percent as usize).div_ceil(100);
+    // `.max(1)` guards a hand-built `min_monitors = 0`: a zero threshold would let
+    // the very first transition declare a storm (n6).
+    by_percent.max(cfg.min_monitors).max(1)
+}
+
+/// Pure, clock-injected state machine detecting alert storms.
+///
+/// It holds one independent episode per kind: downs (`on_down`/`on_up`) plus the
+/// `latency`/`expiry` signals (`on_signal`, feature #72). Opening or suppressing
+/// one kind never affects the state nor the dispatch of the others.
+pub struct StormBreaker {
+    cfg: BreakerConfig,
+    /// The original (and visible) episode: monitor downs and recoveries.
+    down: Episode,
+    /// Latency breaches.
+    latency: Episode,
+    /// Certificate expirations.
+    expiry: Episode,
+}
+
+impl StormBreaker {
+    /// Build a breaker in the `Closed` state with the given configuration.
+    pub fn new(cfg: BreakerConfig) -> Self {
+        Self {
+            cfg,
+            down: Episode::new(),
+            latency: Episode::new(),
+            expiry: Episode::new(),
+        }
+    }
+
+    /// Apply a new configuration in place (hot reload). Disabling the breaker
+    /// closes every episode and forgets it.
+    pub fn configure(&mut self, cfg: BreakerConfig) {
+        self.cfg = cfg;
+        if !cfg.enabled {
+            self.down.clear();
+            self.latency.clear();
+            self.expiry.clear();
+        }
+    }
+
+    /// The configuration currently in use.
+    pub fn config(&self) -> BreakerConfig {
+        self.cfg
+    }
+
+    /// The state of the **downs** episode (the original, visible one).
+    pub fn state(&self) -> BreakerState {
+        self.down.state
+    }
+
+    /// Report a monitor going down and get the decision for this transition.
+    pub fn on_down(
+        &mut self,
+        now: Instant,
+        monitor_id: &str,
+        monitor_name: &str,
+        enabled_monitors: usize,
+    ) -> BreakerDecision {
+        let cfg = self.cfg;
+        // A down inside an open storm keeps refreshing the episode (MAYOR-1): the
+        // fleet is still falling, so the storm is still on (see the regression test
+        // `refreshing_a_non_final_event_does_not_rearm_early`).
+        Self::decide(
+            &cfg,
+            &mut self.down,
+            now,
+            monitor_id,
+            monitor_name,
+            enabled_monitors,
+            WhileOpen::Refresh,
+        )
+    }
+
+    /// Report a monitor recovering and get the decision for this transition.
+    pub fn on_up(&mut self, now: Instant) -> BreakerDecision {
+        if !self.cfg.enabled {
+            return BreakerDecision::Pass;
+        }
+
+        self.down.maybe_close(now, self.window());
+        if self.down.state == BreakerState::Open {
+            BreakerDecision::Suppress
+        } else {
+            BreakerDecision::Pass
+        }
+    }
+
+    /// Report a `latency`/`expiry` signal and get the decision for it (feature #72).
+    ///
+    /// Shares the window and the threshold with [`Self::on_down`], but counts the
+    /// transitions of the signal's **own** episode: a latency storm neither opens
+    /// nor suppresses the expiry or the downs episodes, and vice versa.
+    pub fn on_signal(
+        &mut self,
+        now: Instant,
+        kind: SignalKind,
+        monitor_id: &str,
+        monitor_name: &str,
+        enabled_monitors: usize,
+    ) -> BreakerDecision {
+        let cfg = self.cfg;
+        let episode = match kind {
+            SignalKind::Latency => &mut self.latency,
+            SignalKind::Expiry => &mut self.expiry,
+        };
+        // M2: a signal episode is NOT refreshed while `Open`. A monitor whose
+        // `interval_seconds < window_seconds` re-emits the signal on every check;
+        // refreshing its event would keep the last instant fresh forever, the
+        // episode would never rearm and every signal of that kind would stay
+        // silenced. After `window` without recorded signals the episode rearms.
+        Self::decide(
+            &cfg,
+            episode,
+            now,
+            monitor_id,
+            monitor_name,
+            enabled_monitors,
+            WhileOpen::Ignore,
+        )
+    }
+
+    /// The detection window as a duration.
+    fn window(&self) -> Duration {
+        Duration::from_secs(self.cfg.window_seconds)
+    }
+
+    /// The episode machine shared by downs and signals (D1–D5, M2).
+    ///
+    /// Disabled → everything passes; lazy rearm → a new episode after the window;
+    /// open → suppress what follows (see [`WhileOpen`] for whether the transition
+    /// still refreshes the episode); record → one entry per unique monitor; floor →
+    /// too few enabled monitors can never declare a storm; threshold → a single
+    /// aggregated alert.
+    fn decide(
+        cfg: &BreakerConfig,
+        episode: &mut Episode,
+        now: Instant,
+        monitor_id: &str,
+        monitor_name: &str,
+        enabled_monitors: usize,
+        while_open: WhileOpen,
+    ) -> BreakerDecision {
+        // Disabled: classic behaviour, nothing is aggregated nor suppressed.
+        if !cfg.enabled {
+            return BreakerDecision::Pass;
+        }
+
+        // Lazy rearm (D2): a storm that saw no new event for a whole window is over
+        // by the time of this call.
+        episode.maybe_close(now, Duration::from_secs(cfg.window_seconds));
+
+        // Storm in progress: the aggregated alert is already out (D4).
+        if episode.state == BreakerState::Open {
+            if while_open == WhileOpen::Refresh {
+                episode.record(now, monitor_id, monitor_name);
+            }
+            return BreakerDecision::Suppress;
+        }
+
+        episode.record(now, monitor_id, monitor_name);
+
+        // Too few enabled monitors to ever declare a storm (D3).
+        if enabled_monitors < cfg.min_monitors {
+            return BreakerDecision::Pass;
+        }
+
+        // The threshold counts monitors, not transitions (MAYOR-1): `events` holds
+        // one entry per unique monitor inside the window.
+        let threshold = threshold(cfg, enabled_monitors);
+        if episode.events.len() >= threshold {
+            episode.state = BreakerState::Open;
+            BreakerDecision::OpenAggregate(episode.aggregate(threshold, cfg.window_seconds))
+        } else {
+            BreakerDecision::Pass
         }
     }
 }
@@ -882,5 +1028,458 @@ mod tests {
         assert_eq!(cfg.threshold_percent, 100, "percent is clamped to 100");
         assert_eq!(cfg.window_seconds, 1, "a zero window is floored at 1 s");
         assert_eq!(cfg.min_monitors, 1, "a zero floor is floored at 1");
+    }
+
+    // ── Feature #72: agrupación de señales `latency`/`expiry` ──
+
+    /// Ráfaga de latencia de 4 monitores distintos (8 habilitados, 50 % → umbral
+    /// 4): una única agregada y las señales siguientes suprimidas (D-72-1).
+    #[test]
+    fn a_latency_burst_is_coalesced_into_one_aggregate() {
+        let mut breaker = StormBreaker::new(base_cfg());
+        let t0 = Instant::now();
+
+        for (i, name) in ["web", "api", "db"].iter().enumerate() {
+            assert_eq!(
+                breaker.on_signal(
+                    t0 + i as u32 * T,
+                    SignalKind::Latency,
+                    &format!("m{i}"),
+                    name,
+                    8
+                ),
+                BreakerDecision::Pass
+            );
+        }
+
+        // El cuarto monitor distinto cruza el umbral: una única alerta agregada.
+        assert_eq!(
+            breaker.on_signal(t0 + 3 * T, SignalKind::Latency, "m3", "cache", 8),
+            aggregate(
+                &["m0", "m1", "m2", "m3"],
+                &["web", "api", "db", "cache"],
+                10,
+                4
+            )
+        );
+    }
+
+    /// Episodio abierto: las señales del MISMO tipo se suprimen (no hay segunda
+    /// agregada) hasta el rearme.
+    #[test]
+    fn later_latency_signals_inside_the_episode_are_suppressed() {
+        let mut breaker = StormBreaker::new(base_cfg());
+        let t0 = Instant::now();
+
+        for (i, name) in ["web", "api", "db", "cache"].iter().enumerate() {
+            breaker.on_signal(
+                t0 + i as u32 * T,
+                SignalKind::Latency,
+                &format!("m{i}"),
+                name,
+                8,
+            );
+        }
+
+        assert_eq!(
+            breaker.on_signal(t0 + 4 * T, SignalKind::Latency, "m4", "worker", 8),
+            BreakerDecision::Suppress
+        );
+        assert_eq!(
+            breaker.on_signal(t0 + 5 * T, SignalKind::Latency, "m5", "mail", 8),
+            BreakerDecision::Suppress
+        );
+    }
+
+    /// Rearme perezoso: pasada la ventana sin nuevas señales de latencia, un nuevo
+    /// episodio vuelve a agrupar (D-72-2).
+    #[test]
+    fn a_latency_burst_after_the_window_alerts_again() {
+        let mut breaker = StormBreaker::new(base_cfg());
+        let t0 = Instant::now();
+
+        for (i, name) in ["web", "api", "db", "cache"].iter().enumerate() {
+            breaker.on_signal(
+                t0 + i as u32 * T,
+                SignalKind::Latency,
+                &format!("m{i}"),
+                name,
+                8,
+            );
+        }
+        assert_eq!(
+            breaker.on_signal(t0 + 4 * T, SignalKind::Latency, "m4", "worker", 8),
+            BreakerDecision::Suppress
+        );
+
+        // 20 s después del último aviso (t0+4): la ventana expiró y el episodio rearma.
+        let t1 = t0 + 20 * T;
+        assert_eq!(
+            breaker.on_signal(t1, SignalKind::Latency, "m0", "web", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_signal(t1 + T, SignalKind::Latency, "m1", "api", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_signal(t1 + 2 * T, SignalKind::Latency, "m2", "db", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_signal(t1 + 3 * T, SignalKind::Latency, "m3", "cache", 8),
+            aggregate(
+                &["m0", "m1", "m2", "m3"],
+                &["web", "api", "db", "cache"],
+                10,
+                4
+            )
+        );
+    }
+
+    /// Un único monitor que emite latencia repetidamente es UN monitor distinto: no
+    /// declara tormenta y todas sus señales pasan (MAYOR-1 compartido).
+    #[test]
+    fn a_single_oscillating_monitor_never_declares_a_signal_storm() {
+        let mut breaker = StormBreaker::new(base_cfg());
+        let t0 = Instant::now();
+
+        for i in 0..8u32 {
+            assert_eq!(
+                breaker.on_signal(t0 + i * T, SignalKind::Latency, "m1", "web", 8),
+                BreakerDecision::Pass
+            );
+        }
+    }
+
+    /// Los monitores distintos se cuentan aparte del que oscila: m1 tres veces sigue
+    /// siendo uno, y con m2/m3/m4 son cuatro únicos → tormenta.
+    #[test]
+    fn distinct_monitors_are_counted_apart_from_a_flapping_latency_one() {
+        let mut breaker = StormBreaker::new(base_cfg());
+        let t0 = Instant::now();
+
+        for i in 0..3u32 {
+            breaker.on_signal(t0 + i * T, SignalKind::Latency, "m1", "web", 8);
+        }
+        assert_eq!(
+            breaker.on_signal(t0 + 3 * T, SignalKind::Latency, "m2", "api", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_signal(t0 + 4 * T, SignalKind::Latency, "m3", "db", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_signal(t0 + 5 * T, SignalKind::Latency, "m4", "cache", 8),
+            aggregate(
+                &["m1", "m2", "m3", "m4"],
+                &["web", "api", "db", "cache"],
+                10,
+                4
+            )
+        );
+    }
+
+    /// Independencia por tipo (D-72-3): abrir la tormenta de latencia no toca el
+    /// episodio de expiración ni el de caídas.
+    #[test]
+    fn a_latency_storm_does_not_suppress_expiry_or_down() {
+        let mut breaker = StormBreaker::new(base_cfg());
+        let t0 = Instant::now();
+
+        for (i, name) in ["web", "api", "db", "cache"].iter().enumerate() {
+            breaker.on_signal(
+                t0 + i as u32 * T,
+                SignalKind::Latency,
+                &format!("m{i}"),
+                name,
+                8,
+            );
+        }
+
+        // La tormenta de latencia no abre el episodio de caídas.
+        assert_eq!(breaker.state(), BreakerState::Closed);
+
+        // La expiración mantiene su propio episodio: pasa hasta su umbral.
+        assert_eq!(
+            breaker.on_signal(t0 + 4 * T, SignalKind::Expiry, "e0", "tls-a", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_signal(t0 + 5 * T, SignalKind::Expiry, "e1", "tls-b", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_signal(t0 + 6 * T, SignalKind::Expiry, "e2", "tls-c", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_signal(t0 + 7 * T, SignalKind::Expiry, "e3", "tls-d", 8),
+            aggregate(
+                &["e0", "e1", "e2", "e3"],
+                &["tls-a", "tls-b", "tls-c", "tls-d"],
+                10,
+                4
+            )
+        );
+
+        // Y una caída se evalúa con su propio episodio: pasa hasta su umbral.
+        assert_eq!(
+            breaker.on_down(t0 + 8 * T, "d0", "svc-a", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_down(t0 + 9 * T, "d1", "svc-b", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_down(t0 + 10 * T, "d2", "svc-c", 8),
+            BreakerDecision::Pass
+        );
+
+        // m4: el episodio de caídas sigue pudiendo abrirse con su propio umbral.
+        assert_eq!(
+            breaker.on_down(t0 + 11 * T, "d3", "svc-d", 8),
+            aggregate(
+                &["d0", "d1", "d2", "d3"],
+                &["svc-a", "svc-b", "svc-c", "svc-d"],
+                10,
+                4
+            )
+        );
+    }
+
+    // ── M2: un monitor rápido no puede congelar el episodio de señal ──
+
+    /// Un monitor con `interval_seconds < window_seconds` que emite la señal en cada
+    /// check refrescaba su evento indefinidamente: el episodio nunca rearmaba y todas
+    /// las señales del tipo quedaban suprimidas para siempre. Mientras `Open` la
+    /// señal se descarta **sin** registrar, así que la ventana expira y el episodio
+    /// rearma.
+    #[test]
+    fn a_fast_monitor_cannot_keep_a_signal_episode_open_forever() {
+        let mut breaker = StormBreaker::new(base_cfg());
+        let t0 = Instant::now();
+
+        // Cuatro monitores distintos abren el episodio de latencia en t0..t0+3.
+        for (i, name) in ["web", "api", "db", "cache"].iter().enumerate() {
+            breaker.on_signal(
+                t0 + i as u32 * T,
+                SignalKind::Latency,
+                &format!("m{i}"),
+                name,
+                8,
+            );
+        }
+
+        // m9 emite cada segundo (muy por debajo de la ventana de 10 s): se suprime
+        // pero NO refresca el episodio.
+        for i in 4..13u32 {
+            assert_eq!(
+                breaker.on_signal(t0 + i * T, SignalKind::Latency, "m9", "fast", 8),
+                BreakerDecision::Suppress
+            );
+        }
+
+        // A los 13 s la última señal registrada sigue siendo la que abrió el episodio
+        // (t0+3): la ventana expiró, el episodio rearmó y esta señal pasa individual.
+        assert_eq!(
+            breaker.on_signal(t0 + 13 * T, SignalKind::Latency, "m9", "fast", 8),
+            BreakerDecision::Pass
+        );
+    }
+
+    // ── Límites del episodio (m3) ──
+
+    /// Una señal con EXACTAMENTE `window_seconds` de antigüedad ya está fuera: el
+    /// mismo criterio cerrado que usa el rearme (NIT-2), ahora en el episodio de señal.
+    #[test]
+    fn a_signal_exactly_one_window_old_is_already_out() {
+        // 3 habilitados al 100 % → umbral 3.
+        let cfg = BreakerConfig {
+            threshold_percent: 100,
+            ..base_cfg()
+        };
+        let mut breaker = StormBreaker::new(cfg);
+        let t0 = Instant::now();
+
+        assert_eq!(
+            breaker.on_signal(t0, SignalKind::Expiry, "m1", "tls-a", 3),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_signal(t0 + T, SignalKind::Expiry, "m2", "tls-b", 3),
+            BreakerDecision::Pass
+        );
+        // m1@0 tiene exactamente 10 s = ventana: debe podarse, así que esta tercera
+        // señal sólo suma dos monitores y no declara tormenta.
+        assert_eq!(
+            breaker.on_signal(t0 + 10 * T, SignalKind::Expiry, "m3", "tls-c", 3),
+            BreakerDecision::Pass
+        );
+    }
+
+    /// El suelo `min_monitors` domina al porcentaje: con 4 habilitados y 50 %,
+    /// `ceil(2)` no basta, hacen falta 4.
+    #[test]
+    fn the_min_monitors_floor_wins_over_the_percentage() {
+        let cfg = BreakerConfig {
+            threshold_percent: 50,
+            min_monitors: 4,
+            ..base_cfg()
+        };
+        let mut breaker = StormBreaker::new(cfg);
+        let t0 = Instant::now();
+
+        for (i, name) in ["tls-a", "tls-b", "tls-c"].iter().enumerate() {
+            assert_eq!(
+                breaker.on_signal(
+                    t0 + i as u32 * T,
+                    SignalKind::Expiry,
+                    &format!("m{i}"),
+                    name,
+                    4
+                ),
+                BreakerDecision::Pass
+            );
+        }
+        assert_eq!(
+            breaker.on_signal(t0 + 3 * T, SignalKind::Expiry, "m3", "tls-d", 4),
+            aggregate(
+                &["m0", "m1", "m2", "m3"],
+                &["tls-a", "tls-b", "tls-c", "tls-d"],
+                10,
+                4
+            )
+        );
+    }
+
+    /// Los mismos monitores emitiendo dos tipos distintos, cada uno por debajo del
+    /// umbral, producen dos flujos `Pass` independientes: las señales no se suman
+    /// entre tipos.
+    #[test]
+    fn the_same_monitors_emitting_two_kinds_below_threshold_pass_separately() {
+        // 8 habilitados al 50 % → umbral 4 por tipo.
+        let mut breaker = StormBreaker::new(base_cfg());
+        let t0 = Instant::now();
+
+        for (i, name) in ["web", "api", "db"].iter().enumerate() {
+            assert_eq!(
+                breaker.on_signal(
+                    t0 + i as u32 * T,
+                    SignalKind::Latency,
+                    &format!("m{i}"),
+                    name,
+                    8
+                ),
+                BreakerDecision::Pass
+            );
+            assert_eq!(
+                breaker.on_signal(
+                    t0 + i as u32 * T + MS,
+                    SignalKind::Expiry,
+                    &format!("m{i}"),
+                    name,
+                    8
+                ),
+                BreakerDecision::Pass
+            );
+        }
+        assert_eq!(breaker.state(), BreakerState::Closed);
+    }
+
+    /// `from_label` es la única fuente de verdad etiqueta ↔ tipo (m5).
+    #[test]
+    fn signal_kind_round_trips_with_its_label() {
+        for kind in [SignalKind::Latency, SignalKind::Expiry] {
+            assert_eq!(SignalKind::from_label(kind.as_str()), Some(kind));
+        }
+        assert_eq!(SignalKind::from_label("down"), None);
+        assert_eq!(SignalKind::from_label(""), None);
+    }
+
+    /// Un monitor único (menos habilitados que el suelo `min_monitors`) nunca
+    /// declara tormenta de señal (misma regla que las caídas).
+    #[test]
+    fn fewer_monitors_than_the_floor_never_declare_a_signal_storm() {
+        let mut breaker = StormBreaker::new(base_cfg());
+        let t0 = Instant::now();
+
+        for (i, name) in ["web", "api", "db", "cache"].iter().enumerate() {
+            assert_eq!(
+                breaker.on_signal(
+                    t0 + i as u32 * T,
+                    SignalKind::Expiry,
+                    &format!("m{i}"),
+                    name,
+                    2
+                ),
+                BreakerDecision::Pass
+            );
+        }
+    }
+
+    /// Interruptor maestro apagado: cada señal pasa individual, nada se agrupa ni se
+    /// suprime (D-72-4).
+    #[test]
+    fn disabled_breaker_passes_every_signal() {
+        let cfg = BreakerConfig {
+            enabled: false,
+            ..base_cfg()
+        };
+        let mut breaker = StormBreaker::new(cfg);
+        let t0 = Instant::now();
+
+        for (i, name) in ["web", "api", "db", "cache", "worker", "mail"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(
+                breaker.on_signal(
+                    t0 + i as u32 * T,
+                    SignalKind::Latency,
+                    &format!("m{i}"),
+                    name,
+                    8
+                ),
+                BreakerDecision::Pass
+            );
+        }
+        assert_eq!(breaker.state(), BreakerState::Closed);
+    }
+
+    /// Una señal con una entrada obsoleta detrás de otra refrescada debe podar la
+    /// obsoleta: si sobrevive cuenta como monitor y provoca un falso positivo
+    /// (misma regresión MAYOR-1, ahora en el episodio de señal).
+    #[test]
+    fn a_stale_signal_behind_a_refreshed_one_is_pruned() {
+        let mut breaker = StormBreaker::new(base_cfg());
+        let t0 = Instant::now();
+
+        assert_eq!(
+            breaker.on_signal(t0, SignalKind::Expiry, "m1", "tls-a", 8),
+            BreakerDecision::Pass
+        );
+        assert_eq!(
+            breaker.on_signal(t0 + T, SignalKind::Expiry, "m2", "tls-b", 8),
+            BreakerDecision::Pass
+        );
+        // m1 (la más antigua) se refresca a los 5 s: m2@1 queda *detrás* de ella.
+        assert_eq!(
+            breaker.on_signal(t0 + 5_000 * MS, SignalKind::Expiry, "m1", "tls-a", 8),
+            BreakerDecision::Pass
+        );
+        // A los 11.5 s, m2@1 tiene 10.5 s → fuera de la ventana y debe podarse.
+        assert_eq!(
+            breaker.on_signal(t0 + 11_500 * MS, SignalKind::Expiry, "m3", "tls-c", 8),
+            BreakerDecision::Pass
+        );
+        // Sólo quedan m1 (refrescada a 5 s) y m3: con m4 son tres únicos, por debajo
+        // del umbral de cuatro. La obsoleta m2 era el cuarto.
+        assert_eq!(
+            breaker.on_signal(t0 + 12_000 * MS, SignalKind::Expiry, "m4", "tls-d", 8),
+            BreakerDecision::Pass
+        );
     }
 }

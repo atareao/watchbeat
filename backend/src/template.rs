@@ -139,4 +139,50 @@ pub mod defaults {
     pub const UP: &str = "🟢 {{ monitor_name }} — {{ target }}\nRecovered — Status: {{ status }}\nResponse: {{ response_time_ms }}ms";
     pub const EXPIRY: &str = "🟡 {{ monitor_name }} — {{ target }}\nCertificate expires in {{ days_left }} days (threshold: {{ expiry_threshold_days }} days)";
     pub const STORM: &str = "🟠 Monitorización degradada\n{{ count }} monitores caídos en {{ window_seconds }}s (umbral {{ threshold_percent }}%)\nAfectados: {{ monitors_list }}";
+    /// Aggregated alert for a storm of latency breaches (#72).
+    pub const STORM_LATENCY: &str = "🟠 Latencia degradada\n{{ count }} monitores con latencia alta en {{ window_seconds }}s (umbral {{ threshold_percent }}%)\nAfectados: {{ monitors_list }}";
+    /// Aggregated alert for a storm of certificate expirations (#72).
+    pub const STORM_EXPIRY: &str = "🟠 Certificados próximos a expirar\n{{ count }} monitores con certificado a punto de expirar en {{ window_seconds }}s (umbral {{ threshold_percent }}%)\nAfectados: {{ monitors_list }}";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The three storm templates share `TemplateContext::for_storm`, so the same
+    /// context must render count, window and monitor list in all of them (#72, M1).
+    fn storm_ctx() -> Value {
+        TemplateContext::for_storm(2, &["web".to_string(), "api".to_string()], 30, 50)
+    }
+
+    #[test]
+    fn the_three_storm_templates_render_the_shared_context() {
+        let cases: [(&str, &str); 3] = [
+            (defaults::STORM, "2 monitores caídos en 30s (umbral 50%)"),
+            (
+                defaults::STORM_LATENCY,
+                "2 monitores con latencia alta en 30s (umbral 50%)",
+            ),
+            (
+                defaults::STORM_EXPIRY,
+                "2 monitores con certificado a punto de expirar en 30s (umbral 50%)",
+            ),
+        ];
+
+        for (template, expected) in cases {
+            let rendered = render_template(template, &storm_ctx());
+            assert!(
+                rendered.contains(expected),
+                "count/window/threshold missing in '{template}': {rendered}"
+            );
+            assert!(
+                rendered.contains("web, api"),
+                "monitors_list missing in '{template}': {rendered}"
+            );
+            assert!(
+                rendered.contains("Afectados:"),
+                "the affected monitors header is missing in '{template}': {rendered}"
+            );
+        }
+    }
 }
