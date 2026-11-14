@@ -42,7 +42,7 @@ DNS (`DnsTimeout`) sigue distinguiéndose de uno de conexión (`ConnectTimeout`)
 ## Cómo verificar
 
 ```bash
-cd backend && cargo test --lib tcp tls
+cd backend && cargo test --lib checker
 ```
 
 Tests deterministas (sin red externa, con resolver y conector inyectados):
@@ -63,7 +63,8 @@ Tests deterministas (sin red externa, con resolver y conector inyectados):
 - **Connector TLS tras el connect**: el `TlsConnector` (roots + config) se
   construye solo cuando el TCP connect ha tenido éxito. Así un fallo de conexión
   no exige crypto provider instalado (los tests de `connect_refused` no
-  paniquean) y el check construye el connector como máximo una vez.
+  paniquean). Si varias IPs aceptan TCP pero fallan el handshake, cada intento
+  reconstruye el connector (caso raro; el coste es bajo comparado con el I/O).
 - **Tests sobre la ruta real**: además de los injectables, se cubre `check_all`
   con un listener TCP real (up), una IP sin listener (down/refused) y un servidor
   TCP plano (handshake → `tls_error`).

@@ -449,13 +449,15 @@ impl Checker for HttpChecker {
 
 // ───── TCP Checker ─────
 
-/// Cap an error message before it reaches the DB and SSE (1 KiB).
+/// Cap a connection error message at 1 KiB (ellipsis included) before it
+/// reaches the DB and SSE.
 pub(crate) fn truncate_message(message: String) -> String {
     const MAX: usize = 1024;
     if message.len() <= MAX {
         message
     } else {
-        let mut cut = MAX;
+        // Reserve room for the 3-byte ellipsis so the result never exceeds MAX.
+        let mut cut = MAX - '…'.len_utf8();
         while !message.is_char_boundary(cut) {
             cut -= 1;
         }
@@ -1567,6 +1569,39 @@ mod tests {
 
         assert_eq!(outcome.status, "down");
         assert_eq!(outcome.cause, Some(FailureCause::ConnectRefused));
+    }
+
+    #[test]
+    fn truncate_message_should_keep_short_messages() {
+        assert_eq!(truncate_message("short".into()), "short");
+    }
+
+    #[test]
+    fn truncate_message_should_keep_exact_limit() {
+        let message = "x".repeat(1024);
+        assert_eq!(truncate_message(message.clone()), message);
+    }
+
+    #[test]
+    fn truncate_message_should_cap_long_messages_at_one_kib() {
+        let message = "x".repeat(5000);
+        let truncated = truncate_message(message);
+
+        assert!(truncated.len() <= 1024);
+        assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_message_should_respect_utf8_boundaries() {
+        // 'ñ' is 2 bytes; placing it across the cut must move the boundary back.
+        let mut message = "a".repeat(1022);
+        message.push('ñ');
+        message.push_str("tail");
+        let truncated = truncate_message(message);
+
+        assert!(truncated.len() <= 1024);
+        assert!(truncated.ends_with('…'));
+        assert!(truncated.chars().all(|c| c != '\u{FFFD}'));
     }
 
     /// Production path (`check_all`) against a real listener: the loop, the

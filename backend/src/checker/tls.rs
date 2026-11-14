@@ -201,8 +201,6 @@ impl TlsChecker {
                 TlsFailure::Connect(e)
             })?;
 
-        let connector = build_connector();
-
         let server_name =
             rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| {
                 tracing::warn!(host = %host, "TLS: invalid server name");
@@ -212,6 +210,7 @@ impl TlsChecker {
                 ))
             })?;
 
+        let connector = build_connector();
         let tls = connector.connect(server_name, tcp).await.map_err(|e| {
             tracing::warn!(target = %addr, error = %e, "TLS: handshake failed");
             TlsFailure::Handshake(e)
