@@ -92,6 +92,9 @@ thiserror = "2"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Paused-clock tests (`netcheck` canary hot interval adoption). `test-util` is
+# not part of tokio's `full` feature, so it is only pulled in for tests.
+tokio = { version = "1.53", features = ["test-util"] }
 # Offline RSA key generation for the JWT validator tests (already in the graph
 # through jsonwebtoken's `rust_crypto` feature).
 rsa = "0.10"
