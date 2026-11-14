@@ -6,7 +6,7 @@
 
 ## Qué es
 
-El checker de ping ejecuta `ping -c 1 -W <timeout> <target>` y traduce la salida
+El checker de ping ejecuta `ping -c 1 -W <timeout> -- <target>` y traduce la salida
 a un `CheckOutcome`. Ahora **preserva el `stderr` y el código de salida** y
 distingue tres familias de fallo:
 
@@ -31,7 +31,7 @@ denied (are you root?)`). `docker exec` funcionaba porque entra como root.
 2. `classify_ping_failure` inspecciona el texto en minúsculas:
    - `permission denied` / `operation not permitted` → `error` + guía de
      `CAP_NET_RAW`.
-   - exit code `127` / `not found` → `error` + guía de `iputils`.
+   - exit code `127` / `command not found` → `error` + guía de `iputils`.
    - cualquier otro caso → `down` con el `stderr` y el código de salida.
 3. Si el binario no se puede lanzar (`Command::output` falla), el error de
    spawn se clasifica igual (sin código de salida).
