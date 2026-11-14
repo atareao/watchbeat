@@ -2,32 +2,31 @@
 
 ## Estado (14 Nov 2026)
 
-- **#61 ✅ COMPLETADO** (PR **#65** mergeado en `development`, commit `d1ea8fa0`):
-  tests de validación JWT + CI de seguridad.
-  - 6 tests deterministas y sin red de `JwtValidator::validate_token` (válido RS256,
-    `aud`, `iss`, `exp`, HS256, `kid` desconocido). Costura de test offline
-    (`refresh_on_miss` + `#[cfg(test)] with_keys`), firmas públicas intactas.
-  - `.github/workflows/security.yml` (`cargo audit` + `npm audit --audit-level=high`,
-    push/PR a `main`/`development` + schedule semanal; ignore documentado de
-    RUSTSEC-2026-0459 en `backend/.cargo/audit.toml`). **CI verde en el PR.**
-  - Auditado por `@rust-reviewer`: **APROBADO**. `just check` limpio; 272+9+45+8+3 = 337 verdes.
-  - Docs: `docs/jwt-validation-tests.md`, `docs/security-ci.md`. Plan `plans/PLAN-009-ARCHIVED.md`.
-  - Change OpenSpec archivado: `openspec/changes/archive/2026-11-14-jwt-tests-security-ci/`
-    (spec `auth` creada, `deployment` actualizada).
+- **#64 ✅ COMPLETADO** (rama `feature/jwks-empty-no-recursion`, PR abierto a `development`):
+  `validate_token` ya no recursa cuando la caché JWKS está vacía. Con un IdP que responde
+  `{"keys": []}` antes había bucle sin límite / `stack overflow`; ahora hace una única llamada
+  de llenado y devuelve `Err` si sigue vacía (más una de rotación como máximo).
+  - 3 tests offline (servidor HTTP local, con timeout): JWKS vacío → `Err` + 1 petición;
+    fallo de red → `Err`; caché vacía con refresco deshabilitado → `Err` sin red.
+  - Auditado por `@rust-reviewer`: **APROBADO**. `just check` limpio; 275+9+45+8+3 = 340 verdes.
+  - Docs: `docs/jwks-empty-no-recursion.md`. Plan `plans/PLAN-010-ARCHIVED.md`.
+  - Change OpenSpec archivado: `openspec/changes/archive/2026-11-14-jwks-empty-no-recursion/`.
+- **#61 ✅ COMPLETADO** (PR #65 mergeado en `development`, commit `d1ea8fa0`): tests de
+  validación JWT (6 escenarios, offline) + CI de seguridad (`.github/workflows/security.yml`,
+  `cargo audit` + `npm audit`, verde en el PR). Docs `docs/jwt-validation-tests.md`,
+  `docs/security-ci.md`; plan `plans/PLAN-009-ARCHIVED.md`.
 - Producción en **v0.15.3** (imagen `ghcr.io/atareao/watchbeat:latest`, revision `147a7bcf`),
   `healthy`, 7 monitores `up`. Despliegue gestionado por Dockge.
 
 ## Pendiente
 
 ### Issues abiertos
-- **#64** 🐛 recursión sin límite en `validate_token` si el IdP devuelve JWKS vacío
-  (`{"keys":[]}`) — detectado en la auditoría de #61, preexistente (**siguiente**).
-- **#62** ✨ Follow-ups Robust Check Engine (canario, breaker, SSE, agrupación).
+- **#62** ✨ Follow-ups Robust Check Engine (canario, breaker, SSE, agrupación) (**siguiente**).
 - **#63** ♿ a11y del timeline + test SNI real.
 
 ### Pendiente inmediato
-- Empezar por **#64** en sesión nueva (change OpenSpec + TDD). Después **#62** y **#63**,
-  cada uno en sesión separada.
+- Revisar y mergear el PR de #64. Después, seguir por **#62** y luego **#63**, cada uno en
+  sesión separada (change OpenSpec + TDD).
 
 ### Follow-ups técnicos
 - Canario de red configurable (hoy fijo a 30 s).
@@ -38,6 +37,7 @@
 - Agrupar `latency`/`expiry` en el breaker.
 - SNI real no assertado con handshake TLS completo.
 - `fetch_jwks` ignora el header `kid` y prueba todas las claves (ver `docs/jwt-validation-tests.md`).
+- `Vec<DecodingKey>` clonado por request autenticada (preexistente).
 
 ### Housekeeping
 - `libsqlite3-sys` 0.37 (RUSTSEC-2026-0459): esperar a que sqlx suba de versión.
@@ -59,7 +59,7 @@ Issues #34–#40 cerrados. Docs: `docs/robust-check-engine.md`, `docs/robust-che
 
 ```bash
 just check                 # fmt + clippy
-cd backend && cargo test   # 272 + 9 + 45 + 8 + 3
+cd backend && cargo test   # 275 + 9 + 45 + 8 + 3
 cd frontend && npx tsc --noEmit && npm run build
 cd backend && cargo audit && (cd ../frontend && npm audit --audit-level=high)
 ```
