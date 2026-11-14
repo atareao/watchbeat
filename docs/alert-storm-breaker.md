@@ -21,9 +21,10 @@ una alerta**.
 Máquina de estados pura en `backend/src/breaker.rs` (`StormBreaker`), con **reloj
 inyectado** (testeable sin `sleep` reales):
 
-- **Estados**: `Closed` (normal) y `Open` (tormenta en curso).
-- **Detección**: se declara tormenta cuando el número de **monitores únicos** que pasan a
-  `down` dentro de una ventana de `Y` segundos alcanza
+- **Estados**: `Closed` (normal) y `Open` (tormenta en curso), **uno por tipo**: caídas
+  (`down`/`up`), `latency` y `expiry` (ver `docs/latency-expiry-aggregation.md`).
+- **Detección**: se declara tormenta cuando el número de **monitores únicos** que emiten la
+  misma señal dentro de una ventana de `Y` segundos alcanza
   `max(min_monitors, ceil(X % · monitores_habilitados))`.
   - Si `monitores_habilitados < min_monitors`, **nunca** se declara tormenta (despliegues
     pequeños conservan la semántica clásica de una alerta por monitor).
@@ -31,10 +32,13 @@ inyectado** (testeable sin `sleep` reales):
     no dispara una falsa tormenta.
 - **Al abrir**: se emite **una** alerta agregada con el recuento y la lista de monitores
   afectados, a la **unión deduplicada** de los notificadores de todos los afectados.
-- **Dedupe**: durante `Open` no se repite la agregada aunque sigan cayendo monitores.
-- **Supresión**: durante `Open` se suprimen las transiciones individuales `down` **y** `up`.
-- **Rearme**: al pasar la ventana `Y` sin nuevas caídas, vuelve a `Closed`; un nuevo
-  episodio puede volver a alertar.
+- **Dedupe**: durante `Open` no se repite la agregada aunque sigan llegando señales.
+- **Supresión**: durante `Open` se suprimen las transiciones individuales — caídas,
+  recuperaciones y las señales `latency`/`expiry` del mismo tipo.
+- **Rearme**: al pasar la ventana `Y` sin nuevas señales **registradas** de ese tipo, vuelve
+  a `Closed`; un nuevo episodio puede volver a alertar. Con el episodio de señal abierto las
+  señales suprimidas **no** se registran (si no, un monitor con `interval < ventana` lo
+  mantendría abierto para siempre).
 
 ## Configuración
 
@@ -44,10 +48,10 @@ Claves en la tabla `settings` (KV), editables desde la pestaña **"Tormenta"** d
 | Clave | Default | Descripción |
 |---|---|---|
 | `storm_breaker_enabled` | `true` | Activa/desactiva el breaker. `false` = comportamiento clásico. |
-| `storm_threshold_percent` | `50` | `X`: % de monitores habilitados que deben caer. |
+| `storm_threshold_percent` | `50` | `X`: % de monitores habilitados que deben emitir la señal. |
 | `storm_window_seconds` | `10` | `Y`: ventana de detección en segundos. |
 | `storm_min_monitors` | `3` | Suelo absoluto de monitores para declarar tormenta. |
-| `default_template_storm` | (vacío) | Plantilla de la alerta agregada. |
+| `default_template_storm` | (vacío) | Plantilla de la alerta agregada **de caídas**. |
 
 La configuración se aplica **en caliente**: guardar en la UI (o importar settings) emite
 `SchedulerCommand::ReloadBreaker`, que reconfigura el breaker sin reiniciar.
@@ -62,17 +66,23 @@ Contexto disponible en `default_template_storm`:
 - `{{ window_seconds }}` — ventana `Y`.
 - `{{ threshold_percent }}` — umbral `X`.
 
-Si no se configura, se usa la plantilla por defecto `template::defaults::STORM`.
+Si no se configura, se usa la plantilla por defecto `template::defaults::STORM`. Las
+agregadas de `latency`/`expiry` usan `defaults::STORM_LATENCY`/`defaults::STORM_EXPIRY` con
+el mismo contexto (ver `docs/latency-expiry-aggregation.md`).
 
 ## Ficheros implicados
 
-- `backend/src/breaker.rs` — máquina de estados, config, decisión, tests.
+- `backend/src/breaker.rs` — máquina de estados (`Episode` por tipo), `SignalKind`,
+  `on_signal`, config, decisión, tests.
 - `backend/src/scheduler.rs` — `Arc<Mutex<StormBreaker>>` compartido, punto de decisión en
-  el despacho, `ReloadBreaker`, unión de notificadores.
-- `backend/src/template.rs` — `defaults::STORM` + `TemplateContext::for_storm`.
+  el despacho (`down`/`up` y señales `latency`/`expiry`), `ReloadBreaker`, unión de
+  notificadores.
+- `backend/src/template.rs` — `defaults::STORM`, `defaults::STORM_LATENCY`,
+  `defaults::STORM_EXPIRY` + `TemplateContext::for_storm`.
 - `backend/src/routes/settings.rs` — recarga en caliente al guardar claves del breaker.
 - `backend/src/routes/export_import.rs` — recarga tras importar settings.
 - `frontend/src/pages/Settings.tsx` — pestaña "Tormenta".
+- `docs/latency-expiry-aggregation.md` — agrupación de señales (#72).
 
 ## Decisiones
 
@@ -83,8 +93,15 @@ Si no se configura, se usa la plantilla por defecto `template::defaults::STORM`.
 - **Unión de notificadores**: la agregada llega a todos los afectados, no solo al que abre.
 - **Estado no persistido**: el breaker arranca limpio; una tormenta a caballo de un reinicio
   se re-evalúa.
+- **Un episodio por tipo** (caídas, `latency`, `expiry`): comparten ventana, umbral y
+  dedupe, pero no se abren ni se suprimen entre sí (#72).
+- **Calibración**: con checks repartidos por jitter, `storm_window_seconds ≳ interval_seconds`
+  para que la ráfaga quepa en una sola ventana (M3).
 
 ## Follow-ups
 
-- Exponer el estado del breaker (`closed`/`open`) en la API/dashboard para observabilidad.
-- Valorar agrupar también `latency`/`expiry` (hoy solo `down`/`up` participan).
+- Exponer el estado del breaker (`closed`/`open`) en la API/dashboard para observabilidad,
+  incluyendo los episodios de `latency`/`expiry`.
+- Contar monitores distintos **sin rearme tras recuperación** (hoy el dedupe vive en la
+  ventana; un monitor recuperado conserva su entrada hasta que expira).
+- Valorar ventanas o plantillas agregadas diferenciadas por tipo si la operación lo pide.

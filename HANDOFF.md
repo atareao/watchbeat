@@ -1,74 +1,51 @@
-# HANDOFF — WatchBeat
+# Handoff — watchbeat — 2026-11-14 20:38
 
-## Estado (14 Nov 2026)
+## Objetivo
+Cerrar los follow-ups del Robust Check Engine (#62) uno por sesión, con SDD+TDD, dejando cada feature en un PR a `development`.
 
-- **#71 ✅ COMPLETADO** (PR **#76** mergeado a `development` en `562ccff9`; rama borrada):
-  estado del storm breaker (`closed`/`open`) + config expuesto en `GET /api/breaker` (protegido);
-  breaker compartido desde `SchedulerManager` (`breaker()`), `manager_loop` usa el mismo `Arc`.
-  Frontend: `fetchBreaker()` + `BreakerBadge` en el Dashboard + indicador «Suprimido» en `MonitorCard`;
-  degradación no bloqueante. Tests: **362 verdes** (4 de ruta); `clippy`/`fmt` limpios; `tsc`+build OK.
-  Auditado por `@rust-reviewer` y `@react-reviewer` (**APROBADOS**).
-  Docs `docs/breaker-state.md`; plan `plans/PLAN-014-ARCHIVED.md`.
-  Change OpenSpec archivado: `openspec/changes/archive/2026-11-14-breaker-state/`.
-  Nota: rearme perezoso (`open` puede quedar vigente sin transiciones) — follow-up `snapshot(now)`.
-- **#70 ✅ COMPLETADO** (PR **#75** mergeado a `development` en `71bc2c4d`; rama borrada):
-  `error_kind` (wire de `FailureCause`) en el evento SSE `type:"check"`; payload extraído a
-  `check_event_payload` (función pura testeable), guarda `receiver_count() > 0` intacta.
-  Frontend: `CheckEvent.error_kind`; `MonitorDetail` deja de refetchear el último check en el
-  camino SSE + **poll de fallback de 60 s** (frescura TLS + caída de SSE). Sin migración ni
-  cambios de API REST. Tests: **358 verdes**; `clippy`/`fmt` limpios; `tsc`+`build` OK.
-  Auditado por `@rust-reviewer` y `@react-reviewer` (**APROBADOS**; 1 hallazgo ALTO frontend resuelto).
-  Docs `docs/sse-error-kind.md`; plan `plans/PLAN-013-ARCHIVED.md`.
-  Change OpenSpec archivado: `openspec/changes/archive/2026-11-14-sse-error-kind/`.
-- **#69 ✅ COMPLETADO** (PR **#74** mergeado a `development` en `48670f79`; rama borrada):
-  canario de red configurable vía setting `canary_interval_secs` (default 30 s, rango [5, 3600],
-  clamp), con recarga en caliente (patrón del breaker). `main.rs` resuelve el intervalo desde la
-  BD al arrancar; `routes/settings.rs` y `routes/export_import.rs` lo re-aplican; UI Ajustes → Red.
-  Tests: **355 verdes**; test de adopción en caliente determinista (tokio `start_paused`).
-  Auditado por `@rust-reviewer` y `@react-reviewer` (**APROBADOS**).
-  Docs `docs/canary-interval-setting.md`; plan `plans/PLAN-012-ARCHIVED.md`.
-  Change OpenSpec archivado: `openspec/changes/archive/2026-11-14-canary-interval-setting/`.
-- **#68 ✅ COMPLETADO** (PR #73 mergeado): single-flight (dedupe en vuelo) en `DnsResolver`.
-  Docs `docs/dns-single-flight.md`; plan `plans/PLAN-011-ARCHIVED.md`.
-- **#64 ✅ COMPLETADO** (PR #67 mergeado): `validate_token` sin recursión con JWKS vacío.
-- **#61 ✅ COMPLETADO** (PR #65 mergeado): tests de validación JWT + CI de seguridad.
-- Producción en **v0.15.3** (imagen `ghcr.io/atareao/watchbeat:latest`, revision `147a7bcf`),
-  `healthy`, 7 monitores `up`. Despliegue gestionado por Dockge.
+## Estado
+- Hecho:
+  - **#69** canario de red configurable — PR #74 mergeado.
+  - **#70** `error_kind` en el evento SSE — PR #75 mergeado (`71bc2c4d`).
+  - **#71** estado del storm breaker (`closed`/`open`) en API y dashboard — PR #76 mergeado (`562ccff9`): `GET /api/breaker` (protegido), breaker compartido vía `SchedulerManager::breaker()`, badge en Dashboard + indicador «Suprimido» en `MonitorCard`.
+  - Artefactos: `docs/sse-error-kind.md`, `docs/breaker-state.md`; `plans/PLAN-013-ARCHIVED.md`, `plans/PLAN-014-ARCHIVED.md`; changes archivados en `openspec/changes/archive/2026-11-14-{sse-error-kind,breaker-state}/`; specs fusionadas en `openspec/specs/{scheduler,breaker}/spec.md`.
+  - Suite: 362 tests backend verdes; `tsc`+build frontend OK.
+- En curso: nada a medias. #70 y #71 cerrados y mergeados.
+- Rama actual: `development` (base: `development`). PRs abiertos: ninguno. Sin ramas `feature/*` abiertas.
+- Working tree: 5 entradas «borradas» sin commitear en el índice (blobs vacíos obsoletos de `openspec new change`, **no están en HEAD**): `openspec/changes/breaker-state/{.openspec.yaml,proposal.md,tasks.md,specs/breaker/spec.md}` y `plans/PLAN-014.md`. El contenido real vive en `openspec/changes/archive/2026-11-14-breaker-state/` y `plans/PLAN-014-ARCHIVED.md`.
 
 ## Pendiente
+Abordar **#72** (📬 agrupar notificaciones latency/expiry en el breaker) en sesión nueva: issue → change OpenSpec → TDD → PR a `development` con `Closes #72`; después queda **#63** (♿ a11y del timeline + test SNI real).
 
-### #62 — Follow-ups Robust Check Engine (sub-issues)
-- **#69** ✅ canario de red configurable (PR #74 mergeado).
-- **#70** ✅ `error_kind` en el evento SSE (PR #75 mergeado).
-- **#71** ✅ estado del breaker (closed/open) en API y dashboard (PR #76 mergeado).
-- **#72** 📬 agrupar notificaciones latency/expiry en el breaker (**siguiente**).
-- **#63** ♿ a11y del timeline + test SNI real.
-
-### Pendiente inmediato
-- **#72** 📬 agrupar notificaciones latency/expiry en el breaker — **siguiente**, en **sesión nueva**
-  (change OpenSpec + TDD). Después, #63 y el resto de sub-issues de #62, cada uno en sesión separada.
-- **Follow-ups #70:** refinamientos del poll (no refrescar con `document.hidden`; saltar si hubo
-  evento SSE reciente) y, opcionalmente, incluir `tls_cert_*` en el payload SSE para eliminarlo.
-
-### Housekeeping
-- `just check-spec` NO existe como receta del `.justfile` pese a referenciarla AGENTS.md; la
-  puerta SDD queda cubierta por `openspec validate <change>`.
-- `frontend/dist/` está trackeado pese a `dist/` en `.gitignore` (el SPA se embebe vía `include_dir!`).
-- `libsqlite3-sys` 0.37 (RUSTSEC-2026-0459): esperar a que sqlx suba de versión.
-- Doble lockfile `package-lock.json` + `pnpm-lock.yaml` (el build usa npm; pnpm redundante).
-- CHANGELOG auto-generado desactualizado (entradas hasta 0.11.0; ahora con `[0.15.0]`).
-
-## Release v0.15.3 — publicada y desplegada
-
-Incluye v0.15.2 (Robust Check Engine, queries #33, DNS #52, ping #31) más #55 (flaky),
-#57 (TCP/TLS multi-IP) y #59 (deps de seguridad). `jsonwebtoken` 12, rustls-webpki 0.103.17,
-roots 1.0.12, vite ^8.3.8. `cargo audit`: solo queda `libsqlite3-sys` 0.37; `npm audit`: 0.
-
-## Comandos
-
+## Punto de partida
 ```bash
-just check                 # fmt + clippy
-cd backend && cargo test   # 289 + 9 + 46 + 8 + 3
-cd frontend && npx tsc --noEmit && npm run build
-cd backend && cargo audit && (cd ../frontend && npm audit --audit-level=high)
+cd /data/rust/watchbeat
+git checkout development && git pull --ff-only
+git status                                   # limpiar los 5 borrados obsoletos (ver Riesgos)
+openspec list                                # debe salir: "No active changes found."
+git rm --cached openspec/changes/breaker-state/* plans/PLAN-014.md   # opcional: limpiar índice
+openspec new change <nombre>                 # p.ej. latency-expiry-aggregation
+just gf-feature <nombre>                     # rama feature/<nombre> desde development
+# verificación
+cd backend && cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test
+cd ../frontend && npx tsc --noEmit && npm run build
+openspec validate <nombre> --strict
 ```
+Nota: `just check-spec` NO existe; la puerta SDD es `openspec validate <change> --strict`.
+
+## Metodología / reglas
+- SDD+TDD: change OpenSpec aprobado por el usuario ANTES de escribir código; luego RED→GREEN→REFACTOR verificado por CLI.
+- Gitflow: `feature/*` desde `development`; **PR a `development`**; nunca commits directos a `main`/`development`.
+- Commits con gitmoji + conventional commits.
+- Planes en `plans/PLAN-<NNN>.md` (**siguiente libre: PLAN-015**); al cerrar → renombrar a `-ARCHIVED.md`.
+- Docs por feature en `docs/<feature>.md`. El **issue es el punto de entrada** (crear/asignar a `atareao`).
+- Delegar escritura de código a subagentes; auditar con `@rust-reviewer` / `@react-reviewer` antes de cerrar.
+- Header del delta OpenSpec debe copiar EXACTO el de la spec destino (o `archive` falla); un MODIFIED no puede eliminar escenarios existentes.
+
+## Riesgos y notas
+- **Índice git con 5 entradas obsoletas** (ver Working tree): `git rm --cached` las limpia (no están en HEAD). Confirmar con `git ls-tree HEAD openspec/changes/`.
+- **Rearme perezoso del breaker**: `state:"open"` puede quedar vigente sin transiciones (sólo reevalúa en `on_down`/`on_up`). Documentado en `docs/breaker-state.md`; follow-up: `snapshot(now)`.
+- **Poll de 60 s en `MonitorDetail`** (#70): 4 req/min con la página abierta; refinable con `document.hidden` o salto si hubo evento SSE reciente. Alternativa de fondo: llevar `tls_cert_*` al payload SSE.
+- **Housekeeping**: `frontend/dist/index.html` trackeado pese a `dist/` en `.gitignore` (Docker lo reconstruye; un `cargo build` local embebería un SPA antiguo) → valorar destrackear. Doble lockfile `package-lock.json` + `pnpm-lock.yaml`. `libsqlite3-sys` 0.37 (RUSTSEC-2026-0459), a la espera de que sqlx suba. CHANGELOG autogenerado desactualizado.
+- Producción: **v0.15.3** (`ghcr.io/atareao/watchbeat:latest`, rev `147a7bcf`), `healthy`, 7 monitores `up` (despliegue Dockge).
+- Esta sesión cerró **dos** features (#70 y #71); por higiene (§V) abrir **sesión nueva** para #72.
