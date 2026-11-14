@@ -2,8 +2,9 @@
 
 ## Estado (14 Nov 2026)
 
-- **Release v0.15.0 publicada** (tag `v0.15.0`, merge a `main` + sync `development`).
-  Incluye el **Robust Check Engine** completo (fases 1–6) y los fixes de dependencias.
+- **Release v0.15.1 publicada** (tag `v0.15.1`, merge a `main` + sync `development`).
+  Incluye el **Robust Check Engine** (v0.15.0) y la optimización de queries de
+  checks (#33, v0.15.1).
 - `main` y `development` sincronizados. Tests: 238 + 9 + 45 + 3 verdes.
 - Ramas de feature/hotfix/release limpiadas (locales y remotas).
 
