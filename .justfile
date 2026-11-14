@@ -38,28 +38,28 @@ push:
 # GitFlow recipes
 # ═══════════════════════════════════════════════════════════════
 
-# Iniciar una feature (crea rama desde develop)
+# Iniciar una feature (crea rama desde development)
 gf-feature feature_name:
-    git checkout develop
-    git pull origin develop
+    git checkout development
+    git pull origin development
     git checkout -b feature/{{feature_name}}
 
-# Finalizar una feature (merge a develop con --no-ff)
+# Finalizar una feature (merge a development con --no-ff)
 gf-finish feature_name:
-    git checkout develop
-    git pull origin develop
-    git merge --no-ff feature/{{feature_name}} -m "feat: merge feature/{{feature_name}} into develop"
-    git push origin develop
+    git checkout development
+    git pull origin development
+    git merge --no-ff feature/{{feature_name}} -m "feat: merge feature/{{feature_name}} into development"
+    git push origin development
     git branch -d feature/{{feature_name}}
-    @echo "✅ Feature {{feature_name}} merged into develop and branch deleted"
+    @echo "✅ Feature {{feature_name}} merged into development and branch deleted"
 
-# Iniciar un release (crea rama desde develop)
+# Iniciar un release (crea rama desde development)
 gf-release version:
-    git checkout develop
-    git pull origin develop
+    git checkout development
+    git pull origin development
     git checkout -b release/{{version}}
 
-# Publicar un release (merge a main + develop + tag)
+# Publicar un release (merge a main + development + tag)
 gf-publish version:
     #!/bin/fish
     # Pre-commit checks
@@ -73,15 +73,15 @@ gf-publish version:
     git pull origin main
     git merge --no-ff release/{{version}} -m "release: v{{version}}"
     git tag -a "v{{version}}" -m "Version {{version}}"
-    # Merge a develop
-    git checkout develop
-    git pull origin develop
-    git merge --no-ff release/{{version}} -m "release: merge v{{version}} into develop"
+    # Merge a development
+    git checkout development
+    git pull origin development
+    git merge --no-ff release/{{version}} -m "release: merge v{{version}} into development"
     # Push both
     git push origin main --tags
-    git push origin develop
+    git push origin development
     git branch -d release/{{version}}
-    echo "✅ Release v{{version}} published to main and merged back to develop"
+    echo "✅ Release v{{version}} published to main and merged back to development"
 
 # Iniciar un hotfix (crea rama desde main)
 gf-hotfix desc:
@@ -89,7 +89,7 @@ gf-hotfix desc:
     git pull origin main
     git checkout -b hotfix/{{desc}}
 
-# Publicar un hotfix (merge a main + develop + tag)
+# Publicar un hotfix (merge a main + development + tag)
 gf-hotfix-publish desc version:
     #!/bin/fish
     # Merge a main
@@ -97,13 +97,13 @@ gf-hotfix-publish desc version:
     git pull origin main
     git merge --no-ff hotfix/{{desc}} -m "hotfix: {{desc}}"
     git tag -a "{{version}}" -m "Hotfix {{version}}"
-    # Merge a develop
-    git checkout develop
-    git pull origin develop
-    git merge --no-ff hotfix/{{desc}} -m "hotfix: merge {{desc}} into develop"
+    # Merge a development
+    git checkout development
+    git pull origin development
+    git merge --no-ff hotfix/{{desc}} -m "hotfix: merge {{desc}} into development"
     # Push both
     git push origin main --tags
-    git push origin develop
+    git push origin development
     git branch -d hotfix/{{desc}}
     echo "✅ Hotfix {{desc}} published"
 
