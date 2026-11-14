@@ -447,6 +447,26 @@ async fn storm_notifier_ids(
     ids
 }
 
+/// Serialize the SSE `type:"check"` event for a monitor/check pair.
+///
+/// Pure and side-effect free so the wire shape is directly testable. The
+/// `error_kind` key is ALWAYS present: it carries the serialized `FailureCause`
+/// (`snake_case`, e.g. `connect_refused`) when the check has an attributable
+/// cause, and `null` otherwise.
+fn check_event_payload(monitor: &Monitor, check: &CheckResult) -> String {
+    serde_json::json!({
+        "type": "check",
+        "monitor_id": monitor.id,
+        "monitor_name": monitor.name,
+        "status": check.status,
+        "response_time_ms": check.response_time_ms,
+        "error_message": check.error_message,
+        "error_kind": check.error_kind,
+        "checked_at": check.checked_at,
+    })
+    .to_string()
+}
+
 /// Run one check for a monitor and dispatch whatever notification it deserves.
 ///
 /// `enabled_monitors` is the number of enabled monitors (heartbeats excluded) and
@@ -575,16 +595,7 @@ pub(crate) async fn run_monitor_check(
     // per check. Receiver count is checked BEFORE serializing (zero-alloc when
     // nobody is listening). DB persistence (time-based sampling above) is untouched.
     if event_tx.receiver_count() > 0 && (is_first_check || status_changed || latency_breach) {
-        let event = serde_json::json!({
-            "type": "check",
-            "monitor_id": monitor.id,
-            "monitor_name": monitor.name,
-            "status": check.status,
-            "response_time_ms": check.response_time_ms,
-            "error_message": check.error_message,
-            "checked_at": check.checked_at,
-        })
-        .to_string();
+        let event = check_event_payload(monitor, &check);
         let _ = event_tx.send(event);
     }
 
@@ -1517,6 +1528,145 @@ mod tests {
             2,
             "Status change should emit initial + change = 2 events (got {:?})",
             events
+        );
+    }
+
+    /// Feature `sse-error-kind`: the pure payload builder keeps the established
+    /// fields and always emits the `error_kind` key.
+    #[test]
+    fn check_event_payload_shape_is_stable_and_always_carries_error_kind() {
+        let monitor = sample_monitor("m-shape");
+        let base = CheckResult {
+            id: 0,
+            monitor_id: monitor.id.clone(),
+            status: "down".into(),
+            status_code: None,
+            response_time_ms: 12,
+            error_message: Some("boom".into()),
+            checked_at: "2026-01-01T00:00:00Z".into(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
+            error_kind: Some(FailureCause::ConnectRefused.as_str().to_string()),
+        };
+
+        let with_cause: serde_json::Value =
+            serde_json::from_str(&check_event_payload(&monitor, &base)).unwrap();
+        assert_eq!(with_cause["type"], "check");
+        assert_eq!(with_cause["monitor_id"], "m-shape");
+        assert_eq!(with_cause["status"], "down");
+        assert_eq!(with_cause["error_kind"], "connect_refused");
+
+        let healthy = CheckResult {
+            status: "up".into(),
+            error_message: None,
+            error_kind: None,
+            ..base
+        };
+        let without_cause: serde_json::Value =
+            serde_json::from_str(&check_event_payload(&monitor, &healthy)).unwrap();
+        assert_eq!(
+            without_cause.get("error_kind"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            without_cause.as_object().map(serde_json::Map::len),
+            Some(8),
+            "payload must keep exactly the established fields plus error_kind"
+        );
+    }
+
+    /// Feature `sse-error-kind`: the `type:"check"` event must carry the
+    /// serialized `FailureCause` as `error_kind` when the check has an
+    /// attributable cause.
+    #[tokio::test]
+    async fn test_sse_check_event_carries_error_kind_on_failure() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-sse-kind-down"))
+            .await
+            .unwrap();
+
+        let checker = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let (event_tx, mut rx) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec![];
+        let interval_secs: u64 = 60;
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+
+        run_monitor_check(
+            &db,
+            &sample_monitor("m-sse-kind-down"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &unknown_health(),
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
+        )
+        .await;
+
+        let events = drain_events(&mut rx).await;
+        let payload: serde_json::Value =
+            serde_json::from_str(events.first().expect("no SSE event emitted")).unwrap();
+        assert_eq!(
+            payload["error_kind"], "connect_refused",
+            "error_kind must carry the serialized FailureCause (payload: {payload})"
+        );
+    }
+
+    /// Feature `sse-error-kind`: a healthy check has no attributable cause, so
+    /// `error_kind` must be present and `null` (the key is never omitted).
+    #[tokio::test]
+    async fn test_sse_check_event_carries_null_error_kind_when_healthy() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-sse-kind-up"))
+            .await
+            .unwrap();
+
+        let checker = AlwaysUpChecker;
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let (event_tx, mut rx) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec![];
+        let interval_secs: u64 = 60;
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+
+        run_monitor_check(
+            &db,
+            &sample_monitor("m-sse-kind-up"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &unknown_health(),
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
+        )
+        .await;
+
+        let events = drain_events(&mut rx).await;
+        let payload: serde_json::Value =
+            serde_json::from_str(events.first().expect("no SSE event emitted")).unwrap();
+        assert_eq!(
+            payload.get("error_kind"),
+            Some(&serde_json::Value::Null),
+            "error_kind key must be present and null for a healthy check (payload: {payload})"
         );
     }
 

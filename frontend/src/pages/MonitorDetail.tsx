@@ -869,9 +869,15 @@ export default function MonitorDetail() {
   const rangeRef = useRef(range);
   rangeRef.current = range;
 
-  // Reload monitor + timeline buckets + latest check + checks table (respecting
-  // the user's current pagination / errors-only filter). Shared by onEvent and onResync.
-  const reloadAll = useCallback(() => {
+  // Core refresh shared by both reload paths: monitor + timeline buckets +
+  // checks table (respecting the user's current pagination / errors-only filter).
+  // When `includeLatestCheck` is true it also re-fetches the latest check
+  // unfiltered, which is needed by the paths that have no check payload at hand
+  // (SSE resync, where events were dropped, and the 60s fallback poll). The
+  // per-check SSE path passes `false`: the event already carries every field the
+  // optimistic update needs, so an extra /checks?limit=1 round-trip per check is
+  // wasted.
+  const refreshData = useCallback((includeLatestCheck: boolean) => {
     const currentId = idRef.current;
     if (!currentId) return;
     const currentRange = rangeRef.current;
@@ -890,10 +896,12 @@ export default function MonitorDetail() {
       currentId,
       params as { bucket_seconds: number } & ({ hours: number } | { days: number }),
     ).then(({ buckets: b }) => setBuckets(b)).catch(() => {});
-    // Re-fetch latest check (unfiltered) for accuracy
-    fetchChecks(currentId, 1, 1).then(data => {
-      if (data.checks.length > 0) setLatestCheck(data.checks[0]);
-    }).catch(() => {});
+    if (includeLatestCheck) {
+      // Re-fetch latest check (unfiltered) for accuracy
+      fetchChecks(currentId, 1, 1).then(data => {
+        if (data.checks.length > 0) setLatestCheck(data.checks[0]);
+      }).catch(() => {});
+    }
     // Re-fetch checks table (filtered) using the user's current pagination / filter
     loadDataRef.current(
       checksPageRef.current,
@@ -902,31 +910,60 @@ export default function MonitorDetail() {
     );
   }, []);
 
+  // Full reload (monitor + timeline + latest check + checks table). Used by the
+  // SSE resync (dropped events) and by the 60s fallback poll below.
+  const reloadAll = useCallback(() => {
+    refreshData(true);
+  }, [refreshData]);
+
   // SSE: real-time check events for this monitor. Single connection handles both
-  // per-check events and resyncs, sharing the reloadAll helper.
+  // per-check events and resyncs.
   useSse(
     useCallback((event) => {
       if (event.monitor_id !== id || !id) return;
-      // Update latestCheck from SSE event immediately (before API calls resolve)
-      setLatestCheck({
-        id: 0,
+      // Update latestCheck from the SSE event immediately (before the refresh
+      // resolves). The event carries status, response_time_ms, error_message,
+      // error_kind and checked_at, but NOT the TLS certificate fields: preserve
+      // the previously known values instead of blanking them, since the light
+      // refresh below does not re-fetch the latest check. Cert data is therefore
+      // refreshed by the mount fetch, the resync and the 60s fallback poll.
+      setLatestCheck(prev => ({
+        id: prev?.id ?? 0,
         monitor_id: event.monitor_id,
         status: event.status,
-        status_code: null,
+        // Best-effort: the SSE event carries no status_code and nothing renders
+        // it from `latestCheck` (the checks table reads it from its own rows), so
+        // keep the last known value rather than blanking it.
+        status_code: prev?.status_code ?? null,
         response_time_ms: event.response_time_ms,
         error_message: event.error_message,
-        // The SSE 'check' event does not carry error_kind; the follow-up reloadAll()
-        // refetches the latest check unfiltered and fills it in.
-        error_kind: null,
+        // `?? null` guards against a payload missing the key (undefined would
+        // leak into a `string | null` field).
+        error_kind: event.error_kind ?? null,
         checked_at: event.checked_at,
-        tls_cert_expires_at: null,
-        tls_cert_days_left: null,
-      });
-      reloadAll();
-    }, [id]),
-    // SSE resync — backend dropped events; re-execute the same full reload.
-    useCallback(() => { reloadAll(); }, [id]),
+        tls_cert_expires_at: prev?.tls_cert_expires_at ?? null,
+        tls_cert_days_left: prev?.tls_cert_days_left ?? null,
+      }));
+      // Light refresh: monitor + timeline + checks table only. No extra fetch of
+      // the latest check — the event above is fresher than any API response.
+      refreshData(false);
+    }, [id, refreshData]),
+    // SSE resync — backend dropped events; re-execute the full reload (the
+    // latest check is unknown here, so it must be re-fetched).
+    useCallback(() => { reloadAll(); }, [reloadAll]),
   );
+
+  // Fallback poll every 60s: keeps `latestCheck` fresh (the TLS certificate
+  // fields are not part of the SSE event, so a certificate renewal would
+  // otherwise leave a stale — possibly false and permanent — "expires soon"
+  // warning) and covers an SSE connection that dropped without a resync.
+  // Full reload, i.e. it does re-fetch the latest check. Same pattern as
+  // Dashboard; `reloadAll` is stable, so the interval and the single SSE
+  // connection are created once.
+  useEffect(() => {
+    const interval = setInterval(() => reloadAll(), 60_000);
+    return () => clearInterval(interval);
+  }, [reloadAll]);
 
   // Initial checks load
   useEffect(() => {
