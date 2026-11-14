@@ -1191,11 +1191,35 @@ mod tests {
         crate::dns::DnsError::Other("boom".into())
     }
 
-    /// A loopback port with nothing listening on it (bound and released), so a
-    /// connect attempt is refused immediately by the kernel.
+    /// A loopback port with nothing listening on it, so a connect attempt is
+    /// refused immediately by the kernel.
+    ///
+    /// Port 1 is privileged and outside the ephemeral range, so `bind(:0)` can
+    /// never hand it to another parallel test. The previous bind-and-release of
+    /// an ephemeral port raced with other tests: they could receive the same
+    /// port and start listening between the drop and the connect, turning an
+    /// expected `down` into `up`.
     async fn closed_loopback_port() -> u16 {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        listener.local_addr().unwrap().port()
+        1
+    }
+
+    /// The helper must not race with parallel `bind(:0)` calls: a port outside
+    /// the ephemeral range is never handed out to another test, so nothing can
+    /// start listening between the drop and the connect.
+    #[tokio::test]
+    async fn closed_loopback_port_should_be_deterministic_and_refused() {
+        let port = closed_loopback_port().await;
+
+        assert!(
+            port < 32768,
+            "port {port} must be outside the ephemeral range (32768-60999)"
+        );
+
+        let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let error = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect_err("nothing must be listening on the closed port");
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
     }
 
     /// One-shot HTTP server answering `status_line` + `body`, so status and body
