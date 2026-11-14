@@ -564,6 +564,70 @@ impl Checker for TcpChecker {
 
 // ───── Ping Checker ─────
 
+/// Parse the round-trip time from `ping`'s stdout.
+///
+/// Handles the English (`time=`) and Spanish (`tiempo=`) markers, and the
+/// sub-millisecond form (`time<1 ms`), which reports `0`.
+pub(crate) fn parse_ping_time(stdout: &str) -> Option<u64> {
+    for line in stdout.lines() {
+        for marker in ["time=", "tiempo="] {
+            if let Some(rest) = line.split(marker).nth(1) {
+                let value = rest.split_whitespace().next()?.trim_end_matches("ms");
+                if let Ok(ms) = value.parse::<f64>() {
+                    return Some(ms as u64);
+                }
+            }
+        }
+        if line.contains("time<") || line.contains("tiempo<") {
+            return Some(0);
+        }
+    }
+    None
+}
+
+/// Classify a failed `ping` invocation from its stderr and exit code.
+///
+/// Returns the status plus an actionable message. Permission problems and a
+/// missing binary are configuration errors (`error`); everything else is a
+/// target failure (`down`). The real stderr is always preserved.
+pub(crate) fn classify_ping_failure(
+    stderr: &str,
+    exit_code: Option<i32>,
+) -> (&'static str, String) {
+    let lower = stderr.to_ascii_lowercase();
+    let exit = exit_code
+        .map(|code| format!(" (exit code {code})"))
+        .unwrap_or_default();
+
+    if lower.contains("permission denied") || lower.contains("operation not permitted") {
+        return (
+            "error",
+            format!(
+                "ping lacks CAP_NET_RAW: {}{}. Add \'cap_add: [NET_RAW]\' to the container or grant cap_net_raw to the ping binary.",
+                stderr.trim(),
+                exit
+            ),
+        );
+    }
+
+    if exit_code == Some(127) || lower.contains("not found") || lower.contains("no such file") {
+        return (
+            "error",
+            format!(
+                "ping binary is not available: {}{}. Install iputils in the image.",
+                stderr.trim(),
+                exit
+            ),
+        );
+    }
+
+    if stderr.trim().is_empty() {
+        ("down", format!("Ping failed (no response){exit}"))
+    } else {
+        ("down", format!("Ping failed: {}{exit}", stderr.trim()))
+    }
+}
+
 pub struct PingChecker;
 
 #[async_trait]
@@ -590,19 +654,8 @@ impl Checker for PingChecker {
 
         match output {
             Ok(Ok(out)) if out.status.success() => {
-                // Parse ping time from output
                 let stdout = String::from_utf8_lossy(&out.stdout);
-                let time_ms = stdout
-                    .lines()
-                    .find(|l| l.contains("time="))
-                    .and_then(|l| {
-                        l.split("time=")
-                            .nth(1)
-                            .and_then(|s| s.split_whitespace().next())
-                            .and_then(|s| s.trim_end_matches("ms").parse::<f64>().ok())
-                    })
-                    .map(|t| t as u64)
-                    .unwrap_or(elapsed);
+                let time_ms = parse_ping_time(&stdout).unwrap_or(elapsed);
 
                 CheckOutcome {
                     status: "up".into(),
@@ -613,22 +666,32 @@ impl Checker for PingChecker {
                     cause: None,
                 }
             }
-            Ok(Ok(_out)) => CheckOutcome {
-                status: "down".into(),
-                status_code: None,
-                response_time_ms: elapsed,
-                error_message: Some("Ping failed (no response)".into()),
-                tls: None,
-                cause: None,
-            },
-            Ok(Err(e)) => CheckOutcome {
-                status: "error".into(),
-                status_code: None,
-                response_time_ms: elapsed,
-                error_message: Some(format!("Ping command error: {}", e)),
-                tls: None,
-                cause: None,
-            },
+            Ok(Ok(out)) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let (status, message) = classify_ping_failure(&stderr, out.status.code());
+
+                CheckOutcome {
+                    status: status.into(),
+                    status_code: None,
+                    response_time_ms: elapsed,
+                    error_message: Some(message),
+                    tls: None,
+                    cause: None,
+                }
+            }
+            Ok(Err(e)) => {
+                // The binary could not be spawned at all (e.g. not installed).
+                let (status, message) = classify_ping_failure(&e.to_string(), None);
+
+                CheckOutcome {
+                    status: status.into(),
+                    status_code: None,
+                    response_time_ms: elapsed,
+                    error_message: Some(message),
+                    tls: None,
+                    cause: None,
+                }
+            }
             Err(_) => CheckOutcome {
                 status: "down".into(),
                 status_code: None,
@@ -1745,5 +1808,79 @@ mod tests {
         }
 
         assert_eq!(taxonomy.len(), 10, "taxonomy must match the documented set");
+    }
+
+    // ───── Ping diagnostics (#31) ─────
+
+    #[test]
+    fn parse_ping_time_handles_english_and_spanish_locales() {
+        assert_eq!(
+            parse_ping_time("64 bytes from 8.8.8.8: icmp_seq=1 ttl=117 time=12.3 ms"),
+            Some(12)
+        );
+        assert_eq!(
+            parse_ping_time("64 bytes from 8.8.8.8: icmp_seq=1 ttl=117 tiempo=12.3 ms"),
+            Some(12)
+        );
+        assert_eq!(
+            parse_ping_time("64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.025 ms"),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn parse_ping_time_handles_sub_millisecond() {
+        assert_eq!(
+            parse_ping_time("64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time<1 ms"),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn parse_ping_time_returns_none_without_timing() {
+        assert_eq!(
+            parse_ping_time("PING 8.8.8.8 (8.8.8.8): 56 data bytes"),
+            None
+        );
+        assert_eq!(parse_ping_time(""), None);
+    }
+
+    #[test]
+    fn classify_ping_failure_detects_permission_denied() {
+        let (status, message) =
+            classify_ping_failure("ping: permission denied (are you root?)", Some(1));
+        assert_eq!(status, "error");
+        assert!(message.contains("permission denied"), "got: {message}");
+        assert!(message.contains("CAP_NET_RAW"), "got: {message}");
+    }
+
+    #[test]
+    fn classify_ping_failure_detects_operation_not_permitted() {
+        let (status, message) = classify_ping_failure("ping: Operation not permitted", Some(1));
+        assert_eq!(status, "error");
+        assert!(message.contains("CAP_NET_RAW"), "got: {message}");
+    }
+
+    #[test]
+    fn classify_ping_failure_detects_missing_binary() {
+        let (status, message) = classify_ping_failure("ping: not found", Some(127));
+        assert_eq!(status, "error");
+        assert!(message.contains("not available"), "got: {message}");
+    }
+
+    #[test]
+    fn classify_ping_failure_includes_stderr_and_exit_code() {
+        let (status, message) = classify_ping_failure("ping: bad address 'nope'", Some(2));
+        assert_eq!(status, "down");
+        assert!(message.contains("bad address 'nope'"), "got: {message}");
+        assert!(message.contains("exit code 2"), "got: {message}");
+    }
+
+    #[test]
+    fn classify_ping_failure_without_stderr_reports_no_response() {
+        let (status, message) = classify_ping_failure("", Some(1));
+        assert_eq!(status, "down");
+        assert!(message.contains("no response"), "got: {message}");
+        assert!(message.contains("exit code 1"), "got: {message}");
     }
 }

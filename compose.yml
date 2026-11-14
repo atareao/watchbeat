@@ -34,6 +34,10 @@ services:
     container_name: watchbeat
     restart: unless-stopped
 
+    # La sonda ping necesita CAP_NET_RAW (además de setcap en el Dockerfile)
+    cap_add:
+      - NET_RAW
+
     ports:
       # Mapeo de puertos: host:contenedor
       # Cambia el puerto izquierdo si el 3055 está ocupado
@@ -66,7 +70,7 @@ services:
       #    - Local:    http://localhost:3055/auth/callback
       #    - Producción: https://watchbeat.tudominio.com/auth/callback
       #    El path SIEMPRE es /auth/callback
-      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:?OIDC_REDIRECT_URL es obligatoria (ej: http://localhost:3055/auth/callback)}
+      OIDC_REDIRECT_URL: "${OIDC_REDIRECT_URL:?OIDC_REDIRECT_URL es obligatoria (ej: http://localhost:3055/auth/callback)}"
 
     env_file:
       - path: .env
