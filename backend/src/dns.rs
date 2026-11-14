@@ -183,7 +183,7 @@ impl DnsResolver {
     /// possible.
     ///
     /// IP literals are returned as-is without querying any upstream. The order
-    /// is the upstream's (IPv4 first, per `LookupIpStrategy::Ipv4thenIpv6`),
+    /// is the upstream's (IPv4 first, per `LookupIpStrategy::Ipv4AndIpv6`),
     /// with duplicates removed.
     pub async fn resolve_all(&self, host: &str) -> Result<Vec<IpAddr>, DnsError> {
         let host = normalize_host(host);
@@ -211,8 +211,17 @@ impl DnsResolver {
         for upstream in &self.upstreams {
             match tokio::time::timeout(self.attempt_timeout, upstream.query(host)).await {
                 Ok(Ok(answer)) => {
-                    let ttl = answer.ttl.clamp(self.min_ttl, self.max_ttl);
                     let ips = dedupe(answer.ips);
+                    if ips.is_empty() {
+                        // A misbehaving upstream answered with no addresses:
+                        // never cache an empty set, try the next one.
+                        if first_non_timeout.is_none() {
+                            first_non_timeout =
+                                Some(DnsError::Other(format!("no address for {host}")));
+                        }
+                        continue;
+                    }
+                    let ttl = answer.ttl.clamp(self.min_ttl, self.max_ttl);
                     self.store(host, ips.clone(), ttl);
                     return Ok(ips);
                 }
@@ -421,7 +430,11 @@ impl HickoryUpstream {
         // source of truth for `min_ttl` / `max_ttl`. No retries either.
         options.cache_size = 0;
         options.try_tcp_on_error = false;
-        options.ip_strategy = LookupIpStrategy::Ipv4thenIpv6;
+        // Ask for both families in one lookup: `Ipv4AndIpv6` performs a
+        // `multi_lookup()` and concatenates A before AAAA. `Ipv4thenIpv6`
+        // would only query AAAA when there are no A records, so dual-stack
+        // hosts would lose their IPv6 addresses.
+        options.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
 
         let config = ResolverConfig::from_parts(
             None,
@@ -947,11 +960,13 @@ mod tests {
         let client = crate::checker::build_http_client(reqwest_resolver())
             .expect("client with the custom resolver must build");
 
-        let response = client
-            .get(format!("http://{FALLBACK_HOST}:{port}/"))
-            .send()
-            .await
-            .expect("the client must fall back to the reachable address");
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.get(format!("http://{FALLBACK_HOST}:{port}/")).send(),
+        )
+        .await
+        .expect("the request must not hang")
+        .expect("the client must fall back to the reachable address");
 
         assert_eq!(response.status(), 200);
     }

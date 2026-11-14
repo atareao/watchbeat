@@ -61,6 +61,15 @@ Tests deterministas (sin red externa):
 4. **Fallback real**: dos IPs cacheadas (`127.0.0.2` sin listener y `127.0.0.1`
    con un servidor) → el cliente HTTP acaba en 200.
 
+## Alcance
+
+- El fallback de hyper cubre **errores de conexión TCP** (p. ej. `connect_refused`
+  o `network unreachable`). Si la IP obsoleta acepta TCP pero sirve un
+  certificado TLS inválido, hyper no cambia de dirección: el fallback no cubre el
+  handshake TLS.
+- `TcpChecker` y `TlsChecker` siguen resolviendo a una sola IP (primera). Mismo
+  patrón de falso `down` por A obsoleta, fuera del alcance de este cambio.
+
 ## Decisiones
 
 - **Dedupe en el resolver, no en el upstream**: el contrato vale para cualquier

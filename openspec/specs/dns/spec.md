@@ -1,7 +1,10 @@
 # dns Specification
 
 ## Purpose
-TBD - created by archiving change robust-dns-resolver. Update Purpose after archive.
+
+Resolver nombres de forma propia (sin depender del resolver del sistema), con
+caché TTL, fallback entre upstreams, clasificación tipada de errores y
+resolución multi-dirección con fallback entre direcciones en el cliente HTTP.
 
 ## Requirements
 
