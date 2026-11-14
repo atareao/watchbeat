@@ -83,6 +83,21 @@ export interface DashboardStatus {
   avg_response_time_24h: number | null;
 }
 
+/** Storm breaker state exposed by `GET /api/breaker`.
+ * `state` is "open" while notifications are being suppressed. */
+export interface BreakerStatus {
+  state: "closed" | "open";
+  enabled: boolean;
+  threshold_percent: number;
+  window_seconds: number;
+  min_monitors: number;
+}
+
+export async function fetchBreaker(): Promise<BreakerStatus> {
+  const data = await fetcher<{ status: BreakerStatus }>("/api/breaker");
+  return data.status;
+}
+
 export interface Notifier {
   id: string;
   name: string;

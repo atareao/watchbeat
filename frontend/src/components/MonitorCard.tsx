@@ -1,9 +1,10 @@
 import React from 'react';
-import { Card, Tag, Typography, Space, Button, Dropdown, Modal, Popconfirm, message } from 'antd';
+import { Card, Tag, Typography, Space, Button, Dropdown, Modal, Popconfirm, message, Tooltip } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, WarningOutlined,
   PlayCircleOutlined, MoreOutlined, HeartOutlined, ClockCircleOutlined, CopyOutlined,
   GlobalOutlined, ApiOutlined, WifiOutlined, SafetyOutlined, QuestionCircleOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { MonitorSummary } from '../api/http';
 import { runCheck, toggleMonitor } from '../api/http';
@@ -40,9 +41,12 @@ interface MonitorCardProps {
   onEdit: (item: MonitorSummary) => void;
   onDelete: (id: string) => void;
   onRefresh: () => void;
+  /** True while the storm breaker is open: notifications for this monitor are
+   * being suppressed. Purely informational, does not change the real status. */
+  breakerOpen?: boolean;
 }
 
-export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: MonitorCardProps) {
+export default function MonitorCard({ item, onEdit, onDelete, onRefresh, breakerOpen = false }: MonitorCardProps) {
   const navigate = useNavigate();
   const isHeartbeat = item.monitor_type === 'heartbeat';
 
@@ -154,6 +158,16 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
             </Space>
             <div style={{ marginTop: 4 }}>
               <Tag color={cfg.color}>{statusLabel}</Tag>
+              {breakerOpen && (
+                <Tooltip title="Notificaciones suprimidas por tormenta">
+                  <Tag
+                    icon={<ThunderboltOutlined style={{ color: '#faad14' }} />}
+                    aria-label="Notificaciones suprimidas por tormenta"
+                  >
+                    Suprimido
+                  </Tag>
+                </Tooltip>
+              )}
               {isHeartbeat ? (
                 <Typography.Text code style={{ fontSize: 12 }}>Grace: {item.grace_seconds ?? 3600}s</Typography.Text>
               ) : (

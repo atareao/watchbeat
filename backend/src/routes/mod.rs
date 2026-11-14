@@ -13,6 +13,7 @@ use crate::auth::AppState;
 pub mod api_keys;
 pub mod auth_routes;
 pub mod backup;
+pub mod breaker;
 pub mod checks;
 pub mod export_import;
 pub mod exports;
@@ -90,6 +91,7 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             routing::get(settings::get_setting_query).post(settings::set_setting),
         )
         .route("/api/status", routing::get(status::dashboard))
+        .route("/api/breaker", routing::get(breaker::get_breaker))
         .route(
             "/api/api-keys",
             routing::get(api_keys::list).post(api_keys::create),
