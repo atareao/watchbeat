@@ -7,7 +7,7 @@ etiqueta **por qué** falló con un valor tipado (`FailureCause`). Esa causa se
 persiste en `checks.error_kind` y se expone en la API de checks (cambio aditivo).
 
 - Issue: [#36](https://github.com/atareao/watchbeat/issues/36)
-- Plan: `plans/PLAN-002.md` — Robust Check Engine, Fase 2
+- Plan: `plans/PLAN-002-ARCHIVED.md` — Robust Check Engine, Fase 2
 - Change proposal: `openspec/changes/failure-cause-taxonomy/`
 
 ## Ficheros implicados

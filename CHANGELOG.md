@@ -1,4 +1,21 @@
 # Changelog
+
+## [Unreleased]
+
+### Features
+
+- **Robust Check Engine** (PLAN-002, fases 1-5): atribución de fallos y resiliencia de red.
+  - Fase 1: resolver DNS propio con caché TTL y fallback multi-upstream (`WATCHBEAT_DNS_UPSTREAMS`).
+  - Fase 2: taxonomía de causas (`FailureCause`) persistida en `checks.error_kind`.
+  - Fase 3: canario de red (`NetworkHealth`) + estado `indeterminate` (observabilidad, no incidente).
+  - Fase 4: jitter de ticks del scheduler (anti *thundering herd*).
+  - Fase 5: breaker anti-tormenta (una alerta agregada por episodio) + pestaña "Tormenta".
+
+### Documentation
+
+- `docs/robust-check-engine.md` (visión global) y `docs/adr/` (decisiones clave).
+- Docs por fase: DNS, taxonomía, atribución, jitter y breaker.
+
 ## [0.11.0] - 2026-08-30
 
 ### Documentation

@@ -9,7 +9,7 @@ conexiones, escrituras SQLite y tráfico de red, y fallos simultáneos ante un
 microcorte de DNS/red del host).
 
 - Issue: [#38](https://github.com/atareao/watchbeat/issues/38)
-- Plan: `plans/PLAN-002.md` — Robust Check Engine, Fase 4
+- Plan: `plans/PLAN-002-ARCHIVED.md` — Robust Check Engine, Fase 4
 - Change proposal: `openspec/changes/scheduler-jitter/`
 
 ## Ficheros implicados

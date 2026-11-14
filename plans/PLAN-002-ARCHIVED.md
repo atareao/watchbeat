@@ -180,28 +180,28 @@ Issue paraguas [#34](https://github.com/atareao/watchbeat/issues/34): se cierra 
 - [x] PR a `development` (`Closes #39`) + archive.
 
 ### Fase 6 · Documentación integral y cierre — [#40](https://github.com/atareao/watchbeat/issues/40)
-- [ ] `openspec new change robust-check-engine-docs`
-- [ ] `docs/robust-check-engine.md` — visión global: **qué** se hizo, **por qué** (razones y decisiones), **cómo** funciona.
-- [ ] Consolidar y enlazar los `docs/<feature>.md` de las fases 1-5.
-- [ ] ADR de las decisiones clave (descartar reintentos en favor de atribución; `indeterminate` como estado de primera clase; DNS propio vs DNS del host).
-- [ ] Actualizar `README.md`, `CHANGELOG.md`, `watchbeat.env.example` (nuevas env vars), `GIT_FLOW.md` y la guía de self-hoster.
-- [ ] **Informe final**: resumen ejecutivo + qué se ha realizado + razones + métricas antes/después (falsos positivos, nº de alertas, latencias).
-- [ ] Cerrar sub-issues #35-#39 (si no lo estuvieran) y este #40; cerrar el paraguas #34.
-- [ ] Renombrar `plans/PLAN-002.md` → `plans/PLAN-002-ARCHIVED.md`.
-- [ ] PR a `development` (`Closes #34, #40`).
+- [x] `openspec new change robust-check-engine-docs`
+- [x] `docs/robust-check-engine.md` — visión global: **qué** se hizo, **por qué** (razones y decisiones), **cómo** funciona.
+- [x] Consolidar y enlazar los `docs/<feature>.md` de las fases 1-5.
+- [x] ADR de las decisiones clave (descartar reintentos en favor de atribución; `indeterminate` como estado de primera clase; DNS propio vs DNS del host).
+- [x] Actualizar `README.md`, `CHANGELOG.md`, `watchbeat.env.example` (nuevas env vars), `GIT_FLOW.md` y la guía de self-hoster.
+- [x] **Informe final**: resumen ejecutivo + qué se ha realizado + razones + métricas antes/después (falsos positivos, nº de alertas, latencias).
+- [x] Cerrar sub-issues #35-#39 (si no lo estuvieran) y este #40; cerrar el paraguas #34.
+- [x] Renombrar `plans/PLAN-002.md` → `plans/PLAN-002-ARCHIVED.md`.
+- [x] PR a `development` (`Closes #34, #40`).
 
 ---
 
 ## 8. Criterios de aceptación (global)
 
-- [ ] Un blip de DNS/red del host **no** produce notificaciones de caída de servicios.
-- [ ] La causa de cada check fallido queda clasificada y persistida (`error_kind`).
-- [ ] El estado `indeterminate` es visible en UI y distinguible de `down`.
-- [ ] Los checks de distintos monitores no se disparan en el mismo segundo.
-- [ ] Una caída de infraestructura genera como máximo una alerta agregada.
-- [ ] Toda la documentación (global + por fase + ADR + informe final) está en `docs/`.
-- [ ] Todos los sub-issues (#35-#40) cerrados y `plans/PLAN-002.md` renombrado a `-ARCHIVED`.
-- [ ] `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check` y `npx tsc --noEmit` en verde al cierre de cada fase.
+- [x] Un blip de DNS/red del host **no** produce notificaciones de caída de servicios.
+- [x] La causa de cada check fallido queda clasificada y persistida (`error_kind`).
+- [x] El estado `indeterminate` es visible en UI y distinguible de `down`.
+- [x] Los checks de distintos monitores no se disparan en el mismo segundo.
+- [x] Una caída de infraestructura genera como máximo una alerta agregada.
+- [x] Toda la documentación (global + por fase + ADR + informe final) está en `docs/`.
+- [x] Todos los sub-issues (#35-#40) cerrados y `plans/PLAN-002.md` renombrado a `-ARCHIVED`.
+- [x] `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check` y `npx tsc --noEmit` en verde al cierre de cada fase.
 
 ---
 

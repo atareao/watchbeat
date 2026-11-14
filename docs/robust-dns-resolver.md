@@ -1,7 +1,7 @@
 # Robust DNS Resolver (Fase 1 · Robust Check Engine)
 
 - **Issue**: [#35](https://github.com/atareao/watchbeat/issues/35)
-- **Plan**: `plans/PLAN-002.md` — Robust Check Engine (Fase 1 de 6)
+- **Plan**: `plans/PLAN-002-ARCHIVED.md` — Robust Check Engine (Fase 1 de 6)
 - **Change OpenSpec**: `openspec/changes/archive/…-robust-dns-resolver/`
 
 ## Qué es
