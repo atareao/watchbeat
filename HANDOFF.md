@@ -2,9 +2,9 @@
 
 ## Estado (14 Nov 2026)
 
-- **Release v0.15.1 publicada** (tag `v0.15.1`, merge a `main` + sync `development`).
-  Incluye el **Robust Check Engine** (v0.15.0) y la optimización de queries de
-  checks (#33, v0.15.1).
+- **Release v0.15.2 publicada** (tag `v0.15.2`, merge a `main` + sync `development`).
+  Incluye el **Robust Check Engine** (v0.15.0), la optimización de queries (#33,
+  v0.15.1), el DNS multi-dirección (#52) y el diagnóstico/permisos de ping (#31).
 - `main` y `development` sincronizados. Tests: **254** lib + 9 + 45 + 8 + 3 verdes.
 - Ramas de feature/hotfix/release limpiadas (locales y remotas).
 
