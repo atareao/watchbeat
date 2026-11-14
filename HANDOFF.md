@@ -17,23 +17,27 @@ nunca se confundan con caídas reales de los servicios.
 | 2 · Taxonomía `FailureCause` + `error_kind` | #36 | ✅ mergeada (PR #43) |
 | 3 · Canario `NetworkHealth` + atribución `indeterminate` | #37 | ✅ mergeada (PR #44) |
 | 4 · Jitter de ticks | #38 | ✅ mergeada (PR #45) |
-| 5 · Breaker / anti-tormenta | #39 | ⏳ pendiente |
+| 5 · Breaker / anti-tormenta | #39 | ✅ mergeada (PR #46) |
 | 6 · Documentación final + razones | #40 | ⏳ pendiente |
 
-## Última fase cerrada — Fase 4 (jitter)
+## Última fase cerrada — Fase 5 (breaker / anti-tormenta)
 
-- `backend/src/jitter.rs` (nuevo): desplazamiento inicial uniforme en `[0, intervalo)`
-  + jitter por ciclo ±10 % (cota ≥ 1 s); RNG y reloj inyectables.
-- `scheduler.rs`: `monitor_task_inner` usa `jittered_cycle`; bucle secuencial con
-  `sleep` sustituye a `tokio::time::interval` (anti-ráfagas).
-- Dep `rand = "0.10"`. Spec `scheduler` actualizada. Doc `docs/scheduler-jitter.md`.
-- Tests: lib 212 + api_keys 9 + db_integration 45 + run_check_route 3. Clippy/fmt limpios.
-- Auditoría `@rust-reviewer`: APROBADO.
+- `backend/src/breaker.rs` (nuevo): `StormBreaker` (máquina de estados pura, reloj
+  inyectado), `BreakerConfig` (settings KV), dedupe por monitor único y por episodio.
+- `scheduler.rs`: `Arc<Mutex<StormBreaker>>` compartido, decisión en el despacho,
+  `ReloadBreaker`, unión de notificadores de los afectados.
+- `template.rs`: `defaults::STORM` + `TemplateContext::for_storm`.
+- `routes/settings.rs` + `routes/export_import.rs`: recarga en caliente.
+- `frontend/src/pages/Settings.tsx`: pestaña **Tormenta**.
+- Spec `breaker` (nueva). Doc `docs/alert-storm-breaker.md`.
+- Tests: lib 238 + api_keys 9 + db_integration 45 + run_check_route 3. Clippy/fmt/tsc/build limpios.
+- Auditoría `@rust-reviewer` (2 rondas) + `@react-reviewer`: APROBADO.
 
 ## Próximo paso
 
-Arrancar **Fase 5 · Breaker / anti-tormenta (#39)**: un change proposal OpenSpec
-nuevo, TDD RED-GREEN-REFACTOR, PR a `development` con `Closes #39`.
+Arrancar **Fase 6 · Documentación integral y cierre (#40)**: `docs/robust-check-engine.md`
+(visiones + razones), ADR de decisiones clave, actualizar README/CHANGELOG/env example,
+informe final, cerrar #35-#40 y #34, renombrar `plans/PLAN-002.md` → `-ARCHIVED`.
 
 ## Contexto técnico clave
 
