@@ -1,4 +1,4 @@
-# Handoff — watchbeat — 2026-11-14 (sesión #74)
+# Handoff — watchbeat — 2026-11-14 (sesión #75)
 
 ## Objetivo
 Cerrar los follow-ups del Robust Check Engine (#62) uno por sesión, con SDD+TDD, dejando cada feature en un PR a `development`.
@@ -12,12 +12,13 @@ Cerrar los follow-ups del Robust Check Engine (#62) uno por sesión, con SDD+TDD
   - Frontend: token `statusStyles.ts` (color+pattern+borderTop+label+icon), timeline accesible sin color + teclado, leyenda de patrones.
   - Backend: test SNI determinista (`rcgen` dev-dep), refactor `attempt_with` compartido.
   - Suite: **381 tests backend** verdes; `fmt`/`clippy` limpios; `tsc`+`build` verdes.
-- Rama actual: `development` (limpia). Sin PRs abiertos del #62.
+- **#62 y todos sus follow-ups (#69–#72, #63) cerrados** — 0 issues abiertos en el repo.
+  (Ojo: los PRs a `development` NO auto-cierran issues; hay que cerrarlos a mano.)
+- Rama actual: `development` (limpia). Sin PRs abiertos.
 
 ## Pendiente
-1. **#62**: comprobar si quedan follow-ups abiertos (los sub-issues #69–#72 y #63 están cerrados). Si no quedan, cerrar #62.
-2. Follow-ups de #63 (no bloqueantes): contraste AA de los `Tag` de `MonitorCard`; roving tabindex en el timeline; migrar `statusStyles.ts` a `.tsx`.
-3. Nº de plan libre: **PLAN-017**.
+1. Follow-ups de #63 (no bloqueantes): contraste AA de los `Tag` de `MonitorCard`; roving tabindex en el timeline; migrar `statusStyles.ts` a `.tsx`.
+2. Nº de plan libre: **PLAN-017**.
 
 ## Verificación
 ```bash
