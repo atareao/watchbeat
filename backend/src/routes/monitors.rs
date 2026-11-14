@@ -5,6 +5,7 @@ use axum::Json;
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::attribution;
 use crate::auth::AppState;
 use crate::checker;
 use crate::models::{CheckResult, Monitor};
@@ -345,17 +346,23 @@ pub async fn run_check(
     let checker = checker::checker_for(&monitor).ok_or("Unsupported monitor type")?;
     let outcome = checker.check(&monitor).await;
 
+    // Same attribution as the scheduled path (D6): a failure caused by our own
+    // degraded egress must never surface as a `down` of the target.
+    let status = attribution::attribute(&outcome.status, outcome.cause, state.netcheck.current())
+        .to_string();
+
     let now = chrono::Utc::now().to_rfc3339();
     let check = CheckResult {
         id: 0,
         monitor_id: id.clone(),
-        status: outcome.status,
+        status,
         status_code: outcome.status_code,
         response_time_ms: outcome.response_time_ms as i64,
         error_message: outcome.error_message,
         checked_at: now,
         tls_cert_expires_at: outcome.tls.as_ref().and_then(|t| t.cert_expires_at.clone()),
         tls_cert_days_left: outcome.tls.as_ref().and_then(|t| t.cert_days_left),
+        error_kind: outcome.cause.map(|cause| cause.as_str().to_string()),
     };
 
     let check_id = state
@@ -364,7 +371,7 @@ pub async fn run_check(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(Json(serde_json::json!({
+    let mut body = serde_json::json!({
                     "id": check_id,
                     "monitor_id": monitor.id,
                     "status": check.status,
@@ -372,5 +379,13 @@ pub async fn run_check(
                     "response_time_ms": check.response_time_ms,
                     "error_message": check.error_message,
                     "checked_at": check.checked_at,
-    })))
+    });
+
+    // Same additive contract as the model: the field only appears when the
+    // check actually has a cause.
+    if let Some(cause) = &check.error_kind {
+        body["error_kind"] = serde_json::json!(cause);
+    }
+
+    Ok(Json(body))
 }

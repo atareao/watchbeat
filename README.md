@@ -388,6 +388,25 @@ La status page es pública (no requiere autenticación).
 
 ---
 
+## 🛡️ Resiliencia y atribución
+
+WatchBeat distingue un fallo **del servicio** de un fallo **de nuestra propia red/DNS**,
+para no generar falsos positivos ni tormentas de alertas cuando la infraestructura del
+host sufre un microcorte.
+
+- **DNS propio con caché** (TTL + fallback multi-upstream): un corte del DNS del host no
+  rompe los checks.
+- **Taxonomía de causas** (`error_kind`): cada fallo se etiqueta *por qué* falló
+  (`dns_nxdomain`, `connect_refused`, `tls_error`, `http_status`…).
+- **Atribución** con un canario de red: los fallos no atribuibles se marcan
+  **`indeterminate`** (observabilidad, no incidente: no alerta ni penaliza el uptime).
+- **Jitter** en el scheduler: los monitores no disparan sus checks en el mismo segundo.
+- **Breaker anti-tormenta**: una caída en cascada genera **una** alerta agregada, no N.
+
+📖 Visión completa: [`docs/robust-check-engine.md`](docs/robust-check-engine.md).
+
+---
+
 ## ⚡ Rendimiento
 
 WatchBeat está optimizado para ser **ultra-ligero** en idle:
@@ -402,7 +421,7 @@ WatchBeat está optimizado para ser **ultra-ligero** en idle:
 
 ### Cómo funciona
 
-- **Scheduler**: Cada monitor tiene su propio `tokio::time::interval` con `MissedTickBehavior::Skip`. No hay polling global. El manager loop está bloqueado en `mpsc::Receiver::recv()` — 0 CPU.
+- **Scheduler**: Cada monitor tiene su propio ciclo con **jitter** (desplazamiento inicial + ±10 % por ciclo) sobre un bucle secuencial con `sleep` (anti-ráfagas). No hay polling global. El manager loop está bloqueado en `mpsc::Receiver::recv()` — 0 CPU.
 - **Caches en memoria**: `checker` (Box), `was_up` (bool), `notifier_ids` (Vec) se crean una vez por monitor y se reutilizan en cada check.
 - **Writes diferidos**: Solo se escribe a SQLite cuando el estado cambia (UP↔DOWN) o cada 10º check (muestreo de latencia). Monitores estables → 0 writes.
 - **SQLite optimizado**: WAL mode con `synchronous=NORMAL` (~50x más rápido que FULL), índice cubriente `(monitor_id, checked_at, status)` para queries de uptime index-only.
@@ -433,6 +452,11 @@ watchbeat/
 │   │   ├── models.rs           # Monitor, CheckResult, Notifier, StatusPage, etc.
 │   │   ├── embed.rs            # SPA embebida (include_dir!)
 │   │   ├── template.rs         # Motor de plantillas Jinja2 + defaults
+│   │   ├── dns.rs              # Resolver DNS propio con caché TTL + fallback
+│   │   ├── netcheck.rs         # Canario de salud de red (NetworkHealth)
+│   │   ├── attribution.rs      # Atribución de fallos → indeterminate
+│   │   ├── jitter.rs           # Jitter de ticks del scheduler
+│   │   ├── breaker.rs          # Anti-tormenta de alertas
 │   │   ├── scheduler.rs        # SchedulerManager + per-monitor tokio timers
 │   │   ├── checker/            # HTTP, TCP, Ping, TLS checkers
 │   │   ├── notifier/           # 9 tipos: telegram, matrix, ntfy, webhook,

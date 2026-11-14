@@ -5,6 +5,7 @@ use chrono::Utc;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
+use crate::attribution;
 use crate::models::{
     ApiKey, ApiKeyRow, CheckResult, DashboardStatus, Monitor, MonitorRow, MonitorSummary,
     MonitorWithSummaryRow, Notifier, NotifierRow, StatusPage, StatusPageRow, TimelineBucket,
@@ -15,6 +16,25 @@ use crate::models::{
 pub struct Database {
     pool: SqlitePool,
     db_path: String,
+}
+
+/// Run an additive `ALTER TABLE ... ADD COLUMN` migration.
+///
+/// `duplicate column name` is the normal state from the second start onwards,
+/// so it is only worth a debug line. Anything else is a real migration problem
+/// and is logged instead of being silently swallowed.
+async fn add_column_if_missing(pool: &SqlitePool, sql: &'static str, column: &str) {
+    match sqlx::raw_sql(sql).execute(pool).await {
+        Ok(_) => tracing::debug!(column, "added missing column"),
+        Err(e) => {
+            let message = e.to_string();
+            if message.contains("duplicate column name") {
+                tracing::debug!(column, "column already present");
+            } else {
+                tracing::warn!(column, error = %message, "additive migration failed");
+            }
+        }
+    }
 }
 
 impl Database {
@@ -68,7 +88,7 @@ impl Database {
                 monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
                 status TEXT NOT NULL, status_code INTEGER,
                 response_time_ms INTEGER NOT NULL DEFAULT 0, error_message TEXT, checked_at TEXT NOT NULL,
-                tls_cert_expires_at TEXT, tls_cert_days_left INTEGER
+                tls_cert_expires_at TEXT, tls_cert_days_left INTEGER, error_kind TEXT
             )",
         )
         .execute(&pool)
@@ -213,6 +233,15 @@ impl Database {
         let _ = sqlx::raw_sql("ALTER TABLE checks ADD COLUMN tls_cert_days_left INTEGER")
             .execute(&pool)
             .await;
+
+        // Typed failure cause for checks (additive; NULL for healthy checks and
+        // for rows predating the column).
+        add_column_if_missing(
+            &pool,
+            "ALTER TABLE checks ADD COLUMN error_kind TEXT",
+            "checks.error_kind",
+        )
+        .await;
 
         // Consolidated metrics table for pre-aggregated uptime/response data
         let _ = sqlx::raw_sql(
@@ -398,7 +427,8 @@ impl Database {
             let uptime_7d: Option<(i64, i64)> = sqlx::query_as(
                 "SELECT CAST(COUNT(*) AS INTEGER) as total, \
                  CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS INTEGER) as up_count \
-                 FROM checks WHERE monitor_id=? AND checked_at>=?",
+                 FROM checks WHERE monitor_id=? AND checked_at>=? \
+                 AND status IN ('up','warning','down','error')",
             )
             .bind(id)
             .bind(&cutoff_7d)
@@ -415,7 +445,8 @@ impl Database {
             let uptime_30d: Option<(i64, i64)> = sqlx::query_as(
                 "SELECT CAST(COUNT(*) AS INTEGER) as total, \
                  CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS INTEGER) as up_count \
-                 FROM checks WHERE monitor_id=? AND checked_at>=?",
+                 FROM checks WHERE monitor_id=? AND checked_at>=? \
+                 AND status IN ('up','warning','down','error')",
             )
             .bind(id)
             .bind(&cutoff_30d)
@@ -770,13 +801,14 @@ impl Database {
     pub async fn insert_check(&self, check: &CheckResult) -> Result<i64> {
         let result = sqlx::query(
             "INSERT INTO checks (monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
-             tls_cert_expires_at, tls_cert_days_left) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             tls_cert_expires_at, tls_cert_days_left, error_kind) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&check.monitor_id).bind(&check.status)
         .bind(check.status_code.map(|v| v as i64))
         .bind(check.response_time_ms).bind(&check.error_message).bind(&check.checked_at)
         .bind(&check.tls_cert_expires_at).bind(check.tls_cert_days_left)
+        .bind(&check.error_kind)
         .execute(&self.pool).await
         .context("Failed to insert check")?;
         Ok(result.last_insert_rowid() as i64)
@@ -790,7 +822,7 @@ impl Database {
     ) -> Result<Vec<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
             "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
-             tls_cert_expires_at, tls_cert_days_left \
+             tls_cert_expires_at, tls_cert_days_left, error_kind \
              FROM checks WHERE monitor_id=? ORDER BY checked_at DESC LIMIT ? OFFSET ?",
         )
         .bind(monitor_id).bind(limit).bind(offset)
@@ -817,7 +849,7 @@ impl Database {
         let placeholders: Vec<String> = statuses.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
             "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
-             tls_cert_expires_at, tls_cert_days_left \
+             tls_cert_expires_at, tls_cert_days_left, error_kind \
              FROM checks WHERE monitor_id=? AND status IN ({}) ORDER BY checked_at DESC LIMIT ? OFFSET ?",
             placeholders.join(",")
         );
@@ -860,7 +892,7 @@ impl Database {
     pub async fn get_latest_check(&self, monitor_id: &str) -> Result<Option<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
             "SELECT id, monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
-             tls_cert_expires_at, tls_cert_days_left \
+             tls_cert_expires_at, tls_cert_days_left, error_kind \
              FROM checks WHERE monitor_id=? ORDER BY checked_at DESC LIMIT 1",
         )
         .bind(monitor_id).fetch_optional(&self.pool).await
@@ -898,12 +930,17 @@ impl Database {
             .ceil()
             .max(1.0) as i64;
 
-        let rows = sqlx::query_as::<_, (String, f64, f64, i64)>(
+        // `indeterminate` leaves the uptime denominator: a failure we cannot
+        // attribute must not paint the bucket as down (M2). `COUNT(*)` still
+        // reports every check in the bucket, and `attributable` tells us whether
+        // there is any health to report at all.
+        let rows = sqlx::query_as::<_, (String, i64, i64, f64, i64)>(
             "SELECT \
                  strftime('%Y-%m-%dT%H:%M:%SZ', \
                        CAST((CAST(strftime('%s', checked_at) / ? AS INTEGER) * ?) AS TEXT), \
                  'unixepoch') AS bucket_start, \
-                 100.0 * CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS FLOAT) / COUNT(*), \
+                 SUM(CASE WHEN status='up' THEN 1 ELSE 0 END), \
+                 SUM(CASE WHEN status IN ('up','warning','down','error') THEN 1 ELSE 0 END), \
                  AVG(CAST(response_time_ms AS FLOAT)), \
                  COUNT(*) \
               FROM checks \
@@ -921,16 +958,26 @@ impl Database {
 
         let buckets: Vec<TimelineBucket> = rows
             .into_iter()
-            .map(|(bucket_start, up_pct, avg_rt, count)| TimelineBucket {
-                bucket_start,
-                up_pct: (up_pct * 100.0).round() / 100.0,
-                avg_response_time_ms: (avg_rt * 100.0).round() / 100.0,
-                count,
-                dominant_status: if up_pct >= 50.0 {
-                    "up".to_string()
+            .map(|(bucket_start, up_count, attributable, avg_rt, count)| {
+                let up_pct = if attributable > 0 {
+                    100.0 * up_count as f64 / attributable as f64
                 } else {
-                    "down".to_string()
-                },
+                    0.0
+                };
+                TimelineBucket {
+                    bucket_start,
+                    up_pct: (up_pct * 100.0).round() / 100.0,
+                    avg_response_time_ms: (avg_rt * 100.0).round() / 100.0,
+                    count,
+                    dominant_status: if attributable == 0 {
+                        // Only unattributable checks: no verdict to render.
+                        attribution::INDETERMINATE.to_string()
+                    } else if up_pct >= 50.0 {
+                        "up".to_string()
+                    } else {
+                        "down".to_string()
+                    },
+                }
             })
             .collect();
 
@@ -940,7 +987,7 @@ impl Database {
     pub async fn get_recent_checks_global(&self, limit: i64) -> Result<Vec<CheckResult>> {
         sqlx::query_as::<_, CheckResult>(
             "SELECT c.id, c.monitor_id, c.status, c.status_code, c.response_time_ms, c.error_message, c.checked_at, \
-             c.tls_cert_expires_at, c.tls_cert_days_left \
+             c.tls_cert_expires_at, c.tls_cert_days_left, c.error_kind \
              FROM checks c \
              INNER JOIN (SELECT monitor_id, MAX(checked_at) as max_checked FROM checks GROUP BY monitor_id) latest \
              ON c.monitor_id = latest.monitor_id AND c.checked_at = latest.max_checked \
@@ -978,10 +1025,13 @@ impl Database {
 
     async fn calculate_uptime(&self, monitor_id: &str, days: i64) -> Result<Option<f64>> {
         let cutoff = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+        // `indeterminate` is excluded from BOTH the numerator and the denominator
+        // (D8): a failure we cannot attribute must not penalise the target.
         let result: Option<(i64, i64)> = sqlx::query_as(
             "SELECT CAST(COUNT(*) AS INTEGER) as total, \
              CAST(SUM(CASE WHEN status='up' THEN 1 ELSE 0 END) AS INTEGER) as up_count \
-             FROM checks WHERE monitor_id=? AND checked_at>=?",
+             FROM checks WHERE monitor_id=? AND checked_at>=? \
+             AND status IN ('up','warning','down','error')",
         )
         .bind(monitor_id)
         .bind(&cutoff)
@@ -1011,6 +1061,7 @@ impl Database {
         let enabled = rows.iter().filter(|r| r.0 != 0).count() as u64;
         let mut up = 0u64;
         let mut down = 0u64;
+        let mut indeterminate = 0u64;
         let mut total_rt = 0u64;
         let mut rt_count = 0u64;
 
@@ -1044,6 +1095,9 @@ impl Database {
             } else {
                 match status.as_deref() {
                     Some("up") => up += 1,
+                    // Not attributable to the target: neither healthy nor down (D7),
+                    // but counted on its own so the categories add up (M3).
+                    Some("indeterminate") => indeterminate += 1,
                     Some(_) => down += 1,
                     None => {} // no checks yet
                 }
@@ -1066,6 +1120,7 @@ impl Database {
             enabled_monitors: enabled,
             up_monitors: up,
             down_monitors: down,
+            indeterminate_monitors: indeterminate,
             total_checks_24h: checks_24h as u64,
             avg_response_time_24h: if rt_count > 0 {
                 Some(total_rt.checked_div(rt_count).unwrap_or(0))
@@ -1424,10 +1479,11 @@ impl Database {
             checked_at: now.clone(),
             tls_cert_expires_at: None,
             tls_cert_days_left: None,
+            error_kind: None,
         };
         sqlx::query(
             "INSERT INTO checks (monitor_id, status, status_code, response_time_ms, error_message, checked_at, \
-             tls_cert_expires_at, tls_cert_days_left) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             tls_cert_expires_at, tls_cert_days_left, error_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&check.monitor_id)
         .bind(&check.status)
@@ -1437,6 +1493,7 @@ impl Database {
         .bind(&check.checked_at)
         .bind(&check.tls_cert_expires_at)
         .bind(check.tls_cert_days_left)
+        .bind(&check.error_kind)
         .execute(&self.pool)
         .await
         .context("Failed to insert heartbeat check")?;

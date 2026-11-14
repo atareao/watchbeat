@@ -332,6 +332,10 @@ pub async fn import_all(
             .map_err(|e| format!("Failed to set setting {}: {}", key, e))?;
     }
 
+    // The imported settings may change the storm breaker (Fase 5, D6): reload it,
+    // exactly as `set_setting` does for the breaker keys (MENOR-2).
+    state.scheduler_mgr.reload_breaker().await;
+
     Ok(Json(serde_json::json!({ "ok": true, "imported": {
         "monitors": payload.monitors.len(),
         "notifiers": payload.notifiers.len(),

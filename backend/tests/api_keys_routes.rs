@@ -36,10 +36,13 @@ async fn setup() -> (Arc<AppState>, TempDir) {
         oidc_client_secret: "secret".into(),
         oidc_redirect_url: "http://localhost:3055/auth/callback".into(),
         retention_days: 30,
+        dns_upstreams: watchbeat::dns::default_upstreams(),
     };
 
     let (event_tx, _) = tokio::sync::broadcast::channel(SSE_CHANNEL_CAPACITY);
-    let scheduler_mgr = SchedulerManager::spawn(db.clone(), event_tx.clone()).await;
+    let netcheck_handle = watchbeat::netcheck::NetworkHealthHandle::new();
+    let scheduler_mgr =
+        SchedulerManager::spawn(db.clone(), event_tx.clone(), netcheck_handle.clone()).await;
 
     let state = Arc::new(AppState {
         config,
@@ -49,6 +52,7 @@ async fn setup() -> (Arc<AppState>, TempDir) {
         oidc_states: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         scheduler_mgr,
         event_tx,
+        netcheck: netcheck_handle,
     });
     (state, dir)
 }

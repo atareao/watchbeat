@@ -45,6 +45,12 @@ pub struct CheckResult {
     pub checked_at: String,
     pub tls_cert_expires_at: Option<String>,
     pub tls_cert_days_left: Option<i64>,
+    /// Typed cause of the failure (`FailureCause`, serialized `snake_case`).
+    ///
+    /// Additive API change: consumers of the previous payload keep seeing the
+    /// same shape, because the field is skipped when the check has no cause.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +102,10 @@ pub struct DashboardStatus {
     pub enabled_monitors: u64,
     pub up_monitors: u64,
     pub down_monitors: u64,
+    /// Monitors whose latest check is `indeterminate`: a failure we could not
+    /// attribute to the target. Exposed separately so the categories add up.
+    #[serde(default)]
+    pub indeterminate_monitors: u64,
     pub total_checks_24h: u64,
     pub avg_response_time_24h: Option<u64>,
 }
@@ -709,5 +719,61 @@ mod tests {
             key.api_key, "9d2c7a1f-4c3e-4b1a-8f6d-0123456789ab",
             "el api_key secreto debe conservarse intacto"
         );
+    }
+
+    // ───── Failure cause in the API payload (Fase 2) ─────
+
+    fn sample_check(error_kind: Option<&str>) -> CheckResult {
+        CheckResult {
+            id: 7,
+            monitor_id: "m-api".into(),
+            status: "down".into(),
+            status_code: None,
+            response_time_ms: 12,
+            error_message: Some("TCP connection failed".into()),
+            checked_at: "2026-01-01T00:00:00Z".into(),
+            tls_cert_expires_at: None,
+            tls_cert_days_left: None,
+            error_kind: error_kind.map(str::to_string),
+        }
+    }
+
+    /// Scenario: la API de checks expone la causa cuando existe.
+    #[test]
+    fn check_result_should_serialize_error_kind_when_present() {
+        let json = serde_json::to_value(sample_check(Some("connect_refused"))).unwrap();
+
+        assert_eq!(json["error_kind"], serde_json::json!("connect_refused"));
+    }
+
+    /// Additive change: consumers of the old payload keep seeing the old shape.
+    #[test]
+    fn check_result_should_omit_error_kind_when_absent() {
+        let json = serde_json::to_value(sample_check(None)).unwrap();
+
+        assert!(
+            json.get("error_kind").is_none(),
+            "a check without cause must not add the field, got {json}"
+        );
+    }
+
+    /// Round-trip guard: payloads produced before this change still parse.
+    #[test]
+    fn check_result_should_deserialize_without_error_kind() {
+        let json = serde_json::json!({
+            "id": 7,
+            "monitor_id": "m-api",
+            "status": "up",
+            "status_code": 200,
+            "response_time_ms": 12,
+            "error_message": null,
+            "checked_at": "2026-01-01T00:00:00Z",
+            "tls_cert_expires_at": null,
+            "tls_cert_days_left": null
+        });
+
+        let check: CheckResult = serde_json::from_value(json).unwrap();
+
+        assert_eq!(check.error_kind, None);
     }
 }

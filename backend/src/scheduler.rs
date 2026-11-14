@@ -2,19 +2,56 @@ use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::future::FutureExt;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
+use async_trait::async_trait;
+
+use crate::breaker::{self, BreakerConfig, BreakerDecision, StormBreaker};
 use crate::checker;
 use crate::checker::Checker;
 use crate::db::Database;
+use crate::jitter;
 use crate::models::{CheckResult, Monitor, Notifier};
+use crate::netcheck::NetworkHealthHandle;
 use crate::notifier;
 use crate::template::{self, TemplateContext};
 
+use crate::attribution;
+
 // ───── Commands ─────
+
+/// The last *observable* status the scheduler saw for a monitor.
+///
+/// Deliberately distinct from the notification state (`was_up`): an
+/// unattributable failure is [`ObservedStatus::Indeterminate`], which is a real
+/// change worth persisting and emitting **once**, yet must NOT flip `was_up`
+/// (D7). Keeping the two apart is what stops a sustained egress outage from
+/// writing a row and emitting an SSE event on every single check (M5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObservedStatus {
+    /// No check has run yet for this monitor task.
+    Unknown,
+    Up,
+    Down,
+    Indeterminate,
+}
+
+impl ObservedStatus {
+    /// Classify a persisted status string. `is_up` is the notification-state
+    /// reading of the very same status (`up`/`warning`).
+    fn from_status(status: &str, is_up: bool) -> Self {
+        if status == attribution::INDETERMINATE {
+            Self::Indeterminate
+        } else if is_up {
+            Self::Up
+        } else {
+            Self::Down
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum SchedulerCommand {
@@ -22,6 +59,8 @@ pub enum SchedulerCommand {
     Update(Monitor),
     Remove(String),
     ReloadNotifiers,
+    /// Re-read the storm-breaker configuration from the settings (Fase 5, D6).
+    ReloadBreaker,
     Shutdown,
 }
 
@@ -36,7 +75,14 @@ pub struct SchedulerManager {
 
 impl SchedulerManager {
     /// Start the scheduler. Loads existing monitors and begins monitoring.
-    pub async fn spawn(db: Database, event_tx: broadcast::Sender<String>) -> Self {
+    ///
+    /// `health` is the publication handle of the `netcheck` canary; it is read
+    /// (never awaited) on every check to attribute failures.
+    pub async fn spawn(
+        db: Database,
+        event_tx: broadcast::Sender<String>,
+        health: NetworkHealthHandle,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(64);
         let active_tasks = Arc::new(AtomicU64::new(0));
         let last_check_at = Arc::new(AtomicI64::new(0));
@@ -48,7 +94,7 @@ impl SchedulerManager {
         };
 
         tokio::spawn(async move {
-            manager_loop(rx, db, event_tx, active_tasks, last_check_at).await;
+            manager_loop(rx, db, event_tx, active_tasks, last_check_at, health).await;
         });
 
         mgr
@@ -73,6 +119,11 @@ impl SchedulerManager {
     pub async fn reload_notifiers(&self) {
         self.send(SchedulerCommand::ReloadNotifiers).await;
     }
+
+    /// Re-read the storm-breaker configuration and apply it in place (Fase 5).
+    pub async fn reload_breaker(&self) {
+        self.send(SchedulerCommand::ReloadBreaker).await;
+    }
 }
 
 // ──── Background manager loop ─────
@@ -83,6 +134,7 @@ async fn manager_loop(
     event_tx: broadcast::Sender<String>,
     active_tasks: Arc<AtomicU64>,
     last_check_at: Arc<AtomicI64>,
+    health: NetworkHealthHandle,
 ) {
     let notifier_cache: Arc<RwLock<HashMap<String, Notifier>>> =
         Arc::new(RwLock::new(HashMap::new()));
@@ -95,6 +147,14 @@ async fn manager_loop(
         }
     }
 
+    // Fase 5 (D6–D8): one breaker shared by every monitor task. The threshold is a
+    // percentage of the *enabled* monitors, so the count is tracked next to it and
+    // refreshed after every command that changes the running task set.
+    let breaker: Arc<Mutex<StormBreaker>> = Arc::new(Mutex::new(StormBreaker::new(
+        BreakerConfig::load(&db).await,
+    )));
+    let enabled_monitors = Arc::new(AtomicU64::new(0));
+
     let mut task_map: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
     // Spawn tasks for existing enabled monitors
@@ -106,8 +166,11 @@ async fn manager_loop(
                     db.clone(),
                     m,
                     notifier_cache.clone(),
+                    breaker.clone(),
+                    enabled_monitors.clone(),
                     event_tx.clone(),
                     last_check_at.clone(),
+                    health.clone(),
                 );
                 task_map.insert(id, handle);
             }
@@ -115,6 +178,7 @@ async fn manager_loop(
     }
 
     active_tasks.store(task_map.len() as u64, Ordering::Relaxed);
+    enabled_monitors.store(task_map.len() as u64, Ordering::Relaxed);
 
     // Command loop
     while let Some(cmd) = rx.recv().await {
@@ -131,8 +195,11 @@ async fn manager_loop(
                         db.clone(),
                         monitor,
                         notifier_cache.clone(),
+                        breaker.clone(),
+                        enabled_monitors.clone(),
                         event_tx.clone(),
                         last_check_at.clone(),
+                        health.clone(),
                     );
                     task_map.insert(id, handle);
                 }
@@ -151,6 +218,12 @@ async fn manager_loop(
                     }
                 }
             }
+            SchedulerCommand::ReloadBreaker => {
+                // Re-read the settings and reconfigure in place (D6). The lock is
+                // held only for the synchronous `configure` call.
+                let cfg = BreakerConfig::load(&db).await;
+                breaker.lock().await.configure(cfg);
+            }
             SchedulerCommand::Shutdown => {
                 for (_, handle) in task_map.drain() {
                     handle.abort();
@@ -159,17 +232,26 @@ async fn manager_loop(
             }
         }
         active_tasks.store(task_map.len() as u64, Ordering::Relaxed);
+        enabled_monitors.store(task_map.len() as u64, Ordering::Relaxed);
     }
 }
 
 // ──── Per-monitor task (with panic recovery) ─────
 
+/// Spawns the per-monitor task with panic recovery.
+///
+/// Same wiring as [`monitor_task_inner`], plus the shared handles (notifier
+/// cache, storm breaker, enabled-monitor count) the manager loop keeps per task.
+#[allow(clippy::too_many_arguments)]
 fn monitor_task(
     db: Database,
     monitor: Monitor,
     notifier_cache: Arc<RwLock<HashMap<String, Notifier>>>,
+    breaker: Arc<Mutex<StormBreaker>>,
+    enabled_monitors: Arc<AtomicU64>,
     event_tx: broadcast::Sender<String>,
     last_check_at: Arc<AtomicI64>,
+    health: NetworkHealthHandle,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let interval_secs = monitor.interval_seconds.max(1) as u64;
@@ -178,8 +260,11 @@ fn monitor_task(
                 db.clone(),
                 monitor.clone(),
                 notifier_cache.clone(),
+                breaker.clone(),
+                enabled_monitors.clone(),
                 event_tx.clone(),
                 last_check_at.clone(),
+                health.clone(),
                 interval_secs,
             ))
             .catch_unwind()
@@ -210,18 +295,18 @@ fn monitor_task(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn monitor_task_inner(
     db: Database,
     monitor: Monitor,
     notifier_cache: Arc<RwLock<HashMap<String, Notifier>>>,
+    breaker: Arc<Mutex<StormBreaker>>,
+    enabled_monitors: Arc<AtomicU64>,
     event_tx: broadcast::Sender<String>,
     last_check_at: Arc<AtomicI64>,
+    health: NetworkHealthHandle,
     interval_secs: u64,
 ) {
-    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    interval.tick().await;
-
     // Cache checker once (reused across all checks for this monitor)
     let checker = checker::checker_for(&monitor);
 
@@ -231,25 +316,84 @@ async fn monitor_task_inner(
         .await
         .unwrap_or_default();
 
-    // Track previous status in memory (avoids get_latest_check query per check)
-    let mut was_up = true;
-    // Track last DB write timestamp for time-based sampling:
-    // write at least once per interval_secs to maintain latency data
-    let mut last_write_at: i64 = 0;
+    let mut cycle = MonitorCycle {
+        db: &db,
+        monitor: &monitor,
+        notifier_cache: &notifier_cache,
+        breaker: &breaker,
+        enabled_monitors: &enabled_monitors,
+        event_tx: &event_tx,
+        last_check_at: &last_check_at,
+        checker: checker.as_deref(),
+        health: &health,
+        notifier_ids: &notifier_ids,
+        interval_secs,
+        // Track previous status in memory (avoids get_latest_check query per check)
+        was_up: true,
+        // Track last DB write timestamp for time-based sampling:
+        // write at least once per interval_secs to maintain latency data
+        last_write_at: 0,
+        observed: ObservedStatus::Unknown,
+    };
 
-    loop {
-        interval.tick().await;
-        was_up = run_monitor_check(
-            &db,
-            &monitor,
-            &notifier_cache,
-            &event_tx,
-            &last_check_at,
-            checker.as_deref(),
-            was_up,
-            &notifier_ids,
-            &mut last_write_at,
-            interval_secs,
+    // Fase 4 (D1–D3): the cycle is jittered and sequential. The RNG is injectable
+    // — the jitter itself is unit-tested — so here we only pick the production
+    // source of randomness. `StdRng` (seeded from the OS) rather than `rand::rng()`
+    // because the monitor task runs on the multithreaded runtime, so it must be
+    // `Send`.
+    let mut rng = rand::make_rng::<rand::rngs::StdRng>();
+    jitter::jittered_cycle(
+        Duration::from_secs(interval_secs),
+        &mut rng,
+        &mut cycle,
+        tokio::time::sleep,
+    )
+    .await;
+}
+
+/// The production cycle of a monitor task: one check plus the in-memory
+/// bookkeeping the scheduler keeps between checks (Fase 4, D3).
+struct MonitorCycle<'a> {
+    db: &'a Database,
+    monitor: &'a Monitor,
+    notifier_cache: &'a Arc<RwLock<HashMap<String, Notifier>>>,
+    /// Storm breaker shared by every monitor task (Fase 5, D8).
+    breaker: &'a Arc<Mutex<StormBreaker>>,
+    /// Number of enabled monitors, kept up to date by the manager loop.
+    enabled_monitors: &'a Arc<AtomicU64>,
+    event_tx: &'a broadcast::Sender<String>,
+    last_check_at: &'a Arc<AtomicI64>,
+    checker: Option<&'a dyn Checker>,
+    health: &'a NetworkHealthHandle,
+    notifier_ids: &'a [String],
+    interval_secs: u64,
+    /// Notification state: an `indeterminate` check never flips it (D7, Fase 3).
+    was_up: bool,
+    /// Last DB write timestamp, for the time-based sampling in `run_monitor_check`.
+    last_write_at: i64,
+    /// Last *observable* status, so a sustained `indeterminate` period is recorded
+    /// once instead of on every check (M5, Fase 3).
+    observed: ObservedStatus,
+}
+
+#[async_trait]
+impl jitter::Cycle for MonitorCycle<'_> {
+    async fn check(&mut self) {
+        self.was_up = run_monitor_check(
+            self.db,
+            self.monitor,
+            self.notifier_cache,
+            self.event_tx,
+            self.last_check_at,
+            self.checker,
+            self.health,
+            self.was_up,
+            self.notifier_ids,
+            &mut self.last_write_at,
+            &mut self.observed,
+            self.interval_secs,
+            self.enabled_monitors.load(Ordering::Relaxed) as usize,
+            self.breaker,
         )
         .await;
     }
@@ -257,6 +401,59 @@ async fn monitor_task_inner(
 
 // ──── The actual check (moved from main.rs) ─────
 
+/// Append `id` unless it is already collected, preserving the insertion order.
+fn push_unique(ids: &mut Vec<String>, id: &str) {
+    if !ids.iter().any(|known| known == id) {
+        ids.push(id.to_string());
+    }
+}
+
+/// Union of the notifiers linked to every monitor caught by the storm (MAYOR-2).
+///
+/// The aggregated alert replaces *all* the individual notifications of the
+/// episode, so it must reach the notifiers of every affected monitor — not only
+/// those of the monitor that happens to open the storm. The opener's cached list
+/// is reused as-is (no extra query for it) and the rest is read from the DB.
+async fn storm_notifier_ids(
+    db: &Database,
+    opener_ids: &[String],
+    opener_fallback: Option<&str>,
+    affected_ids: &[String],
+) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+
+    for id in opener_ids {
+        push_unique(&mut ids, id);
+    }
+    if let Some(id) = opener_fallback {
+        push_unique(&mut ids, id);
+    }
+
+    for monitor_id in affected_ids {
+        match db.get_monitor_notifier_ids(monitor_id).await {
+            Ok(linked) => {
+                for id in linked {
+                    push_unique(&mut ids, &id);
+                }
+            }
+            Err(e) => tracing::warn!(
+                "Scheduler: cannot read the notifiers of monitor '{}': {}",
+                monitor_id,
+                e
+            ),
+        }
+    }
+
+    ids
+}
+
+/// Run one check for a monitor and dispatch whatever notification it deserves.
+///
+/// `enabled_monitors` is the number of enabled monitors (heartbeats excluded) and
+/// is the base of the storm breaker's percentage threshold. `breaker` is the
+/// shared storm breaker (Fase 5): the decision for a `down`/`up` transition is
+/// taken here, before dispatching, and its lock is always released before any
+/// `await`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_monitor_check(
     db: &Database,
@@ -265,10 +462,14 @@ pub(crate) async fn run_monitor_check(
     event_tx: &broadcast::Sender<String>,
     last_check_at: &Arc<AtomicI64>,
     checker: Option<&dyn Checker>,
+    health: &NetworkHealthHandle,
     was_up: bool,
     notifier_ids: &[String],
     last_write_at: &mut i64,
+    observed: &mut ObservedStatus,
     interval_secs: u64,
+    enabled_monitors: usize,
+    breaker: &Arc<Mutex<StormBreaker>>,
 ) -> bool {
     let now = chrono::Utc::now();
     let now_str = now.to_rfc3339();
@@ -283,27 +484,35 @@ pub(crate) async fn run_monitor_check(
 
     let outcome = checker.check(monitor).await;
 
+    // ── Attribution (Fase 3, D6): combine the failure cause with the health of
+    // our own egress. `indeterminate` means the failure is not the target's.
+    let attributed = attribution::attribute(&outcome.status, outcome.cause, health.current());
+    let is_indeterminate = attributed == attribution::INDETERMINATE;
+
     // Confirmation logic
-    let is_up_raw = outcome.status == "up" || outcome.status == "warning";
-    let mut effective_status = outcome.status.clone();
+    let mut effective_status = attributed.to_string();
 
-    if !is_up_raw && monitor.confirmations_required > 0 {
-        let new_failed = monitor.failed_checks + 1;
-        let _ = db.set_failed_checks(&monitor.id, new_failed).await;
+    if !is_indeterminate {
+        let is_up_raw = attributed == "up" || attributed == "warning";
 
-        if new_failed < monitor.confirmations_required {
-            tracing::info!(
-                "Scheduler: {} failed check {}/{} (pending confirmation)",
-                monitor.name,
-                new_failed,
-                monitor.confirmations_required
-            );
-            effective_status = "error".into();
-        } else {
-            effective_status = "down".into();
+        if !is_up_raw && monitor.confirmations_required > 0 {
+            let new_failed = monitor.failed_checks + 1;
+            let _ = db.set_failed_checks(&monitor.id, new_failed).await;
+
+            if new_failed < monitor.confirmations_required {
+                tracing::info!(
+                    "Scheduler: {} failed check {}/{} (pending confirmation)",
+                    monitor.name,
+                    new_failed,
+                    monitor.confirmations_required
+                );
+                effective_status = "error".into();
+            } else {
+                effective_status = "down".into();
+            }
+        } else if is_up_raw && monitor.failed_checks > 0 {
+            let _ = db.reset_failed_checks(&monitor.id).await;
         }
-    } else if is_up_raw && monitor.failed_checks > 0 {
-        let _ = db.reset_failed_checks(&monitor.id).await;
     }
 
     let check = CheckResult {
@@ -316,11 +525,20 @@ pub(crate) async fn run_monitor_check(
         checked_at: now_str,
         tls_cert_expires_at: outcome.tls.as_ref().and_then(|t| t.cert_expires_at.clone()),
         tls_cert_days_left: outcome.tls.as_ref().and_then(|t| t.cert_days_left),
+        error_kind: outcome.cause.map(|cause| cause.as_str().to_string()),
     };
 
     // Write to DB when status changes OR at least once per interval_secs (time-based sampling)
     let is_up = check.status == "up" || check.status == "warning";
-    let status_changed = was_up != is_up;
+    let observed_now = ObservedStatus::from_status(&check.status, is_up);
+    // M5: a sustained `indeterminate` period counts as a single change. The
+    // transition is persisted and emitted once; the checks that follow fall back
+    // to the sampling cadence. `Unknown` means "no check yet": the first check is
+    // already covered by the first-check heuristic below.
+    let status_changed = match *observed {
+        ObservedStatus::Unknown => false,
+        previous => previous != observed_now,
+    };
     // Heuristic for the first check of this monitor after task startup:
     // monitor_task_inner initialises last_write_at to 0; the first check always
     // writes to DB (time_elapsed from epoch >= interval_secs) which then updates
@@ -336,9 +554,13 @@ pub(crate) async fn run_monitor_check(
                 monitor.name,
                 e
             );
+            // N5: `observed` is deliberately left untouched, so the transition is
+            // retried on the next check instead of being silently lost.
             return was_up;
         }
         *last_write_at = now.timestamp();
+        // N5: the observed state advances only once the transition is durable.
+        *observed = observed_now;
     }
 
     // Latency breach: emitted when a configured threshold is met (>=), independent
@@ -368,7 +590,12 @@ pub(crate) async fn run_monitor_check(
 
     // Detect status changes and latency breaches
     let notification_type: Option<(&str, String)> = {
-        if was_up && !is_up {
+        if is_indeterminate {
+            // D7: an unattributable failure is observability, not an incident.
+            // It must not notify, not flip the monitor's notification state and
+            // not count as a recovery.
+            None
+        } else if was_up && !is_up {
             let template = monitor
                 .message_template_down
                 .as_deref()
@@ -432,14 +659,93 @@ pub(crate) async fn run_monitor_check(
         }
     };
 
-    // Send notification (using cached notifier_ids)
-    if let Some((notif_type, message)) = notification_type {
-        let mut ids = notifier_ids.to_vec();
-        if ids.is_empty() {
-            if let Some(ref nid) = monitor.notifier_id {
-                ids.push(nid.clone());
+    // ── Fase 5 (D7–D8): the storm breaker rules on this transition before anything
+    // is dispatched. Only `down`/`up` take part in a storm; `latency`/`expiry`
+    // always pass. The lock is taken, the decision computed (synchronous work) and
+    // released — never held across an `await`.
+    let (decision, threshold_percent) = {
+        let mut guard = breaker.lock().await;
+        let decision = match notification_type.as_ref().map(|(kind, _)| *kind) {
+            Some("down") => {
+                guard.on_down(Instant::now(), &monitor.id, &monitor.name, enabled_monitors)
+            }
+            Some("up") => guard.on_up(Instant::now()),
+            _ => BreakerDecision::Pass,
+        };
+        (decision, guard.config().threshold_percent)
+    };
+
+    let mut storm_ids: Option<Vec<String>> = None;
+    let notification_type: Option<(&str, String)> = match decision {
+        BreakerDecision::Pass => notification_type,
+        // A storm is already being reported: this individual alert is dropped.
+        BreakerDecision::Suppress => None,
+        BreakerDecision::OpenAggregate(alert) => {
+            // MAYOR-2: the aggregate replaces every individual notification of the
+            // episode, so it goes to the *union* of the affected monitors'
+            // notifiers. Using only the opener's would silence the whole storm when
+            // the opener happens to have none.
+            let ids = storm_notifier_ids(
+                db,
+                notifier_ids,
+                monitor.notifier_id.as_deref(),
+                &alert.monitor_ids,
+            )
+            .await;
+
+            if ids.is_empty() {
+                // A storm with no destination: a warning is better than N silent
+                // individual alerts. The breaker deliberately stays `Open`, so the
+                // episode is still deduped instead of re-alerting on every down.
+                tracing::warn!(
+                    "Scheduler: storm of {} monitors has no notifier to report to",
+                    alert.count
+                );
+                None
+            } else {
+                // D7: render `default_template_storm` (settings), falling back to
+                // the built-in template. Exactly one aggregated message per storm.
+                // A failed read is logged (not swallowed) and falls back too.
+                let configured = match db.get_setting(breaker::SETTING_TEMPLATE_STORM).await {
+                    Ok(value) => value,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Scheduler: cannot read '{}': {}",
+                            breaker::SETTING_TEMPLATE_STORM,
+                            e
+                        );
+                        None
+                    }
+                };
+                let template = configured.unwrap_or_else(|| template::defaults::STORM.to_string());
+                let ctx = TemplateContext::for_storm(
+                    alert.count,
+                    &alert.monitors,
+                    alert.window_seconds,
+                    threshold_percent,
+                );
+                storm_ids = Some(ids);
+                Some(("down", template::render_template(&template, &ctx)))
             }
         }
+    };
+
+    // Send notification (using cached notifier_ids)
+    if let Some((notif_type, message)) = notification_type {
+        // The aggregated alert brings its own (union) target list (MAYOR-2); every
+        // other notification goes to this monitor's cached notifiers.
+        let ids = match storm_ids {
+            Some(ids) => ids,
+            None => {
+                let mut ids = notifier_ids.to_vec();
+                if ids.is_empty() {
+                    if let Some(ref nid) = monitor.notifier_id {
+                        ids.push(nid.clone());
+                    }
+                }
+                ids
+            }
+        };
 
         let cache = notifier_cache.read().await;
         for nid in &ids {
@@ -651,7 +957,11 @@ pub(crate) async fn run_monitor_check(
     }
 
     last_check_at.store(now.timestamp(), Ordering::Relaxed);
-    is_up
+    if is_indeterminate {
+        was_up
+    } else {
+        is_up
+    }
 }
 
 // ──── Characterization tests (current behavior) ─────
@@ -659,8 +969,12 @@ pub(crate) async fn run_monitor_check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checker::CheckOutcome;
+    use crate::checker::{CheckOutcome, FailureCause};
+    use crate::jitter;
+    use crate::netcheck::NetworkHealth;
     use async_trait::async_trait;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
     use tempfile::TempDir;
 
     struct AlwaysUpChecker;
@@ -673,6 +987,7 @@ mod tests {
                 response_time_ms: 42,
                 error_message: None,
                 tls: None,
+                cause: None,
             }
         }
     }
@@ -687,6 +1002,7 @@ mod tests {
                 response_time_ms: 0,
                 error_message: Some("connection refused".into()),
                 tls: None,
+                cause: None,
             }
         }
     }
@@ -725,9 +1041,25 @@ mod tests {
         (db, dir)
     }
 
-    /// Characterizes current sampling: only every 10th check is written when status is stable.
+    /// A handle that never ran a cycle: attribution falls back to the base status.
+    fn unknown_health() -> NetworkHealthHandle {
+        NetworkHealthHandle::new()
+    }
+
+    /// No enabled monitors: the breaker's percentage threshold is unreachable, so
+    /// the characterization tests keep observing the classic
+    /// one-alert-por-monitor behaviour (Fase 5 keeps them untouched).
+    const TEST_ENABLED_MONITORS: usize = 0;
+
+    /// A breaker that can never declare a storm. See [`TEST_ENABLED_MONITORS`].
+    fn test_breaker() -> Arc<Mutex<StormBreaker>> {
+        Arc::new(Mutex::new(StormBreaker::new(BreakerConfig::default())))
+    }
+
+    /// Characterizes current sampling: with a stable status only the time-based
+    /// write happens, i.e. at most one row per interval (N6).
     #[tokio::test]
-    async fn test_count_based_sampling_writes_every_10th_check() {
+    async fn test_time_based_sampling_writes_once_per_interval() {
         let (db, _dir) = setup_db().await;
         db.create_monitor(&sample_monitor("m-sampling"))
             .await
@@ -742,6 +1074,7 @@ mod tests {
 
         let mut was_up = true;
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
 
         // Run 15 checks with stable UP status
         for _ in 1..=15 {
@@ -752,20 +1085,25 @@ mod tests {
                 &event_tx,
                 &last_check_at,
                 Some(&checker),
+                &unknown_health(),
                 was_up,
                 &notifier_ids,
                 &mut last_write_at,
+                &mut observed,
                 interval_secs,
+                TEST_ENABLED_MONITORS,
+                &test_breaker(),
             )
             .await;
         }
 
-        // Current behavior: only 1 write at check_count=10
+        // Time-based sampling: the whole loop runs well inside `interval_secs`, so
+        // only the first check (which always writes) reaches the DB.
         let checks = db.get_checks("m-sampling", 100, 0).await.unwrap();
         assert_eq!(
             checks.len(),
             1,
-            "Only 1 in 10 checks should be written with count-based sampling"
+            "a stable monitor writes once per interval, not once per check"
         );
     }
 
@@ -787,6 +1125,7 @@ mod tests {
 
         let mut was_up = true;
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
 
         // 3 checks UP (stable, none written because rapid succession)
         for _ in 1..=3 {
@@ -797,10 +1136,14 @@ mod tests {
                 &event_tx,
                 &last_check_at,
                 Some(&up_checker),
+                &unknown_health(),
                 was_up,
                 &notifier_ids,
                 &mut last_write_at,
+                &mut observed,
                 interval_secs,
+                TEST_ENABLED_MONITORS,
+                &test_breaker(),
             )
             .await;
         }
@@ -813,10 +1156,14 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&down_checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -849,6 +1196,7 @@ mod tests {
         let last_check_at = Arc::new(AtomicI64::new(0));
         let notifier_ids = vec![];
         let mut last_write_at: i64 = 0; // epoch — time_elapsed will be >= interval_secs
+        let mut observed = ObservedStatus::Unknown;
         let interval_secs: u64 = 60;
 
         let was_up = run_monitor_check(
@@ -858,10 +1206,14 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&checker),
+            &unknown_health(),
             true,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -891,6 +1243,7 @@ mod tests {
 
         // First call: last_write_at=0 → time_elapsed >= 60 → writes
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
         let was_up = run_monitor_check(
             &db,
             &sample_monitor("m-time-2"),
@@ -898,10 +1251,14 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&checker),
+            &unknown_health(),
             true,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -913,10 +1270,14 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -946,6 +1307,7 @@ mod tests {
 
         // First call: writes (interval elapsed from epoch), status=UP
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
         let was_up = run_monitor_check(
             &db,
             &sample_monitor("m-time-3"),
@@ -953,10 +1315,14 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&up_checker),
+            &unknown_health(),
             true,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -968,10 +1334,14 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&down_checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -999,6 +1369,7 @@ mod tests {
                 response_time_ms: 200,
                 error_message: None,
                 tls: None,
+                cause: None,
             }
         }
     }
@@ -1034,6 +1405,7 @@ mod tests {
         let interval_secs: u64 = 60;
         let mut was_up = true;
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
 
         for _ in 1..=3 {
             was_up = run_monitor_check(
@@ -1043,10 +1415,14 @@ mod tests {
                 &event_tx,
                 &last_check_at,
                 Some(&checker),
+                &unknown_health(),
                 was_up,
                 &notifier_ids,
                 &mut last_write_at,
+                &mut observed,
                 interval_secs,
+                TEST_ENABLED_MONITORS,
+                &test_breaker(),
             )
             .await;
         }
@@ -1078,6 +1454,7 @@ mod tests {
         let interval_secs: u64 = 60;
         let mut was_up = true;
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
 
         // Check 1: UP (initial event)
         was_up = run_monitor_check(
@@ -1087,10 +1464,14 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&up_checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
         // Check 2: UP again (stable — must NOT emit)
@@ -1101,10 +1482,14 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&up_checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
         // Check 3: DOWN (status change → must emit)
@@ -1115,10 +1500,14 @@ mod tests {
             &event_tx,
             &last_check_at,
             Some(&down_checker),
+            &unknown_health(),
             was_up,
             &notifier_ids,
             &mut last_write_at,
+            &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -1147,6 +1536,7 @@ mod tests {
         let interval_secs: u64 = 60;
         let mut was_up = true;
         let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
 
         for _ in 1..=3 {
             was_up = run_monitor_check(
@@ -1156,10 +1546,14 @@ mod tests {
                 &event_tx,
                 &last_check_at,
                 Some(&checker),
+                &unknown_health(),
                 was_up,
                 &notifier_ids,
                 &mut last_write_at,
+                &mut observed,
                 interval_secs,
+                TEST_ENABLED_MONITORS,
+                &test_breaker(),
             )
             .await;
         }
@@ -1170,6 +1564,1201 @@ mod tests {
             3,
             "Every latency-breaching check should emit an SSE event (got {:?})",
             events
+        );
+    }
+
+    // ──── Attribution (feature: network-attribution) ─────
+
+    /// Checker that fails with a real cause, following the phase 2 contract
+    /// (`status` is `status_for(cause)`).
+    struct CauseFailureChecker {
+        status: &'static str,
+        cause: FailureCause,
+    }
+
+    #[async_trait]
+    impl Checker for CauseFailureChecker {
+        async fn check(&self, _monitor: &Monitor) -> CheckOutcome {
+            CheckOutcome {
+                status: self.status.into(),
+                status_code: None,
+                response_time_ms: 0,
+                error_message: Some("boom".into()),
+                tls: None,
+                cause: Some(self.cause),
+            }
+        }
+    }
+
+    /// Loopback HTTP server that captures the first request it receives, plus a
+    /// notifier cache wired to it. Lets a test observe whether a notification was
+    /// actually dispatched.
+    async fn webhook_notifier() -> (
+        Arc<RwLock<HashMap<String, Notifier>>>,
+        tokio::sync::oneshot::Receiver<String>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // reqwest may need an explicit rustls provider to build its client.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let mut total = 0usize;
+                while let Ok(n) = stream.read(&mut buf[total..]).await {
+                    if n == 0 {
+                        break;
+                    }
+                    total += n;
+                    if String::from_utf8_lossy(&buf[..total]).contains("POST /hook") {
+                        break;
+                    }
+                }
+                let _ = tx.send(String::from_utf8_lossy(&buf[..total]).to_string());
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                    .await;
+            }
+        });
+
+        let notifier = Notifier {
+            id: "n-hook".into(),
+            name: "test webhook".into(),
+            notifier_type: "webhook".into(),
+            config_json: serde_json::json!({ "url": format!("http://{addr}/hook") }),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let mut cache = HashMap::new();
+        cache.insert(notifier.id.clone(), notifier);
+        (Arc::new(RwLock::new(cache)), rx)
+    }
+
+    /// Read one *full* HTTP request (headers plus `Content-Length` body) so the
+    /// notification text itself can be asserted on.
+    async fn read_full_request(stream: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+
+        let mut buf = vec![0u8; 16384];
+        let mut total = 0usize;
+        while let Ok(n) = stream.read(&mut buf[total..]).await {
+            if n == 0 {
+                break;
+            }
+            total += n;
+            if let Ok(s) = std::str::from_utf8(&buf[..total]) {
+                if let Some(pos) = s.find("\r\n\r\n") {
+                    let content_length = s[..pos]
+                        .lines()
+                        .find_map(|line| {
+                            if line.to_lowercase().starts_with("content-length:") {
+                                line.split(':').nth(1)?.trim().parse::<usize>().ok()
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0);
+                    if total >= pos + 4 + content_length {
+                        break;
+                    }
+                }
+            }
+        }
+        String::from_utf8_lossy(&buf[..total]).to_string()
+    }
+
+    /// A webhook listener serving `expected` requests (the single-shot helper
+    /// above cannot serve a storm). Every body is reported through the channel.
+    async fn webhook_notifier_multi(
+        expected: usize,
+    ) -> (
+        Arc<RwLock<HashMap<String, Notifier>>>,
+        tokio::sync::mpsc::Receiver<String>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(expected.max(1));
+
+        tokio::spawn(async move {
+            for _ in 0..expected {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let request = read_full_request(&mut stream).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                    .await;
+                if tx.send(request).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let notifier = Notifier {
+            id: "n-hook".into(),
+            name: "test webhook".into(),
+            notifier_type: "webhook".into(),
+            config_json: serde_json::json!({ "url": format!("http://{addr}/hook") }),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let mut cache = HashMap::new();
+        cache.insert(notifier.id.clone(), notifier);
+        (Arc::new(RwLock::new(cache)), rx)
+    }
+
+    /// Fase 5 (D7–D8): when the storm opens, exactly one aggregated alert is
+    /// dispatched to the opening monitor's notifiers, and the downs that follow
+    /// while the breaker stays `Open` are suppressed.
+    #[tokio::test]
+    async fn a_storm_dispatches_one_aggregate_and_suppresses_what_follows() {
+        let (db, _dir) = setup_db().await;
+        // Five slots: the fifth is only ever used if the suppressed down *does*
+        // notify, which is exactly what the final assertion rules out.
+        let (notifier_cache, mut request_rx) = webhook_notifier_multi(5).await;
+        let checker = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let (event_tx, _) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let notifier_ids = vec!["n-hook".to_string()];
+
+        // 4 enabled monitors and a 100 % threshold: all four must fall.
+        let breaker = Arc::new(Mutex::new(StormBreaker::new(BreakerConfig {
+            threshold_percent: 100,
+            ..BreakerConfig::default()
+        })));
+        let enabled_monitors = 4usize;
+        let last_check_at = Arc::new(AtomicI64::new(0));
+
+        // The three downs before the threshold pass individually.
+        for i in 0..3 {
+            let monitor = sample_monitor(&format!("m-storm-{i}"));
+            db.create_monitor(&monitor).await.unwrap();
+            let mut last_write_at: i64 = 0;
+            let mut observed = ObservedStatus::Unknown;
+            run_monitor_check(
+                &db,
+                &monitor,
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&checker),
+                &health,
+                true,
+                &notifier_ids,
+                &mut last_write_at,
+                &mut observed,
+                60,
+                enabled_monitors,
+                &breaker,
+            )
+            .await;
+
+            let request = tokio::time::timeout(Duration::from_secs(5), request_rx.recv())
+                .await
+                .expect("individual down notification was not dispatched in time")
+                .expect("notification channel closed");
+            assert!(
+                !request.contains("degradada"),
+                "the pre-storm downs are notified individually: {request}"
+            );
+        }
+
+        // The fourth down opens the storm: one single aggregated alert.
+        let opener = sample_monitor("m-storm-3");
+        db.create_monitor(&opener).await.unwrap();
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &opener,
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            enabled_monitors,
+            &breaker,
+        )
+        .await;
+
+        let aggregate = tokio::time::timeout(Duration::from_secs(5), request_rx.recv())
+            .await
+            .expect("aggregated alert was not dispatched in time")
+            .expect("notification channel closed");
+        assert!(
+            aggregate.contains("degradada"),
+            "the storm opens with the aggregated template: {aggregate}"
+        );
+        assert!(
+            aggregate.contains("4 monitores caídos"),
+            "the aggregate carries the count: {aggregate}"
+        );
+        assert!(
+            aggregate.contains("Monitor m-storm-0"),
+            "the aggregate lists the affected monitors: {aggregate}"
+        );
+
+        // A fifth down while `Open` is suppressed: nothing else is sent.
+        let suppressed = sample_monitor("m-storm-4");
+        db.create_monitor(&suppressed).await.unwrap();
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &suppressed,
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            enabled_monitors,
+            &breaker,
+        )
+        .await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), request_rx.recv())
+                .await
+                .is_err(),
+            "a down inside the storm must not be notified (the listener is still \
+             waiting for a further request)"
+        );
+    }
+
+    /// Next notification body, or a panic if none arrives in time.
+    async fn next_request(rx: &mut tokio::sync::mpsc::Receiver<String>, what: &str) -> String {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{what}: no notification was dispatched in time"))
+            .unwrap_or_else(|| panic!("{what}: the notification channel was closed"))
+    }
+
+    /// MENOR-4: an `up` during the storm is suppressed and notifies again once the
+    /// breaker re-arms.
+    ///
+    /// The breaker's clock is injected by design (D1), so the re-arm is produced by
+    /// feeding it an instant past the window — no real sleep in the test.
+    #[tokio::test]
+    async fn an_up_is_suppressed_during_the_storm_and_notifies_after_rearm() {
+        let (db, _dir) = setup_db().await;
+        // Slot 1: the aggregated alert. Slot 2: the recovery after the re-arm.
+        let (notifier_cache, mut request_rx) = webhook_notifier_multi(2).await;
+        let down = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let up = AlwaysUpChecker;
+        let (event_tx, _) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let linked = vec!["n-hook".to_string()];
+        let unlinked: Vec<String> = vec![];
+
+        // 3 monitors at 100 % → all three must fall. Only the opener carries a
+        // notifier, so the storm produces exactly one request.
+        let breaker = Arc::new(Mutex::new(StormBreaker::new(BreakerConfig {
+            threshold_percent: 100,
+            ..BreakerConfig::default()
+        })));
+        let monitors: Vec<Monitor> = ["m-up-a", "m-up-b", "m-up-c"]
+            .iter()
+            .map(|id| sample_monitor(id))
+            .collect();
+        for monitor in &monitors {
+            db.create_monitor(monitor).await.unwrap();
+        }
+
+        for (monitor, ids) in monitors
+            .iter()
+            .zip([&unlinked, &unlinked, &linked])
+            .map(|(m, ids)| (m, ids.as_slice()))
+        {
+            let mut last_write_at: i64 = 0;
+            let mut observed = ObservedStatus::Unknown;
+            run_monitor_check(
+                &db,
+                monitor,
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&down),
+                &health,
+                true,
+                ids,
+                &mut last_write_at,
+                &mut observed,
+                60,
+                3,
+                &breaker,
+            )
+            .await;
+        }
+
+        let aggregate = next_request(&mut request_rx, "aggregated alert").await;
+        assert!(aggregate.contains("degradada"), "{aggregate}");
+
+        // The opener recovers mid-storm: suppressed, nothing is sent.
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &monitors[2],
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&up),
+            &health,
+            false,
+            &linked,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            3,
+            &breaker,
+        )
+        .await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), request_rx.recv())
+                .await
+                .is_err(),
+            "a recovery inside the storm must not be notified"
+        );
+
+        // The window elapses without new downs: the breaker re-arms and the next
+        // recovery notifies again.
+        breaker
+            .lock()
+            .await
+            .on_up(Instant::now() + Duration::from_secs(3600));
+        assert_eq!(
+            breaker.lock().await.state(),
+            crate::breaker::BreakerState::Closed
+        );
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &monitors[2],
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&up),
+            &health,
+            false,
+            &linked,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            3,
+            &breaker,
+        )
+        .await;
+
+        let recovery = next_request(&mut request_rx, "recovery after the re-arm").await;
+        assert!(
+            recovery.contains("Recovered"),
+            "the recovery notifies once the breaker re-armed: {recovery}"
+        );
+    }
+
+    /// MAYOR-2 (guard): a storm whose monitors have no notifier at all sends
+    /// nothing — a warning instead of N silent individual alerts — and the breaker
+    /// stays `Open`, so the episode is still deduped instead of re-alerting.
+    #[tokio::test]
+    async fn a_storm_with_no_notifiers_anywhere_sends_nothing_and_stays_open() {
+        let (db, _dir) = setup_db().await;
+        let (notifier_cache, mut request_rx) = webhook_notifier_multi(1).await;
+        let checker = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let (event_tx, _) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+
+        let breaker = Arc::new(Mutex::new(StormBreaker::new(BreakerConfig {
+            threshold_percent: 100,
+            ..BreakerConfig::default()
+        })));
+        let monitors: Vec<Monitor> = ["m-none-a", "m-none-b", "m-none-c"]
+            .iter()
+            .map(|id| sample_monitor(id))
+            .collect();
+        for monitor in &monitors {
+            db.create_monitor(monitor).await.unwrap();
+        }
+
+        for monitor in &monitors {
+            let mut last_write_at: i64 = 0;
+            let mut observed = ObservedStatus::Unknown;
+            run_monitor_check(
+                &db,
+                monitor,
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&checker),
+                &health,
+                true,
+                &[],
+                &mut last_write_at,
+                &mut observed,
+                60,
+                3,
+                &breaker,
+            )
+            .await;
+        }
+
+        assert_eq!(
+            breaker.lock().await.state(),
+            crate::breaker::BreakerState::Open,
+            "the storm is declared even with nowhere to report it"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), request_rx.recv())
+                .await
+                .is_err(),
+            "a storm with no destination must not notify (the listener is still waiting)"
+        );
+    }
+
+    /// MAYOR-2: the aggregated alert must reach the notifiers of *every* affected
+    /// monitor, not only those of the one that opened the storm. Here the opener
+    /// has no notifiers at all and the fleet must not go silent.
+    #[tokio::test]
+    async fn the_aggregate_reaches_the_notifiers_of_every_affected_monitor() {
+        let (db, _dir) = setup_db().await;
+        // Two slots: m-b's individual down and, later, the aggregated alert.
+        let (notifier_cache, mut request_rx) = webhook_notifier_multi(2).await;
+        let checker = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let (event_tx, _) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+
+        // 3 monitors at 100 % → all three must fall. Only m-b is linked to a
+        // notifier, and m-b is *not* the monitor opening the storm.
+        let breaker = Arc::new(Mutex::new(StormBreaker::new(BreakerConfig {
+            threshold_percent: 100,
+            ..BreakerConfig::default()
+        })));
+        let monitors: Vec<Monitor> = ["m-a", "m-b", "m-c"]
+            .iter()
+            .map(|id| sample_monitor(id))
+            .collect();
+        for monitor in &monitors {
+            db.create_monitor(monitor).await.unwrap();
+        }
+        // The link needs the notifier to exist in the DB (FK); the delivery itself
+        // goes through the in-memory cache, which already holds it.
+        db.create_notifier(
+            "n-hook",
+            "test webhook",
+            "webhook",
+            &serde_json::json!({}),
+            true,
+        )
+        .await
+        .unwrap();
+        db.set_monitor_notifiers("m-b", &["n-hook".to_string()])
+            .await
+            .unwrap();
+
+        // m-a: no notifiers at all → the first down passes and sends nothing.
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &monitors[0],
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &[],
+            &mut last_write_at,
+            &mut observed,
+            60,
+            3,
+            &breaker,
+        )
+        .await;
+
+        // m-b: its own individual down reaches its notifier.
+        let linked = vec!["n-hook".to_string()];
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &monitors[1],
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &linked,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            3,
+            &breaker,
+        )
+        .await;
+        let individual = next_request(&mut request_rx, "m-b individual down").await;
+        assert!(!individual.contains("degradada"), "{individual}");
+
+        // m-c opens the storm and has no notifiers of its own: the aggregate must
+        // still be delivered through m-b's notifier, not dropped.
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &monitors[2],
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &[],
+            &mut last_write_at,
+            &mut observed,
+            60,
+            3,
+            &breaker,
+        )
+        .await;
+
+        let aggregate = next_request(&mut request_rx, "aggregated alert").await;
+        assert!(
+            aggregate.contains("degradada"),
+            "the opener has no notifiers, the aggregate must use the union: {aggregate}"
+        );
+        assert!(
+            aggregate.contains("Monitor m-b") && aggregate.contains("Monitor m-c"),
+            "the aggregate lists every affected monitor: {aggregate}"
+        );
+    }
+
+    /// Scenario: caída real con red sana se registra como down (y notifica).
+    #[tokio::test]
+    async fn a_real_failure_with_a_healthy_network_is_recorded_as_down_and_notifies() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-attr-target"))
+            .await
+            .unwrap();
+
+        let (notifier_cache, request_rx) = webhook_notifier().await;
+        let checker = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let (event_tx, _) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec!["n-hook".to_string()];
+        let interval_secs: u64 = 60;
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+
+        let was_up = run_monitor_check(
+            &db,
+            &sample_monitor("m-attr-target"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
+        )
+        .await;
+
+        assert!(!was_up, "a real failure must leave the monitor not-up");
+        let checks = db.get_checks("m-attr-target", 10, 0).await.unwrap();
+        assert_eq!(checks[0].status, "down");
+        assert_eq!(checks[0].error_kind.as_deref(), Some("connect_refused"));
+
+        let request = tokio::time::timeout(Duration::from_secs(5), request_rx)
+            .await
+            .expect("down notification was not dispatched in time")
+            .expect("notification channel closed");
+        assert!(
+            request.starts_with("POST /hook"),
+            "unexpected notification request: {request}"
+        );
+    }
+
+    /// Scenario: fallo por DNS degradado se registra como indeterminate, no
+    /// notifica y no cambia el estado de notificación del monitor.
+    #[tokio::test]
+    async fn a_dns_failure_with_degraded_dns_is_recorded_as_indeterminate_without_notifying() {
+        let (db, _dir) = setup_db().await;
+        db.create_monitor(&sample_monitor("m-attr-indet"))
+            .await
+            .unwrap();
+
+        let (notifier_cache, request_rx) = webhook_notifier().await;
+        let checker = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+        let (event_tx, _) = broadcast::channel(16);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids = vec!["n-hook".to_string()];
+        let interval_secs: u64 = 60;
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::DnsDegraded);
+
+        let was_up = run_monitor_check(
+            &db,
+            &sample_monitor("m-attr-indet"),
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
+        )
+        .await;
+
+        assert!(
+            was_up,
+            "indeterminate must not change the monitor's notification state"
+        );
+        let checks = db.get_checks("m-attr-indet", 10, 0).await.unwrap();
+        assert_eq!(checks[0].status, "indeterminate");
+        assert_eq!(
+            checks[0].error_kind.as_deref(),
+            Some("dns_timeout"),
+            "the cause must be persisted even when the status is indeterminate"
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), request_rx)
+                .await
+                .is_err(),
+            "indeterminate must not dispatch a down notification"
+        );
+    }
+
+    // ──── M5/M7: secuencias de transición y no amplificación ─────
+
+    /// Run one check with the given checker and health, threading the mutable
+    /// per-monitor bookkeeping. No notifiers are wired: these tests observe
+    /// persistence and SSE emission, not delivery.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_check_with(
+        db: &Database,
+        monitor: &Monitor,
+        event_tx: &broadcast::Sender<String>,
+        checker: &dyn Checker,
+        health: &NetworkHealthHandle,
+        was_up: bool,
+        last_write_at: &mut i64,
+        observed: &mut ObservedStatus,
+    ) -> bool {
+        let notifier_cache = Arc::new(RwLock::new(HashMap::new()));
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let notifier_ids: Vec<String> = vec![];
+        run_monitor_check(
+            db,
+            monitor,
+            &notifier_cache,
+            event_tx,
+            &last_check_at,
+            Some(checker),
+            health,
+            was_up,
+            &notifier_ids,
+            last_write_at,
+            observed,
+            60,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
+        )
+        .await
+    }
+
+    /// Scenario M7: `indeterminate` como primer check. No altera el estado de
+    /// notificación y queda registrado.
+    #[tokio::test]
+    async fn indeterminate_as_the_first_check_keeps_the_monitor_up_and_is_recorded() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-first-indet");
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, _rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::DnsDegraded);
+        let checker = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        let was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &checker,
+            &health,
+            true,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+
+        assert!(was_up, "indeterminate must not flip the notification state");
+        let checks = db.get_checks(&monitor.id, 10, 0).await.unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, "indeterminate");
+    }
+
+    /// Scenario M7: `up → indeterminate → up`. El fallo no atribuible no alerta
+    /// ni cambia el estado de notificación, y cada transición queda registrada.
+    #[tokio::test]
+    async fn the_sequence_up_indeterminate_up_stays_up_and_records_every_transition() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-seq-up");
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, _rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let up = AlwaysUpChecker;
+        let dns_failure = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        let mut was_up = true;
+
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &up,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        health.publish(NetworkHealth::DnsDegraded);
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &dns_failure,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        health.publish(NetworkHealth::Healthy);
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &up,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+
+        assert!(
+            was_up,
+            "an unattributable blip must not flip the notification state"
+        );
+        let statuses: Vec<String> = db
+            .get_checks(&monitor.id, 10, 0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.status)
+            .collect();
+        assert_eq!(
+            statuses.len(),
+            3,
+            "every transition must be persisted (got {statuses:?})"
+        );
+        assert!(
+            statuses.iter().any(|s| s == "indeterminate"),
+            "the unattributable check must be recorded (got {statuses:?})"
+        );
+    }
+
+    /// Scenario M7: `down → indeterminate → down`. El estado de notificación
+    /// permanece caído y cada transición queda registrada.
+    #[tokio::test]
+    async fn the_sequence_down_indeterminate_down_records_every_transition() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-seq-down");
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, _rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let down = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let dns_failure = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        let mut was_up = true;
+
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &down,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        health.publish(NetworkHealth::DnsDegraded);
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &dns_failure,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        health.publish(NetworkHealth::Healthy);
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &down,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+
+        assert!(!was_up, "the monitor stays down throughout the sequence");
+        let statuses: Vec<String> = db
+            .get_checks(&monitor.id, 10, 0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.status)
+            .collect();
+        assert_eq!(
+            statuses,
+            vec!["down", "indeterminate", "down"],
+            "each transition must be persisted"
+        );
+    }
+
+    /// Scenario M5: un corte sostenido de `indeterminate` no emite un evento SSE
+    /// por check ni escribe una fila por check.
+    #[tokio::test]
+    async fn a_sustained_indeterminate_period_emits_a_single_event() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-sustained-indet");
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, mut rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let up = AlwaysUpChecker;
+        let dns_failure = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        let mut was_up = true;
+
+        // Check 1: up (initial event, first write).
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &up,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        // Checks 2..=4: our egress stays down — one transition, then sampling.
+        health.publish(NetworkHealth::DnsDegraded);
+        for _ in 0..3 {
+            was_up = run_check_with(
+                &db,
+                &monitor,
+                &event_tx,
+                &dns_failure,
+                &health,
+                was_up,
+                &mut last_write_at,
+                &mut observed,
+            )
+            .await;
+        }
+
+        assert!(was_up);
+        let events = drain_events(&mut rx).await;
+        assert_eq!(
+            events.len(),
+            2,
+            "only the initial check and the transition emit an event (got {events:?})"
+        );
+        let checks = db.get_checks(&monitor.id, 10, 0).await.unwrap();
+        assert_eq!(
+            checks.len(),
+            2,
+            "only the transition is written; the rest follow the sampling cadence"
+        );
+    }
+
+    /// Scenario M7: `indeterminate` no incrementa ni resetea `failed_checks`
+    /// aunque el monitor exija confirmaciones.
+    #[tokio::test]
+    async fn indeterminate_does_not_touch_the_confirmation_counter() {
+        let (db, _dir) = setup_db().await;
+        let mut monitor = sample_monitor("m-conf-indet");
+        monitor.confirmations_required = 2;
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, _rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::DnsDegraded);
+        let dns_failure = CauseFailureChecker {
+            status: "error",
+            cause: FailureCause::DnsTimeout,
+        };
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        let was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &dns_failure,
+            &health,
+            true,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+
+        assert!(was_up);
+        let stored = db.get_monitor(&monitor.id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.failed_checks, 0,
+            "indeterminate must not increment the confirmation counter"
+        );
+
+        // Contrast: a real failure does advance the counter (legacy behaviour).
+        health.publish(NetworkHealth::Healthy);
+        let real_failure = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &real_failure,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+
+        assert!(!was_up);
+        let stored = db.get_monitor(&monitor.id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.failed_checks, 1,
+            "a real failure must still be counted"
+        );
+        let checks = db.get_checks(&monitor.id, 10, 0).await.unwrap();
+        assert_eq!(
+            checks[0].status, "error",
+            "a pending confirmation is recorded as error"
+        );
+    }
+
+    // ── N5: una escritura fallida no adelanta el estado observado ──
+
+    /// Si el `insert_check` falla, la transición no puede darse por vista: el
+    /// siguiente check debe reintentar la escritura en lugar de perderla.
+    #[tokio::test]
+    async fn a_failed_write_does_not_advance_the_observed_state() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-n5");
+        db.create_monitor(&monitor).await.unwrap();
+
+        let (event_tx, _rx) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let up = AlwaysUpChecker;
+        let down = AlwaysDownChecker;
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+
+        // Check 1: `up` — persisted, so `observed` advances and `last_write_at` is set.
+        let mut was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &up,
+            &health,
+            true,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        assert!(was_up);
+
+        // The monitor disappears: the next write violates the foreign key. The
+        // failed write aborts the check, so the notification state is untouched.
+        db.delete_monitor(&monitor.id).await.unwrap();
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &down,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        assert!(was_up, "a failed write aborts the check before notifying");
+
+        // The monitor is back. The transition must still be pending, so this check
+        // persists it. Had the failed write advanced `observed`, nothing would be
+        // written: the sampling window has not elapsed.
+        db.create_monitor(&monitor).await.unwrap();
+        was_up = run_check_with(
+            &db,
+            &monitor,
+            &event_tx,
+            &down,
+            &health,
+            was_up,
+            &mut last_write_at,
+            &mut observed,
+        )
+        .await;
+        assert!(!was_up);
+
+        let checks = db.get_checks(&monitor.id, 10, 0).await.unwrap();
+        assert_eq!(
+            checks.len(),
+            1,
+            "the pending transition must be retried and persisted (got {checks:?})"
+        );
+        assert_eq!(checks[0].status, "down");
+    }
+
+    // ── Fase 4 · D5: el jitter no cambia el intervalo configurado ──
+
+    /// Scenario: el `interval_seconds` configurado y persistido sigue igual.
+    #[tokio::test]
+    async fn the_jitter_should_not_change_the_configured_interval() {
+        let (db, _dir) = setup_db().await;
+        let monitor = sample_monitor("m-jitter-d5");
+        db.create_monitor(&monitor).await.unwrap();
+
+        // The same derivation the production cycle uses.
+        let interval = Duration::from_secs(monitor.interval_seconds.max(1) as u64);
+        let mut rng = StdRng::seed_from_u64(3);
+        let offset = jitter::initial_offset(interval, &mut rng);
+        let delay = jitter::next_delay(interval, &mut rng);
+
+        assert!(offset < interval, "the offset is inside the interval");
+        assert!(
+            delay >= Duration::from_secs(54) && delay <= Duration::from_secs(66),
+            "the wait is jittered, got {delay:?}"
+        );
+        assert_ne!(delay, interval, "the wait is not the plain interval");
+
+        assert_eq!(
+            monitor.interval_seconds, 60,
+            "the in-memory value is untouched"
+        );
+        let stored = db.get_monitor("m-jitter-d5").await.unwrap().unwrap();
+        assert_eq!(
+            stored.interval_seconds, 60,
+            "the persisted interval is untouched"
         );
     }
 }

@@ -7,6 +7,7 @@ use watchbeat::auth::{self, AppState, JwtValidator};
 use watchbeat::config::Config;
 use watchbeat::db::Database;
 use watchbeat::embed::serve_embedded;
+use watchbeat::netcheck;
 use watchbeat::routes;
 use watchbeat::scheduler::SchedulerManager;
 
@@ -20,6 +21,10 @@ async fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let config = Config::load();
+
+    // ───── DNS resolver ─────
+    // Must run before the first check: the resolver is built once, lazily.
+    watchbeat::dns::init(config.dns_upstreams.clone());
 
     // ───── Tracing ─────
     let env_filter =
@@ -107,8 +112,14 @@ async fn main() {
     // ───── App State ─────
     let (event_tx, _) = tokio::sync::broadcast::channel(auth::SSE_CHANNEL_CAPACITY);
 
+    // ───── Network health canary ─────
+    // Publishes the health of our own egress; the scheduler reads it (never
+    // awaits) to attribute every failure to the target or to our connectivity.
+    let netcheck_handle = netcheck::spawn(netcheck::DEFAULT_INTERVAL);
+
     // Start the scheduler (per-monitor timers, no more polling)
-    let scheduler_mgr = SchedulerManager::spawn(db.clone(), event_tx.clone()).await;
+    let scheduler_mgr =
+        SchedulerManager::spawn(db.clone(), event_tx.clone(), netcheck_handle.clone()).await;
 
     let app_state = Arc::new(AppState {
         config: config.clone(),
@@ -118,6 +129,7 @@ async fn main() {
         oidc_states: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         scheduler_mgr,
         event_tx: event_tx.clone(),
+        netcheck: netcheck_handle,
     });
 
     // ───── Daily Cleanup Loop ─────
