@@ -1,11 +1,11 @@
 import { useEffect, useState, useRef } from 'react';
 import {
-  Card, Typography, InputNumber, Input, Button, message, Space, Tabs, Table, Modal, Form, Select, Switch, Popconfirm,
+  Card, Typography, InputNumber, Input, Button, message, Space, Tabs, Table, Modal, Form, Select, Switch, Popconfirm, Tooltip,
 } from 'antd';
 import {
   SettingOutlined, DownloadOutlined, FileTextOutlined, SaveOutlined, WarningOutlined,
   BellOutlined, ControlOutlined, PlusOutlined, ReloadOutlined, LinkOutlined, KeyOutlined,
-  EyeOutlined, EyeInvisibleOutlined, CopyOutlined,
+  EyeOutlined, EyeInvisibleOutlined, CopyOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import {
   fetchStatus, fetchSetting, saveSetting, createBackup,
@@ -108,6 +108,14 @@ export default function Settings() {
   const [defaultTemplates, setDefaultTemplates] = useState({ down: '', latency: '', up: '', expiry: '' });
   const [savingTemplates, setSavingTemplates] = useState(false);
 
+  // ── Storm breaker (anti-tormenta) state ──
+  const [stormEnabled, setStormEnabled] = useState(true);
+  const [stormThreshold, setStormThreshold] = useState(50);
+  const [stormWindow, setStormWindow] = useState(10);
+  const [stormMinMonitors, setStormMinMonitors] = useState(3);
+  const [stormTemplate, setStormTemplate] = useState('');
+  const [savingStorm, setSavingStorm] = useState(false);
+
   // ── Notifier state ──
   const [notifiers, setNotifiers] = useState<Notifier[]>([]);
   const [notifLoading, setNotifLoading] = useState(true);
@@ -158,6 +166,26 @@ export default function Settings() {
     }).catch(() => {});
   }, []);
 
+  // ── Init: storm breaker settings ──
+  useEffect(() => {
+    Promise.all([
+      fetchSetting('storm_breaker_enabled'),
+      fetchSetting('storm_threshold_percent'),
+      fetchSetting('storm_window_seconds'),
+      fetchSetting('storm_min_monitors'),
+      fetchSetting('default_template_storm'),
+    ]).then(([enabled, threshold, windowS, minMonitors, template]) => {
+      if (!mountedRef.current) return;
+      setStormEnabled(enabled?.value !== 'false');
+      setStormThreshold(threshold?.value ? parseInt(threshold.value, 10) : 50);
+      setStormWindow(windowS?.value ? parseInt(windowS.value, 10) : 10);
+      setStormMinMonitors(minMonitors?.value ? parseInt(minMonitors.value, 10) : 3);
+      setStormTemplate(template?.value ?? '');
+    }).catch(() => {
+      if (mountedRef.current) message.error('No se pudo cargar la configuración del breaker');
+    });
+  }, []);
+
   // Guard against setState after unmount
   useEffect(() => {
     mountedRef.current = true;
@@ -195,6 +223,20 @@ export default function Settings() {
       ]);
       message.success('Plantillas guardadas');
     } catch (e: any) { message.error(e.message); } finally { setSavingTemplates(false); }
+  };
+
+  const saveStormBreaker = async () => {
+    setSavingStorm(true);
+    try {
+      await Promise.all([
+        saveSetting('storm_breaker_enabled', String(stormEnabled)),
+        saveSetting('storm_threshold_percent', String(stormThreshold)),
+        saveSetting('storm_window_seconds', String(stormWindow)),
+        saveSetting('storm_min_monitors', String(stormMinMonitors)),
+        saveSetting('default_template_storm', stormTemplate),
+      ]);
+      message.success('Configuración del breaker guardada');
+    } catch (e: any) { message.error(e.message); } finally { setSavingStorm(false); }
   };
 
   // ── Handlers: notifiers ──
@@ -418,6 +460,57 @@ export default function Settings() {
             <div><Text strong>UP</Text><Input.TextArea rows={2} value={defaultTemplates.up} onChange={(e) => setDefaultTemplates(p => ({ ...p, up: e.target.value }))} placeholder="🟢 {{ monitor_name }} — {{ response_time_ms }}ms" /></div>
             <div><Text strong>EXPIRACIÓN</Text><Input.TextArea rows={2} value={defaultTemplates.expiry} onChange={(e) => setDefaultTemplates(p => ({ ...p, expiry: e.target.value }))} placeholder="🟡 {{ monitor_name }} — {{ days_left }} días" /></div>
             <Button type="primary" icon={<SaveOutlined />} onClick={saveDefaultTemplates} loading={savingTemplates}>Guardar plantillas</Button>
+          </Space>
+        </Card>
+      ),
+    },
+    {
+      key: 'storm',
+      label: <><ThunderboltOutlined /> Tormenta</>,
+      children: (
+        <Card>
+          <Paragraph>
+            El <Text strong>breaker anti-tormenta</Text> agrupa en una sola alerta las caídas que ocurren casi a la vez.
+            Cuando varios monitores caen en pocos segundos (una <Text strong>tormenta</Text>, normalmente por un problema
+            de red o infraestructura común) se envía una única notificación agregada en lugar de una por monitor.
+          </Paragraph>
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <div>
+              <Tooltip title="Si lo desactivas, cada caída se notifica individualmente (comportamiento clásico) y no se emite alerta agregada.">
+                <Text strong>Activar breaker anti-tormenta</Text>
+              </Tooltip>
+              <br />
+              <Switch checked={stormEnabled} onChange={setStormEnabled} aria-label="Breaker activado" />
+            </div>
+            <div>
+              <Tooltip title="Porcentaje de monitores habilitados que deben caer dentro de la ventana para declarar tormenta. Un 100 % exige que caigan todos.">
+                <Text strong>Umbral de caídas (%)</Text>
+              </Tooltip>
+              <br />
+              <InputNumber min={1} max={100} value={stormThreshold} onChange={(v) => setStormThreshold(v ?? 50)} style={{ width: 160 }} addonAfter="%" disabled={!stormEnabled} aria-label="Umbral de caídas (%)" />
+            </div>
+            <div>
+              <Tooltip title="Ventana temporal para agrupar las caídas. Las que ocurran fuera de este intervalo no se consideran parte de la tormenta.">
+                <Text strong>Ventana temporal</Text>
+              </Tooltip>
+              <br />
+              <InputNumber min={1} value={stormWindow} onChange={(v) => setStormWindow(v ?? 10)} style={{ width: 160 }} addonAfter="s" disabled={!stormEnabled} aria-label="Ventana de detección (s)" />
+            </div>
+            <div>
+              <Tooltip title="Número mínimo de monitores que deben caer dentro de la ventana para declarar una tormenta.">
+                <Text strong>Mínimo de monitores</Text>
+              </Tooltip>
+              <br />
+              <InputNumber min={1} value={stormMinMonitors} onChange={(v) => setStormMinMonitors(v ?? 3)} style={{ width: 160 }} disabled={!stormEnabled} aria-label="Mínimo de monitores" />
+            </div>
+            <div>
+              <Tooltip title="Plantilla de la alerta agregada. Contexto disponible: count, monitors_list, window_seconds y threshold_percent.">
+                <Text strong>Plantilla de la alerta agregada</Text>
+              </Tooltip>
+              <br />
+              <Input.TextArea rows={3} value={stormTemplate} onChange={(e) => setStormTemplate(e.target.value)} placeholder="🚨 Tormenta: {{ count }} monitores caídos en {{ window_seconds }}s — {{ monitors_list }}" disabled={!stormEnabled} aria-label="Plantilla de la alerta agregada" />
+            </div>
+            <Button type="primary" icon={<SaveOutlined />} onClick={saveStormBreaker} loading={savingStorm}>Guardar</Button>
           </Space>
         </Card>
       ),

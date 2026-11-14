@@ -17,6 +17,12 @@ pub struct SetSettingBody {
     pub value: String,
 }
 
+/// Settings that only take effect once the scheduler reloads the storm breaker
+/// (Fase 5, D6). Without a hot reload they would need a process restart.
+fn is_breaker_setting(key: &str) -> bool {
+    key.starts_with("storm_") || key == "default_template_storm"
+}
+
 pub async fn set_setting(
     State(state): State<Arc<AppState>>,
     Json(body): Json<SetSettingBody>,
@@ -26,6 +32,11 @@ pub async fn set_setting(
         .set_setting(&body.key, &body.value)
         .await
         .map_err(|e| e.to_string())?;
+
+    if is_breaker_setting(&body.key) {
+        state.scheduler_mgr.reload_breaker().await;
+    }
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
