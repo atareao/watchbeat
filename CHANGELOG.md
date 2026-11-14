@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.17.0] - 2026-11-14
+
+### Features
+
+- **a11y del timeline — follow-ups (#86)**: contraste AA del texto de los `Tag` de estado
+  (renderizados con `variant="solid"` para que el fondo sea el hex del estado y el par
+  texto/fondo cumpla ≥ 4.5:1 en tema claro y oscuro); **roving tabindex** en el timeline
+  (una sola parada de `Tab` por gráfico, con ←/→/Home/End y reposicionamiento al cambiar el
+  rango); y `statusStyles.ts` → `statusStyles.tsx` con JSX.
+
 ## [0.16.0] - 2026-11-14
 
 Cierre de los follow-ups del **Robust Check Engine (#62)**.
