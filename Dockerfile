@@ -48,6 +48,10 @@ FROM alpine:3.23
 
 RUN apk add --no-cache \
     ca-certificates \
+    iputils \
+    libcap \
+    && (chmod u-s /usr/bin/ping /bin/ping 2>/dev/null || true) \
+    && (setcap cap_net_raw+ep /usr/bin/ping 2>/dev/null || setcap cap_net_raw+ep /bin/ping) \
     && adduser -D -h /app -u 1000 app
 
 WORKDIR /app

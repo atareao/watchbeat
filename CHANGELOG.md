@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.15.2] - 2026-11-14
+
+### Bug Fixes
+
+- **DNS multi-dirección (#52)**: el resolver devuelve todas las A/AAAA
+  (deduplicadas, IPv4 primero) y el cliente HTTP hace fallback entre ellas, de
+  modo que un registro obsoleto ya no provoca falsos `down` con
+  `connect_refused`. `Ipv4AndIpv6` conserva las IPv6 en hosts dual-stack.
+- **Sonda ping (#31)**: `PingChecker` captura `stderr` y exit code y clasifica
+  permisos (`CAP_NET_RAW`) y binario ausente como `error` accionable, y los
+  fallos del target como `down`. El target se pasa tras `--`. Imagen con
+  `iputils`/`libcap`/`setcap` + `chmod u-s`; compose con `cap_add: [NET_RAW]`.
+- **compose.yml**: entrecomillado `OIDC_REDIRECT_URL` (el `:` del mensaje rompía
+  el parseo YAML).
+
+### Documentation
+
+- `docs/dns-multi-address.md` y `docs/ping-checker.md`.
+
+
 ## [0.15.1] - 2026-11-14
 
 ### Performance
