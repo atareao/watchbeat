@@ -107,19 +107,19 @@ impl JwtValidator {
     }
 
     pub async fn validate_token(&self, token: &str) -> Result<Claims, String> {
-        let keys = {
-            let jwks = self.jwks.read().await;
-            if jwks.is_empty() {
-                drop(jwks);
-                if !self.refresh_on_miss {
-                    return Err("JWKS cache is empty and network refresh is disabled".to_string());
-                }
-                tracing::warn!("JWKS cache empty, re-fetching...");
-                self.fetch_jwks(&self.issuer).await?;
-                return Box::pin(self.validate_token(token)).await;
+        let mut keys = self.jwks.read().await.clone();
+
+        if keys.is_empty() {
+            if !self.refresh_on_miss {
+                return Err("JWKS cache is empty and network refresh is disabled".to_string());
             }
-            jwks.clone()
-        };
+            tracing::warn!("JWKS cache empty, fetching...");
+            self.fetch_jwks(&self.issuer).await?;
+            keys = self.jwks.read().await.clone();
+            if keys.is_empty() {
+                return Err("JWKS endpoint returned an empty key set".to_string());
+            }
+        }
 
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[&self.issuer]);
@@ -282,7 +282,9 @@ pub async fn discover_oidc(config: &Config) -> anyhow::Result<OidcMetadata> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::LazyLock;
+    use std::time::Duration;
 
     use jsonwebtoken::{encode, EncodingKey, Header};
     use rand::rngs::StdRng;
@@ -290,6 +292,8 @@ mod tests {
     use rsa::pkcs1::EncodeRsaPrivateKey;
     use rsa::traits::PublicKeyParts;
     use rsa::PrivateKey;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     use super::*;
 
@@ -483,6 +487,106 @@ mod tests {
         assert!(
             err.contains("no matching JWK"),
             "expected offline key-miss error, got: {err}"
+        );
+    }
+
+    /// Serves `{"keys": []}` on loopback for every request and counts the
+    /// connections it accepts. Used to prove key resolution is bounded: an empty
+    /// JWKS must not send the validator back to the IdP in a loop.
+    async fn spawn_empty_jwks_server() -> (u16, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback JWKS listener");
+        let port = listener
+            .local_addr()
+            .expect("read loopback listener address")
+            .port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_srv = Arc::clone(&hits);
+
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let hits_conn = Arc::clone(&hits_srv);
+                tokio::spawn(async move {
+                    hits_conn.fetch_add(1, Ordering::SeqCst);
+
+                    // Drain whatever the client sent; the body is irrelevant.
+                    let mut buf = [0u8; 1024];
+                    let _ = stream.read(&mut buf).await;
+
+                    const BODY: &str = r#"{"keys":[]}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        BODY.len(),
+                        BODY
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.flush().await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+
+        (port, hits)
+    }
+
+    #[tokio::test]
+    async fn empty_jwks_does_not_recurse() {
+        let (port, hits) = spawn_empty_jwks_server().await;
+        let validator = JwtValidator::new(&format!("http://127.0.0.1:{port}"), "client");
+
+        // The timeout keeps the test honest if the recursion ever returns: in RED
+        // the call never returns, so the test fails fast instead of hanging.
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(5), validator.validate_token("dummy")).await;
+
+        let err = outcome
+            .expect("validate_token must return promptly, not loop")
+            .expect_err("an empty JWKS must reject the token");
+        assert!(
+            err.contains("empty key set"),
+            "expected empty-key-set error, got: {err}"
+        );
+
+        // Give the accept loop a moment to catch any straggler request.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "the JWKS endpoint must be hit exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn unreachable_jwks_propagates_fetch_error() {
+        // Nothing listens on port 1, so the fetch fails at the transport layer.
+        let validator = JwtValidator::new("http://127.0.0.1:1", "client");
+
+        let err = tokio::time::timeout(Duration::from_secs(5), validator.validate_token("dummy"))
+            .await
+            .expect("validate_token must fail fast on a refused connection, not hang")
+            .expect_err("an unreachable JWKS must reject the token");
+
+        assert!(
+            err.contains("failed to fetch JWKS"),
+            "expected fetch error to propagate, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_cache_with_refresh_disabled_errors_without_network() {
+        // The issuer is unreachable, so reaching the "refresh is disabled" branch
+        // proves the empty-cache path never touches the network.
+        let validator = JwtValidator::with_keys("http://127.0.0.1:1", "client", vec![]);
+
+        let err = tokio::time::timeout(Duration::from_secs(5), validator.validate_token("dummy"))
+            .await
+            .expect("validate_token must return promptly without touching the network")
+            .expect_err("an empty cache with refresh disabled must reject the token");
+
+        assert!(
+            err.contains("network refresh is disabled"),
+            "expected offline empty-cache error, got: {err}"
         );
     }
 }
