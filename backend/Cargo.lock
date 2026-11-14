@@ -3392,6 +3392,7 @@ dependencies = [
  "rand",
  "regex",
  "reqwest",
+ "rsa",
  "rustls",
  "rustls-pki-types",
  "serde",

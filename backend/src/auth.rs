@@ -40,6 +40,9 @@ pub struct JwtValidator {
     jwks: Arc<RwLock<Vec<DecodingKey>>>,
     issuer: String,
     client_id: String,
+    /// Whether a key miss may trigger a JWKS re-fetch. Disabled by
+    /// [`JwtValidator::with_keys`] so tests can run fully offline.
+    refresh_on_miss: bool,
 }
 
 impl JwtValidator {
@@ -48,6 +51,19 @@ impl JwtValidator {
             jwks: Arc::new(RwLock::new(Vec::new())),
             issuer: issuer.to_string(),
             client_id: client_id.to_string(),
+            refresh_on_miss: true,
+        }
+    }
+
+    /// Builds a validator with an already-populated JWKS cache and no network
+    /// refresh: a key miss returns an error instead of fetching `jwks_uri`.
+    #[cfg(test)]
+    pub(crate) fn with_keys(issuer: &str, client_id: &str, keys: Vec<DecodingKey>) -> Self {
+        Self {
+            jwks: Arc::new(RwLock::new(keys)),
+            issuer: issuer.to_string(),
+            client_id: client_id.to_string(),
+            refresh_on_miss: false,
         }
     }
 
@@ -94,8 +110,11 @@ impl JwtValidator {
         let keys = {
             let jwks = self.jwks.read().await;
             if jwks.is_empty() {
-                tracing::warn!("JWKS cache empty, re-fetching...");
                 drop(jwks);
+                if !self.refresh_on_miss {
+                    return Err("JWKS cache is empty and network refresh is disabled".to_string());
+                }
+                tracing::warn!("JWKS cache empty, re-fetching...");
                 self.fetch_jwks(&self.issuer).await?;
                 return Box::pin(self.validate_token(token)).await;
             }
@@ -118,7 +137,12 @@ impl JwtValidator {
             }
         }
 
-        // All cached keys failed — re-fetch JWKS in case keys were rotated
+        // All cached keys failed — re-fetch JWKS in case keys were rotated.
+        // Skipped when refresh is disabled (offline/test mode).
+        if !self.refresh_on_miss {
+            return Err("no matching JWK found for token".to_string());
+        }
+
         tracing::warn!("All cached JWKs failed, re-fetching JWKS (key rotation?)...");
         self.fetch_jwks(&self.issuer).await?;
 
@@ -254,4 +278,211 @@ pub async fn discover_oidc(config: &Config) -> anyhow::Result<OidcMetadata> {
     let resp = client.get(&well_known).send().await?;
     let metadata: OidcMetadata = resp.json().await?;
     Ok(metadata)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::LazyLock;
+
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+    use rsa::pkcs1::EncodeRsaPrivateKey;
+    use rsa::traits::PublicKeyParts;
+    use rsa::PrivateKey;
+
+    use super::*;
+
+    const TEST_ISSUER: &str = "https://issuer.test";
+    const TEST_CLIENT_ID: &str = "watchbeat-test-client";
+    const KID_A: &str = "test-key-a";
+    const KID_B: &str = "test-key-b";
+
+    /// Deterministic RSA-2048 key material for offline JWT tests.
+    ///
+    /// The keys are generated once per process from a fixed seed, so the suite
+    /// never touches the network and never depends on checked-in secrets.
+    struct TestKeyMaterial {
+        pkcs1_der: Vec<u8>,
+        modulus: Vec<u8>,
+        exponent: Vec<u8>,
+    }
+
+    impl TestKeyMaterial {
+        fn generate(seed: u64) -> Self {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let private = PrivateKey::new(&mut rng, 2048).expect("generate test RSA key");
+            let pkcs1_der = private
+                .to_pkcs1_der()
+                .expect("encode test key as PKCS#1 DER")
+                .as_bytes()
+                .to_vec();
+            Self {
+                pkcs1_der,
+                modulus: private.n().to_be_bytes_trimmed_vartime().to_vec(),
+                exponent: private.e().to_be_bytes_trimmed_vartime().to_vec(),
+            }
+        }
+
+        /// Signing key, in the PKCS#1 DER form `jsonwebtoken` expects.
+        fn encoding_key(&self) -> EncodingKey {
+            EncodingKey::from_rsa_der(&self.pkcs1_der)
+        }
+
+        /// Verification key, built the same way `fetch_jwks` builds them.
+        fn decoding_key(&self) -> DecodingKey {
+            DecodingKey::from_rsa_raw_components(&self.modulus, &self.exponent)
+        }
+
+        /// The RSA *public* key material a forger can read straight from a JWKS
+        /// document: the `n` and `e` components. A JWKS-based validator never sees
+        /// a PEM file, so these are exactly the bytes used in the HMAC
+        /// alg-confusion forgery of [`hs256_token_is_rejected`].
+        fn public_jwks_bytes(&self) -> Vec<u8> {
+            [self.modulus.as_slice(), self.exponent.as_slice()].concat()
+        }
+    }
+
+    static KEY_A: LazyLock<TestKeyMaterial> = LazyLock::new(|| TestKeyMaterial::generate(0xA));
+    static KEY_B: LazyLock<TestKeyMaterial> = LazyLock::new(|| TestKeyMaterial::generate(0xB));
+
+    #[derive(Serialize)]
+    struct TestClaims {
+        sub: String,
+        iss: String,
+        aud: String,
+        exp: u64,
+    }
+
+    fn test_claims(iss: &str, aud: &str, exp: u64) -> TestClaims {
+        TestClaims {
+            sub: "user-1".to_string(),
+            iss: iss.to_string(),
+            aud: aud.to_string(),
+            exp,
+        }
+    }
+
+    fn in_one_hour() -> u64 {
+        jsonwebtoken::get_current_timestamp() + 3600
+    }
+
+    fn in_the_past() -> u64 {
+        jsonwebtoken::get_current_timestamp() - 3600
+    }
+
+    fn sign_rs256(kid: &str, key: &EncodingKey, claims: &TestClaims) -> String {
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(kid.to_string());
+        encode(&header, claims, key).expect("encode test RS256 token")
+    }
+
+    /// Validator with `KEY_A` precached and the network refresh disabled.
+    fn validator_with_key_a() -> JwtValidator {
+        JwtValidator::with_keys(TEST_ISSUER, TEST_CLIENT_ID, vec![KEY_A.decoding_key()])
+    }
+
+    #[tokio::test]
+    async fn valid_token_with_known_kid_is_accepted() {
+        let token = sign_rs256(
+            KID_A,
+            &KEY_A.encoding_key(),
+            &test_claims(TEST_ISSUER, TEST_CLIENT_ID, in_one_hour()),
+        );
+
+        let claims = validator_with_key_a()
+            .validate_token(&token)
+            .await
+            .expect("valid token must be accepted");
+
+        assert_eq!(claims.sub, "user-1");
+    }
+
+    #[tokio::test]
+    async fn token_with_wrong_audience_is_rejected() {
+        let token = sign_rs256(
+            KID_A,
+            &KEY_A.encoding_key(),
+            &test_claims(TEST_ISSUER, "some-other-client", in_one_hour()),
+        );
+
+        let result = validator_with_key_a().validate_token(&token).await;
+
+        assert!(
+            result.is_err(),
+            "token with wrong audience must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_with_wrong_issuer_is_rejected() {
+        let token = sign_rs256(
+            KID_A,
+            &KEY_A.encoding_key(),
+            &test_claims("https://evil.test", TEST_CLIENT_ID, in_one_hour()),
+        );
+
+        let result = validator_with_key_a().validate_token(&token).await;
+
+        assert!(result.is_err(), "token with wrong issuer must be rejected");
+    }
+
+    #[tokio::test]
+    async fn expired_token_is_rejected() {
+        let token = sign_rs256(
+            KID_A,
+            &KEY_A.encoding_key(),
+            &test_claims(TEST_ISSUER, TEST_CLIENT_ID, in_the_past()),
+        );
+
+        let result = validator_with_key_a().validate_token(&token).await;
+
+        assert!(result.is_err(), "expired token must be rejected");
+    }
+
+    #[tokio::test]
+    async fn hs256_token_is_rejected() {
+        // Classic alg-confusion forgery: the token is HMAC-signed with the RSA
+        // *public* key material published in the JWKS, and its header claims
+        // `alg = HS256`. Every other check (signature secret, iss, aud, exp)
+        // passes, so the rejection can only be attributed to the validator
+        // pinning RS256 instead of honouring the header algorithm.
+        let header = Header::new(Algorithm::HS256);
+        let secret = EncodingKey::from_secret(&KEY_A.public_jwks_bytes()).expect("hmac key");
+        let token = encode(
+            &header,
+            &test_claims(TEST_ISSUER, TEST_CLIENT_ID, in_one_hour()),
+            &secret,
+        )
+        .expect("encode test HS256 token");
+
+        let result = validator_with_key_a().validate_token(&token).await;
+
+        assert!(
+            result.is_err(),
+            "HS256 token must be rejected by an RS256 validator"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_with_unknown_kid_is_rejected_without_network() {
+        // Signed by KEY_B, whose public key is NOT in the validator's JWKS.
+        let token = sign_rs256(
+            KID_B,
+            &KEY_B.encoding_key(),
+            &test_claims(TEST_ISSUER, TEST_CLIENT_ID, in_one_hour()),
+        );
+
+        let err = validator_with_key_a()
+            .validate_token(&token)
+            .await
+            .expect_err("token signed by an unknown key must be rejected");
+
+        // Reaching "no matching JWK" proves no JWKS refresh (network) was attempted:
+        // the configured issuer does not even resolve.
+        assert!(
+            err.contains("no matching JWK"),
+            "expected offline key-miss error, got: {err}"
+        );
+    }
 }
