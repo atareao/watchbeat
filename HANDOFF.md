@@ -6,6 +6,11 @@
   Incluye el **Robust Check Engine** (v0.15.0), la optimización de queries (#33,
   v0.15.1), el DNS multi-dirección (#52) y el diagnóstico/permisos de ping (#31).
 - `main` y `development` sincronizados. Tests: **266** lib + 9 + 45 + 8 + 3 verdes.
+- **#59** ✅ (PR #60): deps de seguridad actualizadas. `jsonwebtoken` 12
+  (rsa 0.10, crypto-bigint 0.7, ctutils 0.4.8), rustls-webpki 0.103.17,
+  roots 1.0.12, vite ^8.3.8. `cargo audit`: solo queda `libsqlite3-sys` 0.37
+  (bloqueado por sqlx 0.9.0). `npm audit`: 0. **18 alertas Dependabot cerradas**
+  (stale). Doc `docs/security-deps.md`, PLAN-008 archivado.
 - **#55** ✅ (PR #56): flaky de conexión rechazada eliminado (puerto 1, fuera del
   rango efímero). Doc `docs/testing-connect-refused.md`, PLAN-006 archivado.
 - **#57** ✅ (PR #58): fallback multi-dirección en TCP/TLS (`resolve_all` + bucle
@@ -84,11 +89,14 @@ PR #49: `vite` → 8.3.8, `source-map-js` → 1.2.2, `rustls` → 0.23.46.
 - SNI real no assertado con handshake TLS completo.
 
 ### Housekeeping
+- `libsqlite3-sys` 0.37 (RUSTSEC-2026-0459): esperar a que sqlx suba de versión.
+- Añadir tests de validación JWT (gap preexistente).
 - Doble lockfile `package-lock.json` + `pnpm-lock.yaml` (el build usa npm; pnpm redundante).
 - CHANGELOG auto-generado desactualizado (entradas hasta 0.11.0; ahora con `[0.15.0]`).
 
 ### Pendiente inmediato
-- Release **v0.15.3** con #55 y #57 (están en `development`, no en `main`).
+- Release **v0.15.3** con #55, #57 y #59 (están en `development`, no en `main`;
+  `main` aún tiene jsonwebtoken 11 / rsa 0.9 vulnerable).
 - Decidir si el monitor `ping-validacion-31` de producción se elimina o queda
   como canario permanente.
 
