@@ -2,33 +2,32 @@
 
 ## Estado (14 Nov 2026)
 
-- **#61 en PR**: tests de validación JWT + CI de seguridad. PR **#65** abierto contra
-  `development` (rama `feature/jwt-tests-security-ci`), pendiente de merge.
+- **#61 ✅ COMPLETADO** (PR **#65** mergeado en `development`, commit `d1ea8fa0`):
+  tests de validación JWT + CI de seguridad.
   - 6 tests deterministas y sin red de `JwtValidator::validate_token` (válido RS256,
     `aud`, `iss`, `exp`, HS256, `kid` desconocido). Costura de test offline
     (`refresh_on_miss` + `#[cfg(test)] with_keys`), firmas públicas intactas.
   - `.github/workflows/security.yml` (`cargo audit` + `npm audit --audit-level=high`,
     push/PR a `main`/`development` + schedule semanal; ignore documentado de
-    RUSTSEC-2026-0459 en `backend/.cargo/audit.toml`).
+    RUSTSEC-2026-0459 en `backend/.cargo/audit.toml`). **CI verde en el PR.**
   - Auditado por `@rust-reviewer`: **APROBADO**. `just check` limpio; 272+9+45+8+3 = 337 verdes.
   - Docs: `docs/jwt-validation-tests.md`, `docs/security-ci.md`. Plan `plans/PLAN-009-ARCHIVED.md`.
   - Change OpenSpec archivado: `openspec/changes/archive/2026-11-14-jwt-tests-security-ci/`
     (spec `auth` creada, `deployment` actualizada).
 - Producción en **v0.15.3** (imagen `ghcr.io/atareao/watchbeat:latest`, revision `147a7bcf`),
   `healthy`, 7 monitores `up`. Despliegue gestionado por Dockge.
-- `main` y `development` sincronizados antes de esta rama.
 
 ## Pendiente
 
 ### Issues abiertos
+- **#64** 🐛 recursión sin límite en `validate_token` si el IdP devuelve JWKS vacío
+  (`{"keys":[]}`) — detectado en la auditoría de #61, preexistente (**siguiente**).
 - **#62** ✨ Follow-ups Robust Check Engine (canario, breaker, SSE, agrupación).
 - **#63** ♿ a11y del timeline + test SNI real.
-- **#64** 🐛 `validate_token` puede recursar sin límite si el IdP devuelve JWKS vacío
-  (`{"keys":[]}`) — detectado en la auditoría de #61, preexistente.
 
 ### Pendiente inmediato
-- Revisar y mergear el PR **#65** (#61). Después, seguir por **#64**, luego **#62** y **#63**,
-  cada uno en sesión separada (change OpenSpec + TDD).
+- Empezar por **#64** en sesión nueva (change OpenSpec + TDD). Después **#62** y **#63**,
+  cada uno en sesión separada.
 
 ### Follow-ups técnicos
 - Canario de red configurable (hoy fijo a 30 s).
