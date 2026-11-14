@@ -98,3 +98,7 @@ tokio = { version = "1.53", features = ["test-util"] }
 # Offline RSA key generation for the JWT validator tests (already in the graph
 # through jsonwebtoken's `rust_crypto` feature).
 rsa = "0.10"
+# Offline certificate generation for the TLS SNI tests: a local tokio-rustls
+# server needs a chain the client can be told to trust. `ring` is the default
+# backend, the same provider rustls uses in this build.
+rcgen = "0.14"
