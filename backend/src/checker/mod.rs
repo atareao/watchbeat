@@ -449,6 +449,22 @@ impl Checker for HttpChecker {
 
 // ───── TCP Checker ─────
 
+/// Cap a connection error message at 1 KiB (ellipsis included) before it
+/// reaches the DB and SSE.
+pub(crate) fn truncate_message(message: String) -> String {
+    const MAX: usize = 1024;
+    if message.len() <= MAX {
+        message
+    } else {
+        // Reserve room for the 3-byte ellipsis so the result never exceeds MAX.
+        let mut cut = MAX - '…'.len_utf8();
+        while !message.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…", &message[..cut])
+    }
+}
+
 pub struct TcpChecker;
 
 impl TcpChecker {
@@ -467,8 +483,8 @@ impl TcpChecker {
 
     /// Check body with injectable name resolution.
     ///
-    /// Resolution and connection share the monitor timeout: a slow resolver
-    /// must not push the check past its budget.
+    /// Thin wrapper over the production path so tests exercise the real loop.
+    #[cfg(test)]
     pub(crate) async fn check_with<F, Fut>(monitor: &Monitor, resolve: F) -> CheckOutcome
     where
         F: FnOnce(String) -> Fut,
@@ -482,6 +498,9 @@ impl TcpChecker {
 
     /// Check body with both the resolver and the connector injectable, so every
     /// connectivity cause can be classified deterministically (no network).
+    ///
+    /// Wraps the production loop with a single-address resolver.
+    #[cfg(test)]
     pub(crate) async fn check_with_connect<F, Fut, C, CFut>(
         monitor: &Monitor,
         resolve: F,
@@ -490,7 +509,31 @@ impl TcpChecker {
     where
         F: FnOnce(String) -> Fut,
         Fut: std::future::Future<Output = Result<std::net::IpAddr, crate::dns::DnsError>>,
-        C: FnOnce(std::net::SocketAddr) -> CFut,
+        C: Fn(std::net::SocketAddr) -> CFut,
+        CFut: std::future::Future<Output = std::io::Result<()>>,
+    {
+        Self::check_with_connect_all(
+            monitor,
+            move |host| async move { resolve(host).await.map(|ip| vec![ip]) },
+            connect,
+        )
+        .await
+    }
+
+    /// Check body resolving every address and trying them in order.
+    ///
+    /// A stale A record must not hide a healthy one: the check succeeds as soon
+    /// as any address connects. If every address fails, the first cause is kept
+    /// and the message lists each attempt.
+    pub(crate) async fn check_with_connect_all<F, Fut, C, CFut>(
+        monitor: &Monitor,
+        resolve_all: F,
+        connect: C,
+    ) -> CheckOutcome
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<std::net::IpAddr>, crate::dns::DnsError>>,
+        C: Fn(std::net::SocketAddr) -> CFut,
         CFut: std::future::Future<Output = std::io::Result<()>>,
     {
         let start = std::time::Instant::now();
@@ -504,12 +547,15 @@ impl TcpChecker {
             );
         };
 
-        // Resolution and connection share one budget, but are timed apart: that
-        // is what tells a resolution timeout from a connection one. Keeping the
-        // typed `DnsError` (instead of flattening it to a string) is what
-        // preserves the exact cause.
-        let ip = match tokio::time::timeout(timeout, resolve(host.clone())).await {
-            Ok(Ok(ip)) => ip,
+        let ips = match tokio::time::timeout(timeout, resolve_all(host.clone())).await {
+            Ok(Ok(ips)) if !ips.is_empty() => ips,
+            Ok(Ok(_)) => {
+                return Self::failure(
+                    start,
+                    FailureCause::Other,
+                    format!("DNS resolution returned no addresses for {}", host),
+                );
+            }
             Ok(Err(e)) => {
                 return Self::failure(
                     start,
@@ -526,39 +572,66 @@ impl TcpChecker {
             }
         };
 
-        let remaining = timeout.saturating_sub(start.elapsed());
+        let mut first_cause: Option<FailureCause> = None;
+        let mut attempts: Vec<String> = Vec::new();
 
-        match tokio::time::timeout(remaining, connect(std::net::SocketAddr::new(ip, port))).await {
-            Ok(Ok(())) => CheckOutcome {
-                status: status_for(None).into(),
-                status_code: None,
-                response_time_ms: start.elapsed().as_millis() as u64,
-                error_message: None,
-                tls: None,
-                cause: None,
-            },
-            Ok(Err(e)) => Self::failure(
-                start,
-                cause_from_io(&e),
-                format!("TCP connection failed: {}", e),
-            ),
-            Err(_) => Self::failure(
-                start,
-                FailureCause::ConnectTimeout,
-                "TCP connection timed out".into(),
-            ),
+        for ip in &ips {
+            let remaining = timeout.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                first_cause.get_or_insert(FailureCause::ConnectTimeout);
+                attempts.push(format!("{}: timeout", ip));
+                continue;
+            }
+
+            match tokio::time::timeout(remaining, connect(std::net::SocketAddr::new(*ip, port)))
+                .await
+            {
+                Ok(Ok(())) => {
+                    return CheckOutcome {
+                        status: status_for(None).into(),
+                        status_code: None,
+                        response_time_ms: start.elapsed().as_millis() as u64,
+                        error_message: None,
+                        tls: None,
+                        cause: None,
+                    };
+                }
+                Ok(Err(e)) => {
+                    first_cause.get_or_insert(cause_from_io(&e));
+                    attempts.push(format!("{}: {}", ip, e));
+                }
+                Err(_) => {
+                    first_cause.get_or_insert(FailureCause::ConnectTimeout);
+                    attempts.push(format!("{}: timeout", ip));
+                }
+            }
         }
+
+        let cause = first_cause.unwrap_or(FailureCause::Other);
+        let detail = attempts.join("; ");
+        let message = if attempts.len() == 1 {
+            format!("TCP connection failed: {detail}")
+        } else {
+            format!("TCP connection failed for all addresses: {detail}")
+        };
+        Self::failure(start, cause, truncate_message(message))
+    }
+
+    /// Production entry: resolve every address and fall back between them.
+    pub(crate) async fn check_all(monitor: &Monitor) -> CheckOutcome {
+        Self::check_with_connect_all(
+            monitor,
+            |host| async move { crate::dns::resolve_all(&host).await },
+            |addr| async move { tokio::net::TcpStream::connect(addr).await.map(|_| ()) },
+        )
+        .await
     }
 }
 
 #[async_trait]
 impl Checker for TcpChecker {
     async fn check(&self, monitor: &Monitor) -> CheckOutcome {
-        Self::check_with(
-            monitor,
-            |host| async move { crate::dns::resolve(&host).await },
-        )
-        .await
+        Self::check_all(monitor).await
     }
 }
 
@@ -1496,6 +1569,115 @@ mod tests {
 
         assert_eq!(outcome.status, "down");
         assert_eq!(outcome.cause, Some(FailureCause::ConnectRefused));
+    }
+
+    #[test]
+    fn truncate_message_should_keep_short_messages() {
+        assert_eq!(truncate_message("short".into()), "short");
+    }
+
+    #[test]
+    fn truncate_message_should_keep_exact_limit() {
+        let message = "x".repeat(1024);
+        assert_eq!(truncate_message(message.clone()), message);
+    }
+
+    #[test]
+    fn truncate_message_should_cap_long_messages_at_one_kib() {
+        let message = "x".repeat(5000);
+        let truncated = truncate_message(message);
+
+        assert!(truncated.len() <= 1024);
+        assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_message_should_respect_utf8_boundaries() {
+        // 'ñ' is 2 bytes; placing it across the cut must move the boundary back.
+        let mut message = "a".repeat(1022);
+        message.push('ñ');
+        message.push_str("tail");
+        let truncated = truncate_message(message);
+
+        assert!(truncated.len() <= 1024);
+        assert!(truncated.ends_with('…'));
+        assert!(truncated.chars().all(|c| c != '\u{FFFD}'));
+    }
+
+    /// Production path (`check_all`) against a real listener: the loop, the
+    /// resolver short-circuit for IP literals and the connector are exercised.
+    #[tokio::test]
+    async fn production_tcp_check_all_should_connect_to_a_real_listener() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let m = make_monitor("tcp", &format!("127.0.0.1:{port}"));
+        let outcome = TcpChecker::check_all(&m).await;
+
+        assert_eq!(outcome.status, "up");
+    }
+
+    /// Production path refused: a literal IP with nothing listening must yield
+    /// `connect_refused`, not a wrapper-specific result.
+    #[tokio::test]
+    async fn production_tcp_check_all_should_report_connect_refused() {
+        let m = make_monitor("tcp", "127.0.0.1:1");
+        let outcome = TcpChecker::check_all(&m).await;
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(FailureCause::ConnectRefused));
+    }
+
+    /// Scenario: TCP con dos A, una muerta y una viva.
+    #[tokio::test]
+    async fn tcp_check_should_fall_back_to_the_next_address() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let m = make_monitor("tcp", "multi.test:443");
+        let dead = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let alive = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+
+        let resolve = move |_host: String| async move { Ok(vec![dead, alive]) };
+        let connect = |addr: SocketAddr| async move {
+            if addr.ip().to_string() == "127.0.0.2" {
+                Err(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+            } else {
+                Ok(())
+            }
+        };
+
+        let outcome = TcpChecker::check_with_connect_all(&m, resolve, connect).await;
+
+        assert_eq!(outcome.status, "up");
+        assert!(outcome.cause.is_none());
+    }
+
+    /// Scenario: todas las direcciones fallan.
+    #[tokio::test]
+    async fn tcp_check_should_fail_when_every_address_fails() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let m = make_monitor("tcp", "multi.test:443");
+        let a = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let b = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3));
+
+        let resolve = move |_host: String| async move { Ok(vec![a, b]) };
+        let connect = |_addr: std::net::SocketAddr| async move {
+            Err::<(), _>(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+        };
+
+        let outcome = TcpChecker::check_with_connect_all(&m, resolve, connect).await;
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(FailureCause::ConnectRefused));
+        assert!(outcome
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("all addresses"));
     }
 
     /// Scenario: Timeout de conexión (determinista, con el connector inyectado).

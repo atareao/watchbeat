@@ -22,11 +22,7 @@ pub struct TlsInfo {
 #[async_trait]
 impl Checker for TlsChecker {
     async fn check(&self, monitor: &Monitor) -> CheckOutcome {
-        Self::check_with(
-            monitor,
-            |host| async move { crate::dns::resolve(&host).await },
-        )
-        .await
+        Self::check_all(monitor).await
     }
 }
 
@@ -58,12 +54,47 @@ fn failure(elapsed: u64, cause: FailureCause, message: String) -> CheckOutcome {
 impl TlsChecker {
     /// Check body with injectable name resolution.
     ///
-    /// Resolution happens inside the monitor timeout and keeps the original
-    /// hostname for SNI: only the IP comes from the cache.
+    /// Thin wrapper over the production loop with a single-address resolver.
+    #[cfg(test)]
     pub(crate) async fn check_with<F, Fut>(monitor: &Monitor, resolve: F) -> CheckOutcome
     where
         F: FnOnce(String) -> Fut,
         Fut: std::future::Future<Output = Result<std::net::IpAddr, crate::dns::DnsError>>,
+    {
+        Self::check_with_all(monitor, move |host| async move {
+            resolve(host).await.map(|ip| vec![ip])
+        })
+        .await
+    }
+
+    /// Multi-address variant: every resolved address is attempted until one
+    /// completes the TLS handshake.
+    ///
+    /// A stale A record must not hide a healthy one. If every address fails, the
+    /// first cause is kept and the message lists each attempt.
+    pub(crate) async fn check_with_all<F, Fut>(monitor: &Monitor, resolve_all: F) -> CheckOutcome
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<std::net::IpAddr>, crate::dns::DnsError>>,
+    {
+        Self::check_with_all_attempt(monitor, resolve_all, |host, ip, port, addr| async move {
+            Self::attempt(&host, ip, port, &addr).await
+        })
+        .await
+    }
+
+    /// Same as [`Self::check_with_all`] with an injectable handshake attempt,
+    /// so the fallback loop can be tested without a real TLS server.
+    async fn check_with_all_attempt<F, Fut, A, AFut>(
+        monitor: &Monitor,
+        resolve_all: F,
+        attempt: A,
+    ) -> CheckOutcome
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<std::net::IpAddr>, crate::dns::DnsError>>,
+        A: Fn(String, std::net::IpAddr, u16, String) -> AFut,
+        AFut: std::future::Future<Output = Result<TlsInfo, TlsFailure>>,
     {
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(monitor.timeout_seconds as u64);
@@ -71,11 +102,15 @@ impl TlsChecker {
         let (host, port) = parse_target(&monitor.target).unwrap_or((monitor.target.clone(), 443));
         let addr = format!("{}:{}", host, port);
 
-        // Same shape as TCP: one budget, but resolution and the connection are
-        // timed apart, so a resolution timeout is not reported as a connection
-        // one.
-        let ip = match tokio::time::timeout(timeout, resolve(host.clone())).await {
-            Ok(Ok(ip)) => ip,
+        let ips = match tokio::time::timeout(timeout, resolve_all(host.clone())).await {
+            Ok(Ok(ips)) if !ips.is_empty() => ips,
+            Ok(Ok(_)) => {
+                return failure(
+                    start.elapsed().as_millis() as u64,
+                    FailureCause::Other,
+                    format!("DNS resolution returned no addresses for {}", host),
+                );
+            }
             Ok(Err(e)) => {
                 tracing::warn!(target = %addr, host = %host, error = %e, "TLS check: DNS failed");
                 return failure(
@@ -94,113 +129,143 @@ impl TlsChecker {
             }
         };
 
-        // Own resolver: the IP comes from our TTL cache, while the SNI stays
-        // the original hostname.
-        let remaining = timeout.saturating_sub(start.elapsed());
+        let mut first_cause: Option<FailureCause> = None;
+        let mut attempts: Vec<String> = Vec::new();
 
-        let result = tokio::time::timeout(remaining, async {
-            let tcp = tokio::net::TcpStream::connect(std::net::SocketAddr::new(ip, port))
+        for ip in &ips {
+            let remaining = timeout.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                first_cause.get_or_insert(FailureCause::ConnectTimeout);
+                attempts.push(format!("{}: timeout", ip));
+                continue;
+            }
+
+            match tokio::time::timeout(remaining, attempt(host.clone(), *ip, port, addr.clone()))
                 .await
-                .map_err(|e| {
-                    tracing::warn!(target = %addr, error = %e, "TLS: TCP connect failed");
-                    TlsFailure::Connect(e)
-                })?;
-
-            let mut roots = rustls::RootCertStore::empty();
-            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-            let config = rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth();
-
-            let server_name =
-                rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| {
-                    tracing::warn!(host = %host, "TLS: invalid server name");
-                    TlsFailure::Handshake(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("invalid host: {}", e),
-                    ))
-                })?;
-
-            let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-            let tls = connector.connect(server_name, tcp).await.map_err(|e| {
-                tracing::warn!(target = %addr, error = %e, "TLS: handshake failed");
-                TlsFailure::Handshake(e)
-            })?;
-
-            // Extract peer certificates after handshake
-            let (_, session) = tls.get_ref();
-            let certs = session.peer_certificates().unwrap_or_default();
-
-            // Parse first cert's not_after
-            let info = if let Some(cert) = certs.first() {
-                parse_cert_not_after(cert.as_ref())
-            } else {
-                TlsInfo::default()
-            };
-
-            Ok::<_, TlsFailure>(info)
-        })
-        .await;
-
-        let elapsed = start.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(Ok(info)) => {
-                let mut outcome = CheckOutcome {
-                    status: crate::checker::status_for(None).into(),
-                    status_code: None,
-                    response_time_ms: elapsed,
-                    error_message: None,
-                    tls: Some(info.clone()),
-                    cause: None,
-                };
-
-                // If cert expires soon, mark as warning
-                if let Some(days_left) = info.cert_days_left {
-                    let threshold = monitor
-                        .config_json
-                        .get("expiry_days")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(14);
-
-                    if days_left < threshold {
-                        outcome.status = "warning".into();
-                        outcome.error_message =
-                            Some(format!("Certificate expires in {} days", days_left));
-                    }
+            {
+                Ok(Ok(info)) => {
+                    return success_outcome(monitor, info, start.elapsed().as_millis() as u64);
                 }
-
-                outcome
-            }
-            Ok(Err(TlsFailure::Connect(e))) => {
-                tracing::warn!(target = %addr, host = %host, error = %e, "TLS check: TCP connect failed");
-                failure(
-                    elapsed,
-                    cause_from_io(&e),
-                    format!("TCP connection failed: {}", e),
-                )
-            }
-            // A failed handshake is the target's fault; `status_for` decides the
-            // observable status so TLS never disagrees with HTTP or TCP.
-            Ok(Err(TlsFailure::Handshake(e))) => {
-                tracing::warn!(target = %addr, host = %host, error = %e, "TLS check failed");
-                failure(
-                    elapsed,
-                    FailureCause::TlsError,
-                    format!("TLS handshake failed: {}", e),
-                )
-            }
-            Err(_) => {
-                tracing::warn!(target = %addr, host = %host, "TLS check timed out");
-                failure(
-                    elapsed,
-                    FailureCause::ConnectTimeout,
-                    "TLS connection timed out".into(),
-                )
+                Ok(Err(TlsFailure::Connect(e))) => {
+                    first_cause.get_or_insert(cause_from_io(&e));
+                    attempts.push(format!("{}: {}", ip, e));
+                }
+                Ok(Err(TlsFailure::Handshake(e))) => {
+                    first_cause.get_or_insert(FailureCause::TlsError);
+                    attempts.push(format!("{}: handshake failed: {}", ip, e));
+                }
+                Err(_) => {
+                    first_cause.get_or_insert(FailureCause::ConnectTimeout);
+                    attempts.push(format!("{}: timeout", ip));
+                }
             }
         }
+
+        let cause = first_cause.unwrap_or(FailureCause::Other);
+        let detail = attempts.join("; ");
+        let message = if attempts.len() == 1 {
+            format!("TLS check failed: {detail}")
+        } else {
+            format!("TLS check failed for all addresses: {detail}")
+        };
+        failure(
+            start.elapsed().as_millis() as u64,
+            cause,
+            crate::checker::truncate_message(message),
+        )
     }
+
+    /// Production entry: resolve every address and fall back between them.
+    pub(crate) async fn check_all(monitor: &Monitor) -> CheckOutcome {
+        Self::check_with_all(monitor, |host| async move {
+            crate::dns::resolve_all(&host).await
+        })
+        .await
+    }
+
+    /// One TLS handshake attempt against a concrete address.
+    ///
+    /// The connector (root store + client config) is built only after the TCP
+    /// connection succeeds: a refused connection must not need a crypto provider
+    /// installed, and the successful address builds it exactly once per check.
+    async fn attempt(
+        host: &str,
+        ip: std::net::IpAddr,
+        port: u16,
+        addr: &str,
+    ) -> Result<TlsInfo, TlsFailure> {
+        let tcp = tokio::net::TcpStream::connect(std::net::SocketAddr::new(ip, port))
+            .await
+            .map_err(|e| {
+                tracing::warn!(target = %addr, error = %e, "TLS: TCP connect failed");
+                TlsFailure::Connect(e)
+            })?;
+
+        let server_name =
+            rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| {
+                tracing::warn!(host = %host, "TLS: invalid server name");
+                TlsFailure::Handshake(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("invalid host: {}", e),
+                ))
+            })?;
+
+        let connector = build_connector();
+        let tls = connector.connect(server_name, tcp).await.map_err(|e| {
+            tracing::warn!(target = %addr, error = %e, "TLS: handshake failed");
+            TlsFailure::Handshake(e)
+        })?;
+
+        let (_, session) = tls.get_ref();
+        let certs = session.peer_certificates().unwrap_or_default();
+
+        Ok(if let Some(cert) = certs.first() {
+            parse_cert_not_after(cert.as_ref())
+        } else {
+            TlsInfo::default()
+        })
+    }
+}
+
+/// Build the TLS connector once per check (root store + client config).
+fn build_connector() -> tokio_rustls::TlsConnector {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+
+    tokio_rustls::TlsConnector::from(Arc::new(config))
+}
+
+/// Build a successful outcome, downgrading to `warning` when the certificate
+/// expires within the configured threshold.
+fn success_outcome(monitor: &Monitor, info: TlsInfo, elapsed: u64) -> CheckOutcome {
+    let days_left = info.cert_days_left;
+    let mut outcome = CheckOutcome {
+        status: status_for(None).into(),
+        status_code: None,
+        response_time_ms: elapsed,
+        error_message: None,
+        tls: Some(info),
+        cause: None,
+    };
+
+    if let Some(days_left) = days_left {
+        let threshold = monitor
+            .config_json
+            .get("expiry_days")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(14);
+
+        if days_left < threshold {
+            outcome.status = "warning".into();
+            outcome.error_message = Some(format!("Certificate expires in {} days", days_left));
+        }
+    }
+
+    outcome
 }
 
 /// Parse a DER certificate and extract `not_after`.
@@ -495,5 +560,83 @@ mod tests {
             outcome.cause,
             Some(crate::checker::FailureCause::DnsNxdomain)
         );
+    }
+
+    /// Scenario: TLS con dos A, una muerta y una viva.
+    #[tokio::test]
+    async fn tls_check_should_fall_back_to_the_next_address() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let m = make_monitor("multi.test:443");
+        let dead = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let alive = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+
+        let resolve = move |_host: String| async move { Ok(vec![dead, alive]) };
+        let attempt = |_host: String, ip: IpAddr, _port: u16, _addr: String| async move {
+            if ip.to_string() == "127.0.0.2" {
+                Err(TlsFailure::Connect(std::io::Error::from(
+                    std::io::ErrorKind::ConnectionRefused,
+                )))
+            } else {
+                Ok(TlsInfo {
+                    cert_expires_at: Some("2030-01-01".into()),
+                    cert_days_left: Some(1200),
+                })
+            }
+        };
+
+        let outcome = TlsChecker::check_with_all_attempt(&m, resolve, attempt).await;
+
+        assert_eq!(outcome.status, "up");
+        assert!(outcome.cause.is_none());
+    }
+
+    /// Scenario: todas las direcciones fallan.
+    #[tokio::test]
+    async fn tls_check_should_fail_when_every_address_fails() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let m = make_monitor("multi.test:443");
+        let a = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let b = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3));
+
+        let resolve = move |_host: String| async move { Ok(vec![a, b]) };
+        let attempt = |_host: String, _ip: IpAddr, _port: u16, _addr: String| async move {
+            Err::<TlsInfo, _>(TlsFailure::Connect(std::io::Error::from(
+                std::io::ErrorKind::ConnectionRefused,
+            )))
+        };
+
+        let outcome = TlsChecker::check_with_all_attempt(&m, resolve, attempt).await;
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(FailureCause::ConnectRefused));
+        assert!(outcome
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("all addresses"));
+    }
+
+    /// Production path (`check_all`) against a plain TCP server: the real
+    /// `attempt` runs, the connector is built after connect and the handshake
+    /// failure is classified as `tls_error`.
+    #[tokio::test]
+    async fn production_tls_check_all_should_report_handshake_error() {
+        install_crypto_provider();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+        });
+
+        let m = make_monitor(&format!("127.0.0.1:{port}"));
+        let outcome = TlsChecker::check_all(&m).await;
+
+        assert_eq!(outcome.status, "down");
+        assert_eq!(outcome.cause, Some(FailureCause::TlsError));
     }
 }
