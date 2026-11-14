@@ -15,6 +15,7 @@ import {
 import MonitorCard from '../components/MonitorCard';
 import BreakerBadge from '../components/BreakerBadge';
 import { useSse } from '../hooks/useSse';
+import { statusStyle } from '../theme/statusStyles';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import 'dayjs/locale/es';
@@ -411,8 +412,8 @@ export default function Dashboard() {
             <Statistic
               title="En línea"
               value={healthyItems}
-              prefix={<CheckCircleOutlined style={{ color: '#22c55e' }} />}
-              valueStyle={{ color: '#22c55e' }}
+              prefix={<CheckCircleOutlined style={{ color: statusStyle('up').color }} />}
+              valueStyle={{ color: statusStyle('up').color }}
             />
           </Card>
         </Col>
@@ -421,8 +422,8 @@ export default function Dashboard() {
             <Statistic
               title="Con problemas"
               value={problemItems}
-              prefix={<CloseCircleOutlined style={{ color: '#ef4444' }} />}
-              valueStyle={{ color: '#ef4444' }}
+              prefix={<CloseCircleOutlined style={{ color: statusStyle('down').color }} />}
+              valueStyle={{ color: statusStyle('down').color }}
             />
           </Card>
         </Col>
@@ -431,8 +432,8 @@ export default function Dashboard() {
             <Statistic
               title="Indeterminados"
               value={indeterminateItems}
-              prefix={<QuestionCircleOutlined style={{ color: '#722ed1' }} />}
-              valueStyle={{ color: '#722ed1' }}
+              prefix={<QuestionCircleOutlined style={{ color: statusStyle('indeterminate').color }} />}
+              valueStyle={{ color: statusStyle('indeterminate').color }}
             />
           </Card>
         </Col>

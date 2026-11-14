@@ -42,6 +42,7 @@ import {
   type TimelineBucket,
 } from "../api/http";
 import { useSse } from "../hooks/useSse";
+import { statusStyle, STATUS_STYLES } from "../theme/statusStyles";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 import "dayjs/locale/es";
@@ -53,6 +54,7 @@ const { Title, Text } = Typography;
 
 const STATUS_TAG: Record<string, { color: string; text: string }> = {
   up: { color: "green", text: "UP" },
+  warning: { color: "gold", text: "WARNING" },
   down: { color: "red", text: "DOWN" },
   error: { color: "orange", text: "ERROR" },
   // Failure not attributable to the target (e.g. host network/DNS down).
@@ -184,10 +186,16 @@ const RANGE_OPTIONS: RangeOption[] = [
 
 // ── Helper: get health color for a bucket ──
 function healthColor(upPct: number, status: string): string {
-  if (status === "no_data") return "#6b7280";
+  // Every non-"up" state takes its colour from the shared token, so `warning`
+  // and `error` are treated symmetrically (never a green bar with error hatching).
+  if (status === "no_data") return statusStyle("no_data").color;
   // Indeterminate = failure not attributable to the target: violet, never red,
   // so it is not confused with a real "down" bucket.
-  if (status === "indeterminate") return "#722ed1";
+  if (status === "indeterminate") return statusStyle("indeterminate").color;
+  if (status === "warning") return statusStyle("warning").color;
+  if (status === "error") return statusStyle("error").color;
+  if (status === "down") return statusStyle("down").color;
+  // "up" keeps the uptime gradient (colour = uptime band).
   if (upPct >= 99) return "#22c55e";
   if (upPct >= 95) return "#4ade80";
   if (upPct >= 90) return "#86efac";
@@ -444,6 +452,46 @@ function MonitorStats({
   );
 }
 
+// ── Shared legend: decodes the non-chromatic channel (hatch + top edge) so the
+// timeline stays readable without colour perception (R1). ──
+function StatusPatternLegend() {
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        display: "flex",
+        gap: 12,
+        flexWrap: "wrap",
+        fontSize: 11,
+        color: "#888",
+        alignItems: "center",
+      }}
+    >
+      <span style={{ fontWeight: 500, color: "#555" }}>Estado (patrón):</span>
+      {Object.entries(STATUS_STYLES).map(([key, s]) => (
+        <span
+          key={key}
+          style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              width: 16,
+              height: 12,
+              boxSizing: "border-box",
+              backgroundColor: s.color,
+              backgroundImage: s.pattern,
+              borderTop: s.borderTop,
+              borderRadius: 2,
+            }}
+          />
+          {s.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function HeartbeatChart({
   buckets,
   rangeKey,
@@ -472,18 +520,29 @@ function HeartbeatChart({
       >
         {bars.map((b, i) => {
           const hasPulse = b.count > 0;
-          const color = hasPulse ? "#22c55e" : "#e5e7eb";
+          const style = statusStyle(hasPulse ? "up" : "no_data");
           const tooltipTitle = hasPulse
             ? `Pulso recibido · ${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
             : `Sin pulso · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`;
           return (
-            <Tooltip key={i} title={tooltipTitle}>
+            <Tooltip
+              key={i}
+              title={tooltipTitle}
+              trigger={["hover", "focus"]}
+            >
               <div
+                className="timeline-bar"
+                role="img"
+                tabIndex={0}
+                aria-label={tooltipTitle}
                 style={{
                   flex: "1 1 0",
                   minWidth: 2,
                   height: hasPulse ? "100%" : "20%",
-                  background: color,
+                  boxSizing: "border-box",
+                  backgroundColor: style.color,
+                  backgroundImage: style.pattern,
+                  borderTop: style.borderTop,
                   borderRadius: "1px 1px 0 0",
                   cursor: "pointer",
                 }}
@@ -561,9 +620,12 @@ function HeartbeatChart({
         }}
       >
         <span style={{ fontWeight: 500, color: "#555" }}>Pulso:</span>
-        <span style={{ color: "#22c55e" }}>■ Recibido</span>
-        <span style={{ color: "#e5e7eb" }}>■ Sin pulso</span>
+        <span style={{ color: statusStyle("up").color }}>■ Recibido</span>
+        <span style={{ color: statusStyle("no_data").color }}>
+          ■ Sin pulso
+        </span>
       </div>
+      <StatusPatternLegend />
     </div>
   );
 }
@@ -604,25 +666,40 @@ function HealthLatencyChart({
       >
         {bars.map((b, i) => {
           const pct = (b.avg_response_time_ms / maxRt) * 100;
+          const style = statusStyle(b.dominant_status);
           const color = healthColor(b.up_pct, b.dominant_status);
           const tooltipTitle =
             b.dominant_status === "no_data"
               ? `Sin datos · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
               : b.dominant_status === "indeterminate"
                 ? // No attributable checks in this bucket: its up_pct (0) and latency
-                  // are not the target's fault (D8), so showing them would mislead.
-                  `INDETERMINATE · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
+                  // are not the target's fault (D8), so showing them would mislead —
+                  // but the check count is factual and stays in the accessible name.
+                  `INDETERMINATE · ${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`
                 : `${b.dominant_status.toUpperCase()} · ${b.up_pct.toFixed(1)}% UP · ` +
                   `${b.avg_response_time_ms.toFixed(0)}ms media · ` +
                   `${b.count} checks · ${formatBucketTime(b.bucket_start, range.bucketSeconds)}`;
           return (
-            <Tooltip key={i} title={tooltipTitle}>
+            <Tooltip
+              key={i}
+              title={tooltipTitle}
+              trigger={["hover", "focus"]}
+            >
               <div
+                className="timeline-bar"
+                role="img"
+                tabIndex={0}
+                aria-label={tooltipTitle}
                 style={{
                   flex: "1 1 0",
                   minWidth: 2,
-                  height: `${Math.max(pct, 3)}%`,
-                  background: color,
+                  // Floor raised so the hatch + top edge stay perceptible on the
+                  // shortest bars (latency ≈ 0) — R1.
+                  height: `${Math.max(pct, 6)}%`,
+                  boxSizing: "border-box",
+                  backgroundColor: color,
+                  backgroundImage: style.pattern,
+                  borderTop: style.borderTop,
                   borderRadius: "1px 1px 0 0",
                   cursor: "pointer",
                   transition: "opacity 0.15s",
@@ -729,12 +806,15 @@ function HealthLatencyChart({
         <span style={{ color: "#facc15" }}>■ ≥75%</span>
         <span style={{ color: "#fb923c" }}>■ ≥50%</span>
         <span style={{ color: "#ef4444" }}>■ {"<50%"}</span>
-        <span style={{ color: "#6b7280" }}>■ Sin datos</span>
+        <span style={{ color: statusStyle("no_data").color }}>
+          ■ Sin datos
+        </span>
         <span style={{ marginLeft: 8, fontWeight: 500, color: "#555" }}>
           Latencia (altura):
         </span>
         <span>▮ más alto = más lento</span>
       </div>
+      <StatusPatternLegend />
     </div>
   );
 }
