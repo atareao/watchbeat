@@ -2,7 +2,7 @@
 
 ## Estado (14 Nov 2026)
 
-- **#69 ✅ COMPLETADO** (rama `feature/canary-interval-setting`, PR **#74** abierto a `development`):
+- **#69 ✅ COMPLETADO** (PR **#74** mergeado a `development` en `48670f79`; rama borrada):
   canario de red configurable vía setting `canary_interval_secs` (default 30 s, rango [5, 3600],
   clamp), con recarga en caliente (patrón del breaker). `main.rs` resuelve el intervalo desde la
   BD al arrancar; `routes/settings.rs` y `routes/export_import.rs` lo re-aplican; UI Ajustes → Red.
@@ -20,19 +20,19 @@
 ## Pendiente
 
 ### #62 — Follow-ups Robust Check Engine (sub-issues)
-- **#69** ✅ canario de red configurable (PR #74 abierto).
+- **#69** ✅ canario de red configurable (PR #74 mergeado).
 - **#70** 📡 `error_kind` en el evento SSE (**siguiente**).
 - **#71** 🚦 estado del breaker (closed/open) en API y dashboard.
 - **#72** 📬 agrupar notificaciones latency/expiry en el breaker.
 - **#63** ♿ a11y del timeline + test SNI real.
 
 ### Pendiente inmediato
-- Revisar y mergear el PR **#74** de #69. Después, seguir por **#70** y el resto de sub-issues
-  de #62, cada uno en sesión separada (change OpenSpec + TDD).
+- **#70** 📡 `error_kind` en el evento SSE — **siguiente**, en **sesión nueva** (change OpenSpec + TDD).
+  Después, el resto de sub-issues de #62, cada uno en sesión separada.
 
 ### Housekeeping
 - `just check-spec` NO existe como receta del `.justfile` pese a referenciarla AGENTS.md; la
-  puerta SDD queda cubierta por `opens,pec validate <change>`.
+  puerta SDD queda cubierta por `openspec validate <change>`.
 - `frontend/dist/` está trackeado pese a `dist/` en `.gitignore` (el SPA se embebe vía `include_dir!`).
 - `libsqlite3-sys` 0.37 (RUSTSEC-2026-0459): esperar a que sqlx suba de versión.
 - Doble lockfile `package-lock.json` + `pnpm-lock.yaml` (el build usa npm; pnpm redundante).
