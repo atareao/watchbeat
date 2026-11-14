@@ -92,3 +92,6 @@ thiserror = "2"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Offline RSA key generation for the JWT validator tests (already in the graph
+# through jsonwebtoken's `rust_crypto` feature).
+rsa = "0.10"
