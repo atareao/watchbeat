@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.16.0] - 2026-11-14
+
+Cierre de los follow-ups del **Robust Check Engine (#62)**.
+
+### Features
+
+- **Canario de red configurable (#69)**: el intervalo del canario de `netcheck` se
+  ajusta desde settings en lugar de estar fijo a 30 s.
+- **`error_kind` en el evento SSE (#70)**: el evento SSE incluye la causa tipada
+  (`FailureCause`), de modo que el dashboard ya no necesita re-consultar al recibir un
+  `down`.
+- **Estado del storm breaker (#71)**: el estado (`closed`/`open`) se expone en
+  `GET /api/breaker` y se refleja en el dashboard.
+- **Agrupación `latency`/`expiry` en el breaker (#72)**: las ráfagas de degradación y
+  expiración se coalescen en una única alerta agregada, con episodios **independientes
+  por tipo** (latencia ≠ expiración ≠ caídas) y rearme perezoso.
+- **Timeline accesible + test SNI real (#63)**: el timeline de checks se distingue sin
+  depender del color (patrón + borde superior) y es navegable por teclado con texto
+  accesible por barra; se añade un test determinista que verifica que el checker TLS
+  envía el hostname como SNI, sin red externa.
+
+### Performance
+
+- **Dedupe DNS single-flight**: una única resolución en vuelo por host, eliminando
+  consultas DNS concurrentes redundantes.
+
+### Bug Fixes
+
+- **JWKS vacío (#67)**: la resolución JWKS de `validate_token` queda acotada y no
+  recursa cuando el proveedor devuelve un JWKS vacío.
+
+### CI
+
+- **Auditoría de dependencias**: nuevo workflow `security` que ejecuta `cargo audit`
+  (backend) y `npm audit` (frontend) en cada PR.
+
 ## [0.15.3] - 2026-11-14
 
 ### Bug Fixes
