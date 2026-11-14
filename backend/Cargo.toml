@@ -90,6 +90,5 @@ thiserror = "2"
 
 [dev-dependencies]
 tempfile = "3"
-sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

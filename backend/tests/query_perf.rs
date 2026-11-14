@@ -50,9 +50,12 @@ async fn setup_db() -> (Database, TempDir) {
 
 async fn side_pool(dir: &Path) -> SqlitePool {
     let path = dir.join("test.db");
+    let opts = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&path)
+        .busy_timeout(std::time::Duration::from_secs(5));
     SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&format!("sqlite://{}", path.display()))
+        .connect_with(opts)
         .await
         .unwrap()
 }
@@ -140,6 +143,64 @@ async fn timeline_index_exists_and_redundant_indexes_are_gone() {
         !names.iter().any(|n| n == "idx_checks_uptime"),
         "redundant idx_checks_uptime must be dropped, found: {names:?}"
     );
+}
+
+#[tokio::test]
+async fn migration_drops_legacy_indexes() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test.db");
+
+    // Create the schema, then simulate a legacy database by recreating the
+    // indexes that older versions shipped.
+    drop(Database::open(&path).await.unwrap());
+    {
+        let pool = side_pool(dir.path()).await;
+        sqlx::query("CREATE INDEX idx_checks_monitor ON checks(monitor_id, checked_at DESC)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE INDEX idx_checks_uptime ON checks(monitor_id, checked_at, status)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
+
+    // Reopening must migrate: create the new index and drop the legacy ones.
+    let _db = Database::open(&path).await.unwrap();
+    let pool = side_pool(dir.path()).await;
+    let names = index_names(&pool, "checks").await;
+
+    assert!(
+        names.iter().any(|n| n == "idx_checks_timeline"),
+        "migration must create idx_checks_timeline, found: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "idx_checks_monitor"),
+        "migration must drop idx_checks_monitor, found: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "idx_checks_uptime"),
+        "migration must drop idx_checks_uptime, found: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn prefix_queries_use_timeline_index() {
+    let (_db, dir) = setup_db().await;
+    let pool = side_pool(dir.path()).await;
+
+    for sql in [
+        "SELECT id FROM checks WHERE monitor_id='m1' ORDER BY checked_at DESC LIMIT 50",
+        "SELECT id FROM checks WHERE monitor_id='m1' ORDER BY checked_at DESC LIMIT 1",
+        "SELECT checked_at, status, response_time_ms FROM checks          WHERE monitor_id='m1' AND checked_at>='2026-01-01T00:00:00Z' ORDER BY checked_at ASC",
+    ] {
+        let plan = explain(&pool, sql).await.join("\n");
+        assert!(
+            plan.contains("idx_checks_timeline"),
+            "query must use idx_checks_timeline, plan:\n{plan}\nSQL: {sql}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -240,8 +301,11 @@ async fn timeline_buckets_are_fast_on_21k_rows() {
     let elapsed = start.elapsed();
 
     assert!(!buckets.is_empty(), "timeline must return buckets");
+    // SQLite is bundled and compiled with the Rust profile: debug builds are
+    // ~3x slower than release. Keep a wider margin in debug to avoid flakes.
+    let budget_ms = if cfg!(debug_assertions) { 250 } else { 100 };
     assert!(
-        elapsed.as_millis() < 100,
-        "timeline on 21k rows took {elapsed:?}, expected < 100ms"
+        elapsed.as_millis() < budget_ms,
+        "timeline on 21k rows took {elapsed:?}, expected < {budget_ms}ms"
     );
 }

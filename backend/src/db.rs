@@ -101,18 +101,26 @@ impl Database {
         //   - `get_timeline_buckets` / `calculate_uptime` (covering: status + response_time_ms)
         // It subsumes the former `idx_checks_monitor` and `idx_checks_uptime`, which are
         // dropped below to avoid redundant write amplification.
-        let _ = sqlx::raw_sql(
+        let timeline_index_created = sqlx::raw_sql(
             "CREATE INDEX IF NOT EXISTS idx_checks_timeline
              ON checks(monitor_id, checked_at DESC, status, response_time_ms)",
         )
         .execute(&pool)
-        .await;
-        let _ = sqlx::raw_sql("DROP INDEX IF EXISTS idx_checks_monitor")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::raw_sql("DROP INDEX IF EXISTS idx_checks_uptime")
-            .execute(&pool)
-            .await;
+        .await
+        .is_ok();
+        if timeline_index_created {
+            // Only drop the legacy indexes once the replacement exists: dropping
+            // them after a failed CREATE would leave the table without any
+            // per-monitor index.
+            let _ = sqlx::raw_sql("DROP INDEX IF EXISTS idx_checks_monitor")
+                .execute(&pool)
+                .await;
+            let _ = sqlx::raw_sql("DROP INDEX IF EXISTS idx_checks_uptime")
+                .execute(&pool)
+                .await;
+        } else {
+            tracing::warn!("Failed to create idx_checks_timeline; keeping legacy checks indexes");
+        }
         let _ =
             sqlx::raw_sql("CREATE INDEX IF NOT EXISTS idx_checks_checked_at ON checks(checked_at)")
                 .execute(&pool)

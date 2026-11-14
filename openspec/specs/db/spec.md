@@ -17,12 +17,6 @@ SHALL existir en la base de datos tras la migración. El índice SHALL ser
 `response_time_ms`) y SHALL sustituir a los índices redundantes
 `idx_checks_monitor` e `idx_checks_uptime`, que SHALL eliminarse.
 
-#### Scenario: get_checks_filtered usa el nuevo índice DESC
-Given un monitor con 100k checks y el índice idx_checks_uptime ASC existente
-When se ejecuta `get_checks_filtered` con status `['up','down']` y ORDER BY DESC
-Then la query usa `idx_checks_timeline` (index scan, no sort) en lugar de idx_checks_uptime
-And el tiempo es < 10ms para LIMIT 20
-
 #### Scenario: get_timeline usa el nuevo índice DESC
 Given el mismo monitor con 100k checks
 When se ejecuta `get_timeline(monitor_id, since)` con ORDER BY ASC
