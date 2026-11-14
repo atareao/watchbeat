@@ -2,40 +2,44 @@
 
 ## Estado (14 Nov 2026)
 
-- **#64 ✅ COMPLETADO** (rama `feature/jwks-empty-no-recursion`, PR abierto a `development`):
-  `validate_token` ya no recursa cuando la caché JWKS está vacía. Con un IdP que responde
-  `{"keys": []}` antes había bucle sin límite / `stack overflow`; ahora hace una única llamada
-  de llenado y devuelve `Err` si sigue vacía (más una de rotación como máximo).
-  - 3 tests offline (servidor HTTP local, con timeout): JWKS vacío → `Err` + 1 petición;
-    fallo de red → `Err`; caché vacía con refresco deshabilitado → `Err` sin red.
-  - Auditado por `@rust-reviewer`: **APROBADO**. `just check` limpio; 275+9+45+8+3 = 340 verdes.
-  - Docs: `docs/jwks-empty-no-recursion.md`. Plan `plans/PLAN-010-ARCHIVED.md`.
-  - Change OpenSpec archivado: `openspec/changes/archive/2026-11-14-jwks-empty-no-recursion/`.
-- **#61 ✅ COMPLETADO** (PR #65 mergeado en `development`, commit `d1ea8fa0`): tests de
-  validación JWT (6 escenarios, offline) + CI de seguridad (`.github/workflows/security.yml`,
-  `cargo audit` + `npm audit`, verde en el PR). Docs `docs/jwt-validation-tests.md`,
-  `docs/security-ci.md`; plan `plans/PLAN-009-ARCHIVED.md`.
+- **#68 ✅ COMPLETADO** (rama `feature/dns-single-flight`, PR abierto a `development`):
+  single-flight (dedupe en vuelo) en `DnsResolver`. Antes, N resoluciones concurrentes del
+  mismo host en cache-miss lanzaban N consultas (thundering herd); ahora comparten una única
+  consulta y su resultado vía `tokio::sync::watch`, con guard RAII `InflightGuard` (reclama la
+  entrada si el líder se cancela/panickea, caso real por los `tokio::time::timeout` de los checkers).
+  - Tests offline: 4 escenarios de dedupe + `cancelled_leader_is_reclaimed_and_hands_off`.
+  - Auditado por `@rust-reviewer` (2 rondas; el fix del líder cancelado fue un hallazgo crítico
+    corregido y re-verificado): **APROBADO**. `just check` limpio; 280+9+45+8+3 = 345 verdes.
+  - Docs: `docs/dns-single-flight.md`. Plan `plans/PLAN-011-ARCHIVED.md`.
+  - Change OpenSpec archivado: `openspec/changes/archive/2026-11-14-dns-single-flight/`.
+- **#64 ✅ COMPLETADO** (PR #67 mergeado): `validate_token` sin recursión con JWKS vacío.
+  Docs `docs/jwks-empty-no-recursion.md`; plan `plans/PLAN-010-ARCHIVED.md`.
+- **#61 ✅ COMPLETADO** (PR #65 mergeado): tests de validación JWT + CI de seguridad.
+  Docs `docs/jwt-validation-tests.md`, `docs/security-ci.md`; plan `plans/PLAN-009-ARCHIVED.md`.
 - Producción en **v0.15.3** (imagen `ghcr.io/atareao/watchbeat:latest`, revision `147a7bcf`),
   `healthy`, 7 monitores `up`. Despliegue gestionado por Dockge.
 
 ## Pendiente
 
-### Issues abiertos
-- **#62** ✨ Follow-ups Robust Check Engine (canario, breaker, SSE, agrupación) (**siguiente**).
+### #62 — Follow-ups Robust Check Engine (sub-issues)
+- **#68** ✅ dedupe de consultas DNS en vuelo (PR abierto).
+- **#69** ⚙️ canario de red configurable vía settings (**siguiente**).
+- **#70** 📡 `error_kind` en el evento SSE.
+- **#71** 🚦 estado del breaker (closed/open) en API y dashboard.
+- **#72** 📬 agrupar notificaciones latency/expiry en el breaker.
 - **#63** ♿ a11y del timeline + test SNI real.
 
 ### Pendiente inmediato
-- Revisar y mergear el PR de #64. Después, seguir por **#62** y luego **#63**, cada uno en
-  sesión separada (change OpenSpec + TDD).
+- Revisar y mergear el PR de #68. Después, seguir por **#69** y el resto de sub-issues de #62,
+  cada uno en sesión separada (change OpenSpec + TDD).
 
 ### Follow-ups técnicos
-- Canario de red configurable (hoy fijo a 30 s).
-- Estado del breaker (`closed`/`open`) expuesto en API/dashboard.
-- Dedupe de consultas DNS en vuelo.
-- `error_kind` en el evento SSE (hoy se rellena con refetch).
-- a11y del timeline (barras distinguibles solo por color).
-- Agrupar `latency`/`expiry` en el breaker.
-- SNI real no assertado con handshake TLS completo.
+- Canario de red configurable (hoy fijo a 30 s) → #69.
+- Estado del breaker (`closed`/`open`) expuesto en API/dashboard → #71.
+- `error_kind` en el evento SSE → #70.
+- a11y del timeline (barras distinguibles solo por color) → #63.
+- Agrupar `latency`/`expiry` en el breaker → #72.
+- SNI real no assertado con handshake TLS completo → #63.
 - `fetch_jwks` ignora el header `kid` y prueba todas las claves (ver `docs/jwt-validation-tests.md`).
 - `Vec<DecodingKey>` clonado por request autenticada (preexistente).
 
@@ -59,7 +63,7 @@ Issues #34–#40 cerrados. Docs: `docs/robust-check-engine.md`, `docs/robust-che
 
 ```bash
 just check                 # fmt + clippy
-cd backend && cargo test   # 275 + 9 + 45 + 8 + 3
+cd backend && cargo test   # 280 + 9 + 45 + 8 + 3
 cd frontend && npx tsc --noEmit && npm run build
 cd backend && cargo audit && (cd ../frontend && npm audit --audit-level=high)
 ```
