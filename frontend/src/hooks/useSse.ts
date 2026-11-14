@@ -7,6 +7,9 @@ export interface CheckEvent {
   status: 'up' | 'down' | 'error' | 'warning' | 'indeterminate';
   response_time_ms: number;
   error_message: string | null;
+  /** Machine-readable failure cause (e.g. "connect_refused", "dns_nxdomain").
+   * Always present on the wire; `null` when there is no attributable cause. */
+  error_kind: string | null;
   checked_at: string;
 }
 

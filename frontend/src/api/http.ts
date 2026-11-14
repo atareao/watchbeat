@@ -49,7 +49,7 @@ export interface CheckResult {
   error_message: string | null;
   /** Machine-readable failure cause (e.g. "connect_refused", "dns_error").
    * Omitted by the backend when there is no attributable cause. */
-  error_kind: string | null;
+  error_kind?: string | null;
   checked_at: string;
   tls_cert_expires_at: string | null;
   tls_cert_days_left: number | null;
@@ -81,6 +81,21 @@ export interface DashboardStatus {
   indeterminate_monitors: number;
   total_checks_24h: number;
   avg_response_time_24h: number | null;
+}
+
+/** Storm breaker state exposed by `GET /api/breaker`.
+ * `state` is "open" while notifications are being suppressed. */
+export interface BreakerStatus {
+  state: "closed" | "open";
+  enabled: boolean;
+  threshold_percent: number;
+  window_seconds: number;
+  min_monitors: number;
+}
+
+export async function fetchBreaker(): Promise<BreakerStatus> {
+  const data = await fetcher<{ status: BreakerStatus }>("/api/breaker");
+  return data.status;
 }
 
 export interface Notifier {

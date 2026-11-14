@@ -1,12 +1,13 @@
 import React from 'react';
-import { Card, Tag, Typography, Space, Button, Dropdown, Modal, Popconfirm, message } from 'antd';
+import { Card, Tag, Typography, Space, Button, Dropdown, Modal, Popconfirm, message, Tooltip } from 'antd';
 import {
-  CheckCircleOutlined, CloseCircleOutlined, WarningOutlined,
-  PlayCircleOutlined, MoreOutlined, HeartOutlined, ClockCircleOutlined, CopyOutlined,
-  GlobalOutlined, ApiOutlined, WifiOutlined, SafetyOutlined, QuestionCircleOutlined,
+  PlayCircleOutlined, MoreOutlined, HeartOutlined, CopyOutlined,
+  GlobalOutlined, ApiOutlined, WifiOutlined, SafetyOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { MonitorSummary } from '../api/http';
 import { runCheck, toggleMonitor } from '../api/http';
+import { statusStyle, type Status } from '../theme/statusStyles';
 import { useNavigate } from 'react-router';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -15,17 +16,22 @@ import 'dayjs/locale/es';
 dayjs.extend(relativeTime);
 dayjs.locale('es');
 
-const STATUS_CONFIG: Record<string, { color: string; icon: React.ReactNode }> = {
-  up: { color: '#22c55e', icon: <CheckCircleOutlined style={{ color: '#22c55e', fontSize: 24 }} /> },
-  down: { color: '#ef4444', icon: <CloseCircleOutlined style={{ color: '#ef4444', fontSize: 24 }} /> },
-  error: { color: '#f59e0b', icon: <WarningOutlined style={{ color: '#f59e0b', fontSize: 24 }} /> },
-  // Failure NOT attributable to the target (e.g. host's own network/DNS is down).
-  // Violet + question mark: clearly distinct from down (red) and error (amber).
-  indeterminate: { color: '#722ed1', icon: <QuestionCircleOutlined style={{ color: '#722ed1', fontSize: 24 }} /> },
-  ok: { color: '#22c55e', icon: <CheckCircleOutlined style={{ color: '#22c55e', fontSize: 24 }} /> },
-  missing: { color: '#ef4444', icon: <CloseCircleOutlined style={{ color: '#ef4444', fontSize: 24 }} /> },
-  pending: { color: '#f59e0b', icon: <ClockCircleOutlined style={{ color: '#f59e0b', fontSize: 24 }} /> },
+// Card-level status keys (including heartbeat lifecycle states) mapped onto the
+// shared status token so colours/icons stay in sync across the app. Unknown
+// keys intentionally fall through to the token's own fallback (`no_data`) —
+// there is a single "unknown status" policy, owned by `statusStyle()`.
+const CARD_STATUS: Record<string, Status> = {
+  up: 'up',
+  ok: 'up',
+  down: 'down',
+  missing: 'down',
+  error: 'error',
+  indeterminate: 'indeterminate',
+  pending: 'warning',
 };
+
+const cardStatus = (key: string | null | undefined) =>
+  statusStyle(CARD_STATUS[key ?? ''] ?? key);
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
   http: <GlobalOutlined style={{ color: '#1677ff' }} />,
@@ -40,9 +46,12 @@ interface MonitorCardProps {
   onEdit: (item: MonitorSummary) => void;
   onDelete: (id: string) => void;
   onRefresh: () => void;
+  /** True while the storm breaker is open: notifications for this monitor are
+   * being suppressed. Purely informational, does not change the real status. */
+  breakerOpen?: boolean;
 }
 
-export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: MonitorCardProps) {
+export default function MonitorCard({ item, onEdit, onDelete, onRefresh, breakerOpen = false }: MonitorCardProps) {
   const navigate = useNavigate();
   const isHeartbeat = item.monitor_type === 'heartbeat';
 
@@ -56,11 +65,9 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
       : 'pending'
     : null;
 
-  const cfg = isHeartbeat
-    ? STATUS_CONFIG[hbStatus ?? 'pending'] ?? STATUS_CONFIG.pending
-    : item.last_status
-      ? STATUS_CONFIG[item.last_status] ?? STATUS_CONFIG.error
-      : STATUS_CONFIG.error;
+  const cfg = cardStatus(
+    isHeartbeat ? hbStatus ?? 'pending' : item.last_status ?? 'error',
+  );
 
   const pulseUrl = isHeartbeat ? `${window.location.origin}/api/heartbeat/${item.token}` : '';
   const typeIcon = TYPE_ICONS[item.monitor_type] ?? null;
@@ -154,6 +161,16 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh }: Monit
             </Space>
             <div style={{ marginTop: 4 }}>
               <Tag color={cfg.color}>{statusLabel}</Tag>
+              {breakerOpen && (
+                <Tooltip title="Notificaciones suprimidas por tormenta">
+                  <Tag
+                    icon={<ThunderboltOutlined style={{ color: '#faad14' }} />}
+                    aria-label="Notificaciones suprimidas por tormenta"
+                  >
+                    Suprimido
+                  </Tag>
+                </Tooltip>
+              )}
               {isHeartbeat ? (
                 <Typography.Text code style={{ fontSize: 12 }}>Grace: {item.grace_seconds ?? 3600}s</Typography.Text>
               ) : (

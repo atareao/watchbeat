@@ -318,13 +318,18 @@ pub async fn import_all(
         }
     }
 
-    // Import settings
+    // Import settings. The canary period is remembered so it can be applied to
+    // the running task once every setting has landed (issue #69).
+    let mut imported_canary_interval: Option<String> = None;
     for setting in &payload.settings {
         let key = setting
             .get("key")
             .and_then(|v| v.as_str())
             .ok_or("Setting missing key")?;
         let value = setting.get("value").and_then(|v| v.as_str()).unwrap_or("");
+        if key == crate::netcheck::SETTING_CANARY_INTERVAL_SECS {
+            imported_canary_interval = Some(value.to_string());
+        }
         state
             .db
             .set_setting(key, value)
@@ -335,6 +340,15 @@ pub async fn import_all(
     // The imported settings may change the storm breaker (Fase 5, D6): reload it,
     // exactly as `set_setting` does for the breaker keys (MENOR-2).
     state.scheduler_mgr.reload_breaker().await;
+
+    // Same hot reload for the canary period: an imported
+    // `canary_interval_secs` must reach the running task without a restart,
+    // exactly as saving it through `routes/settings.rs` does.
+    if let Some(value) = imported_canary_interval.as_deref() {
+        state
+            .netcheck
+            .set_interval(crate::netcheck::interval_from_setting(Some(value)));
+    }
 
     Ok(Json(serde_json::json!({ "ok": true, "imported": {
         "monitors": payload.monitors.len(),

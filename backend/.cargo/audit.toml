@@ -1,0 +1,16 @@
+# cargo-audit configuration for the watchbeat backend.
+#
+# Referenced from the `rust` job of `.github/workflows/security.yml`.
+# cargo-audit reads this file automatically when it is invoked from the
+# `backend/` directory (it looks for `.cargo/audit.toml` next to Cargo.toml).
+
+[advisories]
+# Single allowed exception (documented per the spec).
+#
+# RUSTSEC-2026-0459 -- `libsqlite3-sys` (C SQLite CVE-2026-119375).
+# We depend on `libsqlite3-sys` transitively through `sqlx`. The advisory is
+# fixed in `libsqlite3-sys >= 0.39.0`, but sqlx still pins 0.37.0, so the
+# upgrade is not reachable from this project yet. Re-evaluate on every sqlx
+# upgrade and drop this ignore as soon as a patched version can be adopted.
+# https://rustsec.org/advisories/RUSTSEC-2026-0459
+ignore = ["RUSTSEC-2026-0459"]

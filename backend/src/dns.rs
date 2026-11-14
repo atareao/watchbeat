@@ -24,6 +24,7 @@ use hickory_resolver::net::{DnsError as HickoryDnsError, NetError};
 use hickory_resolver::proto::op::ResponseCode;
 use hickory_resolver::proto::rr::{Name, RecordType};
 use hickory_resolver::{Resolver, TokioResolver};
+use tokio::sync::watch;
 
 /// Upstream servers used when none is configured.
 pub const DEFAULT_UPSTREAMS: [&str; 3] = ["1.1.1.1", "8.8.8.8", "9.9.9.9"];
@@ -116,10 +117,54 @@ struct CacheEntry {
     expires_at: Instant,
 }
 
+/// Outcome of one upstream round, published to every follower of a host.
+type Resolution = Result<Vec<IpAddr>, DnsError>;
+
+/// In-flight queries, keyed by normalized host: the receiver side is stored by
+/// the leader and cloned by every follower.
+type Inflight = HashMap<String, watch::Receiver<Option<Resolution>>>;
+
+/// Whether a caller leads an in-flight query or follows one already running.
+enum InflightSlot {
+    /// Nobody was resolving this host: the caller queries and publishes.
+    Leader(watch::Sender<Option<Resolution>>),
+    /// Another caller is already resolving this host: wait for its outcome.
+    Follower(watch::Receiver<Option<Resolution>>),
+}
+
+/// Removes the leader's `inflight` entry however its future ends.
+///
+/// `Drop` runs on the normal path, but also when the future is cancelled or the
+/// task panics — the common case here, because every `resolve_all` runs under a
+/// `tokio::time::timeout` in the checkers. Without it an interrupted leader
+/// would orphan its entry: later callers would follow a dead channel forever
+/// and the map would grow without bound.
+struct InflightGuard<'a> {
+    inflight: &'a Mutex<Inflight>,
+    host: String,
+}
+
+impl Drop for InflightGuard<'_> {
+    fn drop(&mut self) {
+        self.inflight
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.host);
+    }
+}
+
+/// How many leader epochs one caller joins before resolving on its own.
+///
+/// Each extra epoch means an in-flight leader vanished without publishing (its
+/// task was cancelled), so this bounds the retry instead of looping forever.
+const MAX_INFLIGHT_ATTEMPTS: usize = 2;
+
 /// Hostname resolver with a TTL cache and multi-upstream fallback.
 pub struct DnsResolver {
     upstreams: Vec<Arc<dyn Upstream>>,
     cache: Mutex<HashMap<String, CacheEntry>>,
+    /// Single-flight map: concurrent misses for one host share a single query.
+    inflight: Mutex<Inflight>,
     min_ttl: Duration,
     max_ttl: Duration,
     attempt_timeout: Duration,
@@ -157,6 +202,7 @@ impl DnsResolver {
         Self {
             upstreams,
             cache: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashMap::new()),
             min_ttl: config.min_ttl,
             // Guard against an inverted configuration: `Duration::clamp` panics
             // when the lower bound is greater than the upper one.
@@ -185,6 +231,10 @@ impl DnsResolver {
     /// IP literals are returned as-is without querying any upstream. The order
     /// is the upstream's (IPv4 first, per `LookupIpStrategy::Ipv4AndIpv6`),
     /// with duplicates removed.
+    ///
+    /// Concurrent cache misses for the same host share a single upstream query
+    /// (see [`Self::resolve_shared`]), so a burst of checkers resolving one
+    /// name during a cache expiry does not multiply the DNS traffic.
     pub async fn resolve_all(&self, host: &str) -> Result<Vec<IpAddr>, DnsError> {
         let host = normalize_host(host);
 
@@ -196,7 +246,91 @@ impl DnsResolver {
             return Ok(ips);
         }
 
-        self.query_upstreams(&host).await
+        self.resolve_shared(&host).await
+    }
+
+    /// Resolve a host through the single-flight map.
+    ///
+    /// The first caller for a host (the *leader*) queries the upstreams and
+    /// publishes the outcome — success or error — to every follower, which
+    /// returns it verbatim. The leader's entry is owned by an [`InflightGuard`],
+    /// so it disappears as soon as the leader's future ends, cancellation and
+    /// panic included.
+    ///
+    /// A follower that finds the channel closed with no outcome (its leader died
+    /// mid-flight) checks the cache and joins the next epoch, where it becomes
+    /// the leader itself: the handoff is real. The loop bounds it to
+    /// [`MAX_INFLIGHT_ATTEMPTS`] epochs before resolving without deduplication,
+    /// so there is neither recursion nor unbounded spinning.
+    async fn resolve_shared(&self, host: &str) -> Result<Vec<IpAddr>, DnsError> {
+        for _ in 0..MAX_INFLIGHT_ATTEMPTS {
+            match self.join_or_lead(host) {
+                InflightSlot::Leader(tx) => {
+                    // The entry is ours: keep it only while this future lives.
+                    let _guard = InflightGuard {
+                        inflight: &self.inflight,
+                        host: host.to_string(),
+                    };
+
+                    let result = self.query_upstreams(host).await;
+
+                    // Publish before the guard removes the entry as it goes out
+                    // of scope: a caller reading the map afterwards must not
+                    // miss the outcome.
+                    let _ = tx.send(Some(result.clone()));
+                    return result;
+                }
+                InflightSlot::Follower(mut rx) => {
+                    if rx.borrow().is_none() {
+                        // Fails immediately when the leader dropped its sender,
+                        // which is the case handled right below.
+                        let _ = rx.changed().await;
+                    }
+
+                    let published = rx.borrow().clone();
+                    if let Some(result) = published {
+                        return result;
+                    }
+
+                    // The leader disappeared without publishing (cancelled
+                    // task, e.g. a check timing out): the cache may still hold
+                    // what it stored, otherwise join once more — this caller
+                    // becomes the leader of the next epoch.
+                    if let Some(ips) = self.cached_ips(host) {
+                        return Ok(ips);
+                    }
+                }
+            }
+        }
+
+        // Two leaders vanished in a row: resolve without deduplication instead
+        // of spinning on a map nobody is populating.
+        self.query_upstreams(host).await
+    }
+
+    /// Register as the leader of `host`'s query, or join the one in flight.
+    ///
+    /// The `inflight` guard never crosses an `await` point: it is scoped to
+    /// this synchronous helper, keeping the returned future `Send`.
+    fn join_or_lead(&self, host: &str) -> InflightSlot {
+        let mut inflight = self.lock_inflight();
+
+        // Belt and braces next to `InflightGuard`: a channel whose sender is
+        // gone carries no outcome, so joining it would wait forever. Such a
+        // stale entry is replaced (and this caller leads) instead.
+        let existing = inflight
+            .get(host)
+            .map(|rx| (rx.clone(), rx.has_changed().is_ok()));
+
+        if let Some((rx, alive)) = existing {
+            if alive {
+                return InflightSlot::Follower(rx);
+            }
+        }
+
+        let (tx, rx) = watch::channel(None);
+        inflight.insert(host.to_string(), rx);
+        InflightSlot::Leader(tx)
     }
 
     /// Query every upstream in order until one answers.
@@ -286,6 +420,13 @@ impl DnsResolver {
         self.cache.lock().unwrap_or_else(|error| error.into_inner())
     }
 
+    /// Poisoning is harmless here too: the map only holds wait handles.
+    fn lock_inflight(&self) -> MutexGuard<'_, Inflight> {
+        self.inflight
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
     /// Insert an entry directly, simulating a warm cache.
     #[cfg(test)]
     pub(crate) fn prime_cache(&self, host: &str, ip: IpAddr, ttl: Duration) {
@@ -307,6 +448,11 @@ impl DnsResolver {
     #[cfg(test)]
     fn cache_len(&self) -> usize {
         self.lock_cache().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inflight_len(&self) -> usize {
+        self.lock_inflight().len()
     }
 
     #[cfg(test)]
@@ -538,6 +684,9 @@ mod tests {
     enum Behaviour {
         /// Answer with an IP and a TTL (in seconds).
         Answer(IpAddr, u64),
+        /// Answer with an IP and a TTL (in seconds) after a delay, so that
+        /// concurrent callers have time to pile up on the same host.
+        AnswerAfter(Duration, IpAddr, u64),
         /// Answer with several IPs and a TTL (in seconds).
         AnswerMany(Vec<IpAddr>, u64),
         /// Behave like an upstream that never answers.
@@ -557,6 +706,13 @@ mod tests {
         fn answer_many(ips: Vec<IpAddr>, ttl_secs: u64) -> Self {
             Self {
                 behaviour: Behaviour::AnswerMany(ips, ttl_secs),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn answering_after(delay: Duration, ip: IpAddr, ttl_secs: u64) -> Self {
+            Self {
+                behaviour: Behaviour::AnswerAfter(delay, ip, ttl_secs),
                 calls: AtomicUsize::new(0),
             }
         }
@@ -589,6 +745,13 @@ mod tests {
                     ips: vec![*ip],
                     ttl: Duration::from_secs(*ttl_secs),
                 }),
+                Behaviour::AnswerAfter(delay, ip, ttl_secs) => {
+                    tokio::time::sleep(*delay).await;
+                    Ok(UpstreamAnswer {
+                        ips: vec![*ip],
+                        ttl: Duration::from_secs(*ttl_secs),
+                    })
+                }
                 Behaviour::AnswerMany(ips, ttl_secs) => Ok(UpstreamAnswer {
                     ips: ips.clone(),
                     ttl: Duration::from_secs(*ttl_secs),
@@ -604,6 +767,17 @@ mod tests {
 
     /// Resolver wired to the given fake upstreams.
     fn resolver_with(upstreams: Vec<Arc<FakeUpstream>>, min_ttl: u64, max_ttl: u64) -> DnsResolver {
+        resolver_with_timeout(upstreams, min_ttl, max_ttl, Duration::from_millis(100))
+    }
+
+    /// Resolver wired to the given fake upstreams, with an explicit per-attempt
+    /// timeout: slow-but-successful upstreams need more than the 100 ms default.
+    fn resolver_with_timeout(
+        upstreams: Vec<Arc<FakeUpstream>>,
+        min_ttl: u64,
+        max_ttl: u64,
+        attempt_timeout: Duration,
+    ) -> DnsResolver {
         let upstreams: Vec<Arc<dyn Upstream>> = upstreams
             .into_iter()
             .map(|upstream| upstream as Arc<dyn Upstream>)
@@ -614,10 +788,35 @@ mod tests {
             DnsConfig {
                 min_ttl: Duration::from_secs(min_ttl),
                 max_ttl: Duration::from_secs(max_ttl),
-                attempt_timeout: Duration::from_millis(100),
+                attempt_timeout,
                 ..DnsConfig::default()
             },
         )
+    }
+
+    /// Run `count` resolutions of `host` concurrently, each on its own task, and
+    /// collect their outcomes in launch order.
+    async fn resolve_concurrently(
+        resolver: Arc<DnsResolver>,
+        host: &str,
+        count: usize,
+    ) -> Vec<Result<Vec<IpAddr>, DnsError>> {
+        let mut tasks = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            let resolver = Arc::clone(&resolver);
+            let host = host.to_string();
+            tasks.push(tokio::spawn(
+                async move { resolver.resolve_all(&host).await },
+            ));
+        }
+
+        let mut outcomes = Vec::with_capacity(count);
+        for task in tasks {
+            outcomes.push(task.await.expect("a resolution task must not panic"));
+        }
+
+        outcomes
     }
 
     // ───── Requirement: Resolución de nombres con caché TTL ─────
@@ -1007,5 +1206,181 @@ mod tests {
             matches!(resolved, Err(DnsError::Other(ref message)) if message.contains("no address")),
             "an empty answer must not become Ok(vec![]), got: {resolved:?}"
         );
+    }
+
+    // ───── Requirement: Deduplicación de consultas DNS en vuelo ─────
+
+    /// Scenario: Llamadas concurrentes comparten una sola consulta.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_resolutions_of_one_host_should_query_upstream_once() {
+        let upstream = Arc::new(FakeUpstream::answering_after(
+            Duration::from_millis(50),
+            ip(203, 0, 113, 70),
+            60,
+        ));
+        let resolver = Arc::new(resolver_with_timeout(
+            vec![Arc::clone(&upstream)],
+            0,
+            300,
+            Duration::from_secs(5),
+        ));
+
+        let outcomes = resolve_concurrently(Arc::clone(&resolver), TEST_HOST, 8).await;
+
+        assert_eq!(
+            upstream.calls(),
+            1,
+            "8 concurrent cache misses must share a single upstream query"
+        );
+        for outcome in &outcomes {
+            assert_eq!(
+                outcome,
+                &Ok(vec![ip(203, 0, 113, 70)]),
+                "every caller must get the leader's addresses"
+            );
+        }
+    }
+
+    /// Scenario: El error se comparte entre llamadas concurrentes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_resolutions_of_one_host_should_share_the_same_error() {
+        // The upstream never answers: every attempt ends in `DnsError::Timeout`.
+        let upstream = Arc::new(FakeUpstream::hanging(Duration::from_secs(5)));
+        let resolver = Arc::new(resolver_with_timeout(
+            vec![Arc::clone(&upstream)],
+            0,
+            300,
+            Duration::from_millis(200),
+        ));
+
+        let outcomes = resolve_concurrently(Arc::clone(&resolver), TEST_HOST, 8).await;
+
+        assert_eq!(
+            upstream.calls(),
+            1,
+            "concurrent cache misses must share a single upstream query"
+        );
+        for outcome in &outcomes {
+            assert_eq!(
+                outcome,
+                &Err(DnsError::Timeout),
+                "every caller must receive the leader's error"
+            );
+        }
+    }
+
+    /// Scenario: Acierto de caché no coordina.
+    #[tokio::test]
+    async fn cached_host_should_not_coordinate_and_never_query_upstream() {
+        let upstream = Arc::new(FakeUpstream::answer(ip(203, 0, 113, 71), 60));
+        let resolver = Arc::new(resolver_with(vec![Arc::clone(&upstream)], 0, 300));
+        resolver.prime_cache(TEST_HOST, ip(203, 0, 113, 71), Duration::from_secs(60));
+
+        let outcomes = resolve_concurrently(Arc::clone(&resolver), TEST_HOST, 8).await;
+
+        assert_eq!(
+            upstream.calls(),
+            0,
+            "a cache hit must be served without any upstream query"
+        );
+        for outcome in &outcomes {
+            assert_eq!(outcome, &Ok(vec![ip(203, 0, 113, 71)]));
+        }
+    }
+
+    /// Scenario: Hosts distintos no se deduplican entre sí.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn distinct_hosts_should_not_be_deduplicated() {
+        let upstream = Arc::new(FakeUpstream::answering_after(
+            Duration::from_millis(50),
+            ip(203, 0, 113, 72),
+            60,
+        ));
+        let resolver = Arc::new(resolver_with_timeout(
+            vec![Arc::clone(&upstream)],
+            0,
+            300,
+            Duration::from_secs(5),
+        ));
+
+        let first = {
+            let resolver = Arc::clone(&resolver);
+            tokio::spawn(async move { resolver.resolve_all("watchbeat-one.test").await })
+        };
+        let second = {
+            let resolver = Arc::clone(&resolver);
+            tokio::spawn(async move { resolver.resolve_all("watchbeat-two.test").await })
+        };
+
+        let (first, second) = tokio::join!(first, second);
+
+        assert_eq!(
+            upstream.calls(),
+            2,
+            "one in-flight query per host, never shared between hosts"
+        );
+        assert_eq!(first.unwrap(), Ok(vec![ip(203, 0, 113, 72)]));
+        assert_eq!(second.unwrap(), Ok(vec![ip(203, 0, 113, 72)]));
+    }
+
+    /// Scenario: Un líder cancelado libera su entrada y la resolución siguiente
+    /// vuelve a liderar, en lugar de esperar para siempre a un canal muerto.
+    ///
+    /// `resolve_all` runs under `tokio::time::timeout` in the checkers, so a
+    /// leader being dropped mid-flight is a real path, not a theoretical one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_leader_is_reclaimed_and_hands_off() {
+        let upstream = Arc::new(FakeUpstream::answering_after(
+            Duration::from_millis(200),
+            ip(203, 0, 113, 73),
+            60,
+        ));
+        let resolver = Arc::new(resolver_with_timeout(
+            vec![Arc::clone(&upstream)],
+            0,
+            300,
+            Duration::from_secs(5),
+        ));
+
+        let leader = {
+            let resolver = Arc::clone(&resolver);
+            tokio::spawn(async move { resolver.resolve_all(TEST_HOST).await })
+        };
+
+        // Wait until the leader is inside the upstream query, then cancel it:
+        // the fake upstream is still sleeping, so nothing was published nor
+        // cached.
+        let started = std::time::Instant::now();
+        while upstream.calls() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "the leader must reach the upstream"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(resolver.inflight_len(), 1, "the leader owns one entry");
+
+        leader.abort();
+        assert!(
+            leader.await.is_err(),
+            "the aborted leader must report cancellation"
+        );
+
+        assert_eq!(
+            resolver.inflight_len(),
+            0,
+            "a cancelled leader must not orphan its in-flight entry"
+        );
+
+        // The next caller leads again instead of following the dead channel.
+        let resolved = resolver.resolve_all(TEST_HOST).await;
+
+        assert_eq!(resolved, Ok(vec![ip(203, 0, 113, 73)]));
+        assert_eq!(
+            upstream.calls(),
+            2,
+            "the reclaimed host must be queried once more"
+        );
+        assert_eq!(resolver.inflight_len(), 0, "the map is clean again");
     }
 }

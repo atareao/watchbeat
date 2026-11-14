@@ -183,24 +183,66 @@ impl TlsChecker {
         .await
     }
 
-    /// One TLS handshake attempt against a concrete address.
+    /// One TLS handshake attempt against a concrete address, with an injectable
+    /// connector factory.
     ///
-    /// The connector (root store + client config) is built only after the TCP
-    /// connection succeeds: a refused connection must not need a crypto provider
-    /// installed, and the successful address builds it exactly once per check.
+    /// This is the single place holding the order of an attempt: connect, then
+    /// build the connector, then handshake. `make_connector` is called *after*
+    /// the TCP connection succeeds, so a refused connection never needs a crypto
+    /// provider installed and the connector is built exactly once per attempt.
+    /// Production ([`Self::attempt`]) and the test seam
+    /// ([`Self::check_with_all_with_connector`]) both go through here, so they
+    /// cannot drift apart.
+    async fn attempt_with<C>(
+        host: &str,
+        ip: std::net::IpAddr,
+        port: u16,
+        addr: &str,
+        make_connector: C,
+    ) -> Result<TlsInfo, TlsFailure>
+    where
+        C: FnOnce() -> tokio_rustls::TlsConnector,
+    {
+        let tcp = Self::connect(ip, port, addr).await?;
+        Self::handshake(host, tcp, &make_connector(), addr).await
+    }
+
+    /// Production attempt: a connector rooted in `webpki-roots`.
     async fn attempt(
         host: &str,
         ip: std::net::IpAddr,
         port: u16,
         addr: &str,
     ) -> Result<TlsInfo, TlsFailure> {
-        let tcp = tokio::net::TcpStream::connect(std::net::SocketAddr::new(ip, port))
+        Self::attempt_with(host, ip, port, addr, build_connector).await
+    }
+
+    /// Establish the TCP connection, keeping a socket-level failure apart from a
+    /// handshake one.
+    async fn connect(
+        ip: std::net::IpAddr,
+        port: u16,
+        addr: &str,
+    ) -> Result<tokio::net::TcpStream, TlsFailure> {
+        tokio::net::TcpStream::connect(std::net::SocketAddr::new(ip, port))
             .await
             .map_err(|e| {
                 tracing::warn!(target = %addr, error = %e, "TLS: TCP connect failed");
                 TlsFailure::Connect(e)
-            })?;
+            })
+    }
 
+    /// Handshake over an already-established TCP stream.
+    ///
+    /// The monitor's host is what rustls announces as SNI: a DNS name travels in
+    /// the extension, while a literal IP address is announced without it
+    /// (RFC 6066). That is the contract the SNI tests pin down.
+    async fn handshake(
+        host: &str,
+        tcp: tokio::net::TcpStream,
+        connector: &tokio_rustls::TlsConnector,
+        addr: &str,
+    ) -> Result<TlsInfo, TlsFailure> {
         let server_name =
             rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| {
                 tracing::warn!(host = %host, "TLS: invalid server name");
@@ -210,7 +252,6 @@ impl TlsChecker {
                 ))
             })?;
 
-        let connector = build_connector();
         let tls = connector.connect(server_name, tcp).await.map_err(|e| {
             tracing::warn!(target = %addr, error = %e, "TLS: handshake failed");
             TlsFailure::Handshake(e)
@@ -224,6 +265,29 @@ impl TlsChecker {
         } else {
             TlsInfo::default()
         })
+    }
+
+    /// [`Self::check_with_all`] with an injectable connector.
+    ///
+    /// A local test server cannot present a chain rooted in `webpki-roots`, so
+    /// this seam lets tests trust a generated CA and reach a *successful*
+    /// handshake offline. Every attempt still goes through [`Self::attempt_with`],
+    /// the same function production uses.
+    #[cfg(test)]
+    pub(crate) async fn check_with_all_with_connector<F, Fut>(
+        monitor: &Monitor,
+        resolve_all: F,
+        connector: tokio_rustls::TlsConnector,
+    ) -> CheckOutcome
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<std::net::IpAddr>, crate::dns::DnsError>>,
+    {
+        Self::check_with_all_attempt(monitor, resolve_all, move |host, ip, port, addr| {
+            let connector = connector.clone();
+            async move { Self::attempt_with(&host, ip, port, &addr, || connector.clone()).await }
+        })
+        .await
     }
 }
 
@@ -638,5 +702,215 @@ mod tests {
 
         assert_eq!(outcome.status, "down");
         assert_eq!(outcome.cause, Some(FailureCause::TlsError));
+    }
+
+    // ───── SNI: the handshake must announce the monitor's hostname ─────
+
+    /// A test CA plus a leaf signed by it, so a local TLS server can present a
+    /// chain the test client trusts.
+    struct TestPki {
+        ca: rustls::pki_types::CertificateDer<'static>,
+        leaf: rustls::pki_types::CertificateDer<'static>,
+        leaf_key: rustls::pki_types::PrivateKeyDer<'static>,
+    }
+
+    /// Generate a CA and a leaf valid for `dns_names` and `ip_addresses`.
+    ///
+    /// A self-signed leaf would work too, but a real CA→leaf chain keeps the
+    /// handshake exercising the same path building as production.
+    fn test_pki(dns_names: &[&str], ip_addresses: &[std::net::IpAddr]) -> TestPki {
+        use rcgen::{
+            BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+            KeyUsagePurpose, SanType,
+        };
+
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("CA params");
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let ca_key = KeyPair::generate().expect("CA key pair");
+        let ca_cert = ca_params.self_signed(&ca_key).expect("self-signed CA");
+
+        let names: Vec<String> = dns_names.iter().map(|name| (*name).to_string()).collect();
+        let mut leaf_params = CertificateParams::new(names).expect("leaf params");
+        leaf_params
+            .subject_alt_names
+            .extend(ip_addresses.iter().copied().map(SanType::IpAddress));
+        leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let leaf_key = KeyPair::generate().expect("leaf key pair");
+        let leaf_cert = leaf_params
+            .signed_by(&leaf_key, &Issuer::from_params(&ca_params, &ca_key))
+            .expect("leaf signed by the test CA");
+
+        TestPki {
+            ca: ca_cert.der().clone(),
+            leaf: leaf_cert.der().clone(),
+            leaf_key: leaf_key.into(),
+        }
+    }
+
+    /// Server certificate resolver that records the SNI of the first handshake.
+    #[derive(Debug)]
+    struct SniCapture {
+        cert: Arc<rustls::sign::CertifiedKey>,
+        seen: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Option<String>>>>,
+    }
+
+    impl rustls::server::ResolvesServerCert for SniCapture {
+        fn resolve(
+            &self,
+            hello: rustls::server::ClientHello<'_>,
+        ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+            let sender = self
+                .seen
+                .lock()
+                .expect("SNI channel mutex must not be poisoned")
+                .take();
+            if let Some(sender) = sender {
+                let _ = sender.send(hello.server_name().map(str::to_string));
+            }
+            Some(self.cert.clone())
+        }
+    }
+
+    /// Spawn a local TLS server presenting `pki` on a dynamic loopback port.
+    ///
+    /// Returns the bound port and a receiver that yields the SNI of the first
+    /// handshake (`None` when the client announced none). The receiver resolves
+    /// as soon as the `ClientHello` is parsed, so no sleep is needed.
+    async fn spawn_sni_capture_server(
+        pki: &TestPki,
+    ) -> (u16, tokio::sync::oneshot::Receiver<Option<String>>) {
+        let signing_key = rustls::crypto::ring::sign::any_supported_type(&pki.leaf_key)
+            .expect("the test leaf key must be usable by ring");
+        let cert = Arc::new(rustls::sign::CertifiedKey::new(
+            vec![pki.leaf.clone()],
+            signing_key,
+        ));
+
+        let (sni_tx, sni_rx) = tokio::sync::oneshot::channel();
+        let resolver = Arc::new(SniCapture {
+            cert,
+            seen: std::sync::Mutex::new(Some(sni_tx)),
+        });
+
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(resolver);
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let port = listener.local_addr().expect("bound address").port();
+
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                // The handshake outcome is not what these tests observe: the SNI
+                // arrives in the ClientHello, before any certificate is checked.
+                let _ = acceptor.accept(stream).await;
+            }
+        });
+
+        (port, sni_rx)
+    }
+
+    /// A connector trusting exactly `ca`, so a local test server verifies.
+    fn connector_trusting(
+        ca: &rustls::pki_types::CertificateDer<'static>,
+    ) -> tokio_rustls::TlsConnector {
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(ca.clone())
+            .expect("the test CA must be a valid anchor");
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        tokio_rustls::TlsConnector::from(Arc::new(config))
+    }
+
+    /// Wait for the SNI the test server captured.
+    ///
+    /// The wait is bounded, so a check that never reaches the handshake (a DNS
+    /// failure, say) fails the test in 5s with a clear message instead of
+    /// hanging it.
+    async fn captured_sni(
+        sni_rx: tokio::sync::oneshot::Receiver<Option<String>>,
+    ) -> Option<String> {
+        tokio::time::timeout(Duration::from_secs(5), sni_rx)
+            .await
+            .expect("the check must reach the TLS handshake within 5s")
+            .expect("the SNI capture task must not be dropped before the handshake")
+    }
+
+    /// Scenario: el check TLS anuncia el hostname del monitor como SNI.
+    ///
+    /// The hostname only exists in our injected resolver, and the server only
+    /// answers on loopback: the handshake reaching `up` proves the check used the
+    /// monitor's host, and the captured `server_name` proves *how* it used it.
+    #[tokio::test]
+    async fn tls_check_should_send_monitor_hostname_as_sni() {
+        install_crypto_provider();
+
+        let pki = test_pki(&["example.test"], &[]);
+        let (port, sni_rx) = spawn_sni_capture_server(&pki).await;
+
+        crate::dns::resolver().prime_cache(
+            "example.test",
+            "127.0.0.1".parse().expect("loopback literal"),
+            Duration::from_secs(60),
+        );
+
+        let m = make_monitor(&format!("example.test:{port}"));
+        let outcome = TlsChecker::check_with_all_with_connector(
+            &m,
+            |host| async move { crate::dns::resolve_all(&host).await },
+            connector_trusting(&pki.ca),
+        )
+        .await;
+
+        assert_eq!(
+            outcome.status, "up",
+            "the local TLS server must complete the handshake: {:?}",
+            outcome.error_message
+        );
+        assert!(outcome.error_message.is_none());
+        assert_eq!(
+            captured_sni(sni_rx).await,
+            Some("example.test".to_string()),
+            "the monitor hostname must travel as the SNI extension"
+        );
+    }
+
+    /// Scenario: un destino con IP literal completa el handshake sin SNI.
+    ///
+    /// RFC 6066 forbids IP literals in the SNI extension, so rustls must verify
+    /// the certificate against its IP SAN and announce no server name at all.
+    #[tokio::test]
+    async fn tls_check_should_omit_sni_for_ip_literal_target() {
+        install_crypto_provider();
+
+        let ip = std::net::IpAddr::from([127, 0, 0, 1]);
+        let pki = test_pki(&[], &[ip]);
+        let (port, sni_rx) = spawn_sni_capture_server(&pki).await;
+
+        let m = make_monitor(&format!("127.0.0.1:{port}"));
+        let outcome = TlsChecker::check_with_all_with_connector(
+            &m,
+            |host| async move { crate::dns::resolve_all(&host).await },
+            connector_trusting(&pki.ca),
+        )
+        .await;
+
+        assert_eq!(
+            outcome.status, "up",
+            "the IP literal handshake must complete: {:?}",
+            outcome.error_message
+        );
+        assert_eq!(
+            captured_sni(sni_rx).await,
+            None,
+            "an IP literal target must not send SNI"
+        );
     }
 }

@@ -115,7 +115,18 @@ async fn main() {
     // ───── Network health canary ─────
     // Publishes the health of our own egress; the scheduler reads it (never
     // awaits) to attribute every failure to the target or to our connectivity.
-    let netcheck_handle = netcheck::spawn(netcheck::DEFAULT_INTERVAL);
+    // The period comes from the `canary_interval_secs` setting (default 30s).
+    let canary_secs = db
+        .get_setting(netcheck::SETTING_CANARY_INTERVAL_SECS)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                error = %e,
+                "netcheck: no se pudo leer canary_interval_secs; usando default"
+            );
+            None
+        });
+    let netcheck_handle = netcheck::spawn(netcheck::interval_from_setting(canary_secs.as_deref()));
 
     // Start the scheduler (per-monitor timers, no more polling)
     let scheduler_mgr =

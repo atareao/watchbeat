@@ -1,109 +1,41 @@
-# HANDOFF — WatchBeat
+# Handoff — watchbeat — 2026-11-14 (sesión #75)
 
-## Estado (14 Nov 2026)
+## Objetivo
+Cerrar los follow-ups del Robust Check Engine (#62) uno por sesión, con SDD+TDD, dejando cada feature en un PR a `development`.
 
-- **Release v0.15.2 publicada** (tag `v0.15.2`, merge a `main` + sync `development`).
-  Incluye el **Robust Check Engine** (v0.15.0), la optimización de queries (#33,
-  v0.15.1), el DNS multi-dirección (#52) y el diagnóstico/permisos de ping (#31).
-- `main` y `development` sincronizados. Tests: **266** lib + 9 + 45 + 8 + 3 verdes.
-- **#59** ✅ (PR #60): deps de seguridad actualizadas. `jsonwebtoken` 12
-  (rsa 0.10, crypto-bigint 0.7, ctutils 0.4.8), rustls-webpki 0.103.17,
-  roots 1.0.12, vite ^8.3.8. `cargo audit`: solo queda `libsqlite3-sys` 0.37
-  (bloqueado por sqlx 0.9.0). `npm audit`: 0. **18 alertas Dependabot cerradas**
-  (stale). Doc `docs/security-deps.md`, PLAN-008 archivado.
-- **#55** ✅ (PR #56): flaky de conexión rechazada eliminado (puerto 1, fuera del
-  rango efímero). Doc `docs/testing-connect-refused.md`, PLAN-006 archivado.
-- **#57** ✅ (PR #58): fallback multi-dirección en TCP/TLS (`resolve_all` + bucle
-  por dirección, timeout compartido, causa + resumen). Doc
-  `docs/tcp-tls-multi-address.md`, PLAN-007 archivado. Auditado 2 veces (APROBADO).
-- Ramas de feature/hotfix/release limpiadas (locales y remotas).
-
-### Producción (co1) — DESPLEGADO v0.15.2
-- Imagen `ghcr.io/atareao/watchbeat:latest` (workflow Docker OK).
-- Contenedor recreado con `docker run` preservando env, red `proxy` y volumen
-  `watchbeat_watchbeat_data`; añadidos `--cap-add NET_RAW` y healthcheck.
-- Verificado: `healthy`, `CAP_NET_RAW` activo, `ping` como usuario `app` OK,
-  `/health` → `{"status":"ok"}`. Monitores sin `down`/`error` desde el fix
-  (todo `up`; `laeradelasdistros` estable).
-- **Despliegue gestionado por Dockge**: no hay compose visible en
-  `/opt/stacks/watchbeat` porque Dockge administra el stack. Recreaciones
-  futuras deben hacerse desde Dockge (o `docker run` puntual preservando env,
-  red `proxy`, volumen `watchbeat_watchbeat_data` y `--cap-add NET_RAW`).
-
-## Robust Check Engine (PLAN-002) — COMPLETADO
-
-Plan archivado en `plans/PLAN-002-ARCHIVED.md`. Issues #34–#40 cerrados.
-
-| Fase | Issue | PR |
-|---|---|---|
-| 1 · DNS propio con caché | #35 | #42 |
-| 2 · Taxonomía `FailureCause` + `error_kind` | #36 | #43 |
-| 3 · Canario + atribución `indeterminate` | #37 | #44 |
-| 4 · Jitter de ticks | #38 | #45 |
-| 5 · Breaker anti-tormenta | #39 | #46 |
-| 6 · Documentación y cierre | #40 | #47 |
-
-Docs: `docs/robust-check-engine.md` (global), `docs/robust-check-engine-report.md`
-(informe), `docs/adr/` (5 ADR), y un doc por fase.
-
-## Hotfix #41 — RESUELTO
-
-PR #48: `rustls::crypto::ring::default_provider().install_default()` al arrancar
-(`backend/src/main.rs`). Evita el panic de los monitores TLS por `CryptoProvider` ambiguo.
-
-## Dependabot
-
-PR #49: `vite` → 8.3.8, `source-map-js` → 1.2.2, `rustls` → 0.23.46.
-`npm audit` y `pnpm audit` → 0 vulnerabilidades. PRs #29/#30/#32 cerrados.
-
-> Las 18 alertas de Dependabot siguen abiertas en la API porque el escaneo de la rama
-> por defecto aún no se ha refrescado; los manifiestos de `main` ya tienen las versiones
-> corregidas. Se cerrarán en el siguiente re-escaneo.
+## Estado
+- Hecho en esta sesión:
+  - **#63** (♿ a11y del timeline + test SNI real) — PR #80 **mergeado** a `development` (`3b10976d`).
+  - Change `timeline-a11y-sni-test` **archivado** → `openspec/changes/archive/2026-11-14-timeline-a11y-sni-test/`.
+    Nuevas specs: `frontend-timeline-a11y` (3 req, nueva), `checker` (6 req, +1 SNI), `testing` (2 req, +1).
+  - `plans/PLAN-016.md` → `plans/PLAN-016-ARCHIVED.md`.
+  - Frontend: token `statusStyles.ts` (color+pattern+borderTop+label+icon), timeline accesible sin color + teclado, leyenda de patrones.
+  - Backend: test SNI determinista (`rcgen` dev-dep), refactor `attempt_with` compartido.
+  - Suite: **381 tests backend** verdes; `fmt`/`clippy` limpios; `tsc`+`build` verdes.
+- **#62 y todos sus follow-ups (#69–#72, #63) cerrados** — 0 issues abiertos en el repo.
+  (Ojo: los PRs a `development` NO auto-cierran issues; hay que cerrarlos a mano.)
+- Rama actual: `development` (limpia). Sin PRs abiertos.
 
 ## Pendiente
+1. Follow-ups de #63 (no bloqueantes): contraste AA de los `Tag` de `MonitorCard`; roving tabindex en el timeline; migrar `statusStyles.ts` a `.tsx`.
+2. Nº de plan libre: **PLAN-017**.
 
-### Issues abiertos
-- (ninguno)
-
-### Completado recientemente
-- **#33** ✅ (PR #51): índice cubriente `idx_checks_timeline`, `ANALYZE` y tests de
-  plan de ejecución. Plan archivado en `plans/PLAN-003-ARCHIVED.md`; doc en
-  `docs/checks-query-perf.md`.
-- **#52** ✅ (PR #53): DNS multi-dirección con fallback en hyper. Plan archivado
-  en `plans/PLAN-005-ARCHIVED.md`; doc en `docs/dns-multi-address.md`.
-- **#31** ✅ (PR #54 + validación en producción): monitor `ping-validacion-31`
-  → `1.1.1.1` reporta `up` con `response_time_ms=9` (parseado de `time=`).
-  Diagnóstico y permisos de la sonda ping. `PingChecker`
-  captura stderr/exit code, clasifica permisos y binario ausente como `error`,
-  DNS como `down`, y pasa el target tras `--`. Imagen con `iputils`/`libcap`/
-  `setcap` + `chmod u-s`, compose con `cap_add: [NET_RAW]`. Plan archivado en
-  `plans/PLAN-004-ARCHIVED.md`; doc en `docs/ping-checker.md`.
-
-### Follow-ups técnicos
-- Canario de red configurable (hoy fijo a 30 s).
-- Estado del breaker (`closed`/`open`) expuesto en API/dashboard.
-- Dedupe de consultas DNS en vuelo.
-- `error_kind` en el evento SSE (hoy se rellena con refetch).
-- a11y del timeline (barras distinguibles solo por color).
-- Agrupar `latency`/`expiry` en el breaker.
-- SNI real no assertado con handshake TLS completo.
-
-### Housekeeping
-- `libsqlite3-sys` 0.37 (RUSTSEC-2026-0459): esperar a que sqlx suba de versión.
-- Añadir tests de validación JWT (gap preexistente).
-- Doble lockfile `package-lock.json` + `pnpm-lock.yaml` (el build usa npm; pnpm redundante).
-- CHANGELOG auto-generado desactualizado (entradas hasta 0.11.0; ahora con `[0.15.0]`).
-
-### Pendiente inmediato
-- Release **v0.15.3** con #55, #57 y #59 (están en `development`, no en `main`;
-  `main` aún tiene jsonwebtoken 11 / rsa 0.9 vulnerable).
-- Decidir si el monitor `ping-validacion-31` de producción se elimina o queda
-  como canario permanente.
-
-## Comandos
-
+## Verificación
 ```bash
-just check                 # fmt + clippy
-cd backend && cargo test   # 266 + 9 + 45 + 8 + 3
+cd backend && cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test
 cd frontend && npx tsc --noEmit && npm run build
 ```
+
+## Metodología / reglas
+- SDD+TDD: change OpenSpec aprobado por el usuario ANTES de escribir código; luego RED→GREEN→REFACTOR verificado por CLI.
+- Gitflow: `feature/*` desde `development`; **PR a `development`**; nunca commits directos a `main`/`development`.
+- Commits con gitmoji + conventional commits.
+- Planes en `plans/PLAN-<NNN>.md` (siguiente libre: PLAN-017); al cerrar → renombrar a `-ARCHIVED.md`.
+- Docs por feature en `docs/<feature>.md`. El **issue es el punto de entrada** (crear/asignar a `atareao`).
+- Header del delta OpenSpec debe copiar EXACTO el de la spec destino (o `archive` falla).
+
+## Riesgos y notas
+- Sin migraciones.
+- El test SNI usa `rcgen` como dev-dependency (no entra en el binario).
+- `npm run lint` no existe en el repo (sin eslint).
+- Producción: **v0.15.3** (`ghcr.io/atareao/watchbeat:latest`).

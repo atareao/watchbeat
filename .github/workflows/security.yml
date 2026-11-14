@@ -1,0 +1,61 @@
+name: security
+
+on:
+  push:
+    branches:
+      - main
+      - development
+  pull_request:
+    branches:
+      - main
+      - development
+  schedule:
+    # Weekly run: every Monday at 06:00 UTC against the default branch.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: cargo audit (backend)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        # Fails the job on any known vulnerability.
+        # The only allowed exception is documented in backend/.cargo/audit.toml
+        # (RUSTSEC-2026-0459, libsqlite3-sys, blocked by sqlx). cargo-audit reads
+        # that file automatically when run from backend/; any other advisory
+        # still fails the job.
+        working-directory: backend
+        run: cargo audit
+
+  frontend:
+    name: npm audit (frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 23
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run npm audit
+        # Fails the job on any high or critical vulnerability.
+        working-directory: frontend
+        run: npm audit --audit-level=high

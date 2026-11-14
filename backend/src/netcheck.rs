@@ -18,8 +18,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::future::FutureExt;
 
-/// Default period between canary cycles (D1).
-pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(30);
+/// Default period between canary cycles (D1), derived from
+/// [`DEFAULT_INTERVAL_SECS`] so both can never diverge.
+pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(DEFAULT_INTERVAL_SECS);
 
 /// Per-probe deadline. A probe that does not answer in time counts as a failure.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -27,6 +28,15 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Smallest accepted period between canary cycles. `tokio::time::interval`
 /// panics on a zero period, so a misconfigured interval is clamped to this (M6b).
 pub const MIN_INTERVAL: Duration = Duration::from_millis(1);
+
+/// Setting key for the configurable canary period.
+pub const SETTING_CANARY_INTERVAL_SECS: &str = "canary_interval_secs";
+/// Default canary period in seconds when the setting is absent or invalid.
+pub const DEFAULT_INTERVAL_SECS: u64 = 30;
+/// Smallest configurable canary period, in seconds (matches PROBE_TIMEOUT).
+pub const MIN_INTERVAL_SECS: u64 = 5;
+/// Largest configurable canary period, in seconds.
+pub const MAX_INTERVAL_SECS: u64 = 3600;
 
 /// DNS servers probed by IP literal: the system resolver is never involved (D2).
 const TCP_TARGETS: [&str; 3] = ["1.1.1.1:53", "8.8.8.8:53", "9.9.9.9:53"];
@@ -84,13 +94,19 @@ impl NetworkHealth {
 #[derive(Clone)]
 pub struct NetworkHealthHandle {
     state: Arc<AtomicU8>,
+    /// Effective canary period, published to the running task so a new setting
+    /// is adopted without restarting the process. Cloning the sender clones the
+    /// set: every clone sees the same period.
+    interval_tx: tokio::sync::watch::Sender<Duration>,
 }
 
 impl NetworkHealthHandle {
-    /// Create a handle that reports [`NetworkHealth::Unknown`] until the first cycle.
+    /// Create a handle that reports [`NetworkHealth::Unknown`] until the first
+    /// cycle, and whose period is [`DEFAULT_INTERVAL`].
     pub fn new() -> Self {
         Self {
             state: Arc::new(AtomicU8::new(NetworkHealth::Unknown.as_u8())),
+            interval_tx: tokio::sync::watch::channel(DEFAULT_INTERVAL).0,
         }
     }
 
@@ -102,6 +118,35 @@ impl NetworkHealthHandle {
     /// Publish a new value. Called by the canary task once per cycle.
     pub fn publish(&self, health: NetworkHealth) {
         self.state.store(health.as_u8(), Ordering::Relaxed);
+    }
+
+    /// Change the canary period so the running canary adopts it.
+    ///
+    /// The value is clamped to the accepted setting range
+    /// (`[MIN_INTERVAL_SECS, MAX_INTERVAL_SECS]`), so a value coming from the
+    /// `canary_interval_secs` setting behaves exactly like
+    /// [`interval_from_setting`]. A task that is already running wakes up and
+    /// restarts its ticker with the new period.
+    pub fn set_interval(&self, interval: Duration) {
+        self.interval_tx
+            .send_replace(clamp_setting_interval(interval));
+    }
+
+    /// Current effective (clamped) canary period.
+    pub fn interval(&self) -> Duration {
+        *self.interval_tx.borrow()
+    }
+
+    /// Subscribe to period changes. Used by the canary task to adopt them.
+    fn subscribe(&self) -> tokio::sync::watch::Receiver<Duration> {
+        self.interval_tx.subscribe()
+    }
+
+    /// Seed the period before the task starts. Unlike [`set_interval`], it only
+    /// guarantees a strictly positive period, so callers that are not the
+    /// setting (tests) may use sub-second periods.
+    fn seed_period(&self, interval: Duration) {
+        self.interval_tx.send_replace(valid_interval(interval));
     }
 }
 
@@ -206,6 +251,31 @@ fn valid_interval(interval: Duration) -> Duration {
     interval.max(MIN_INTERVAL)
 }
 
+/// Clamp a setting-derived interval to the accepted range, in whole seconds.
+///
+/// Values below [`MIN_INTERVAL_SECS`] would hammer the egress with a token
+/// canary; values above [`MAX_INTERVAL_SECS`] would leave the health stale for
+/// too long.
+fn clamp_setting_interval(interval: Duration) -> Duration {
+    interval.clamp(
+        Duration::from_secs(MIN_INTERVAL_SECS),
+        Duration::from_secs(MAX_INTERVAL_SECS),
+    )
+}
+
+/// Turn the raw setting value into a canary period, clamped to a sane range.
+///
+/// An absent or unparseable value falls back to [`DEFAULT_INTERVAL_SECS`], and
+/// any accepted value is clamped to `[MIN_INTERVAL_SECS, MAX_INTERVAL_SECS]`.
+pub fn interval_from_setting(value: Option<&str>) -> Duration {
+    let secs = value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_INTERVAL_SECS)
+        .clamp(MIN_INTERVAL_SECS, MAX_INTERVAL_SECS);
+
+    Duration::from_secs(secs)
+}
+
 /// Run one cycle, turning a panic into `None` so the task survives (M6a).
 ///
 /// A canary that dies would freeze the health on a stale value forever, which
@@ -240,20 +310,40 @@ pub fn spawn(interval: Duration) -> NetworkHealthHandle {
 /// [`spawn`] with an injected canary (tests).
 fn spawn_canary(interval: Duration, canary: Canary) -> NetworkHealthHandle {
     let handle = NetworkHealthHandle::new();
+    // The requested period is the one the ticker starts with; every later
+    // change goes through `set_interval` (the setting path).
+    handle.seed_period(interval);
+
     let published = handle.clone();
-    let interval = valid_interval(interval);
+    let mut rx = published.subscribe();
 
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
+        let mut period = valid_interval(published.interval());
+        let mut ticker = tokio::time::interval(period);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            ticker.tick().await;
-            if let Some(health) = run_cycle(&canary).await {
-                published.publish(health);
-                tracing::debug!(
-                    health = health.as_str(),
-                    "netcheck: published network health"
-                );
+            tokio::select! {
+                _ = ticker.tick() => {
+                    if let Some(health) = run_cycle(&canary).await {
+                        published.publish(health);
+                        tracing::debug!(
+                            health = health.as_str(),
+                            "netcheck: published network health"
+                        );
+                    }
+                }
+                changed = rx.changed() => {
+                    if changed.is_err() {
+                        // No sender left: nothing can change the period any more,
+                        // so stop probing instead of spinning on a ready channel
+                        // (a `changed()` error is always immediately ready).
+                        break;
+                    }
+                    period = valid_interval(*rx.borrow());
+                    ticker =
+                        tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                }
             }
         }
     });
@@ -329,6 +419,26 @@ mod tests {
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 panic!("probe exploded");
             }
+            true
+        }
+
+        async fn dns_probe(&self, _host: &str) -> bool {
+            true
+        }
+    }
+
+    /// Probes that count their calls and always answer healthily.
+    struct CountingProbes {
+        calls: AtomicUsize,
+    }
+
+    /// `Probes` on the shared pointer itself, so the counting `Arc` can be
+    /// handed to the canary as a `Box<dyn Probes>` while the test keeps
+    /// observing the very same counter.
+    #[async_trait]
+    impl Probes for Arc<CountingProbes> {
+        async fn tcp_probe(&self, _addr: SocketAddr) -> bool {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             true
         }
 
@@ -500,6 +610,166 @@ mod tests {
             health,
             NetworkHealth::Healthy,
             "the canary must keep publishing after a panicking cycle"
+        );
+    }
+
+    // ── Scenario: periodo del canario configurable desde settings ──
+
+    /// Default period when no setting has ever been stored.
+    #[test]
+    fn interval_from_setting_should_default_when_absent() {
+        assert_eq!(
+            interval_from_setting(None),
+            Duration::from_secs(DEFAULT_INTERVAL_SECS)
+        );
+        assert_eq!(interval_from_setting(None), Duration::from_secs(30));
+    }
+
+    /// A plain numeric value is used as-is when inside the accepted range.
+    #[test]
+    fn interval_from_setting_should_parse_a_valid_value() {
+        assert_eq!(
+            interval_from_setting(Some("60")),
+            Duration::from_secs(60),
+            "a valid number of seconds must be honoured"
+        );
+    }
+
+    /// Garbage never reaches the scheduler: it degrades to the default.
+    #[test]
+    fn interval_from_setting_should_default_on_invalid_input() {
+        let expected = Duration::from_secs(DEFAULT_INTERVAL_SECS);
+
+        assert_eq!(
+            interval_from_setting(Some("abc")),
+            expected,
+            "a non-numeric value must fall back to the default"
+        );
+        assert_eq!(
+            interval_from_setting(Some("")),
+            expected,
+            "an empty value must fall back to the default"
+        );
+        assert_eq!(
+            interval_from_setting(Some("-5")),
+            expected,
+            "a negative value must fall back to the default"
+        );
+    }
+
+    /// Too small a period is clamped up: a token canary would hammer the egress.
+    #[test]
+    fn interval_from_setting_should_clamp_to_the_minimum() {
+        let floor = Duration::from_secs(MIN_INTERVAL_SECS);
+
+        assert_eq!(
+            interval_from_setting(Some("0")),
+            floor,
+            "zero must be clamped up to the minimum"
+        );
+        assert_eq!(
+            interval_from_setting(Some("1")),
+            floor,
+            "one second must be clamped up to the minimum"
+        );
+    }
+
+    /// Too large a period is clamped down.
+    #[test]
+    fn interval_from_setting_should_clamp_to_the_maximum() {
+        assert_eq!(
+            interval_from_setting(Some("99999")),
+            Duration::from_secs(MAX_INTERVAL_SECS),
+            "an absurdly long period must be clamped down to the maximum"
+        );
+    }
+
+    // ── Scenario: el intervalo efectivo del handle ──
+
+    /// A fresh handle must report the default period.
+    #[test]
+    fn a_new_handle_should_report_the_default_interval() {
+        assert_eq!(
+            NetworkHealthHandle::new().interval(),
+            Duration::from_secs(DEFAULT_INTERVAL_SECS)
+        );
+    }
+
+    /// A stored interval must be readable back.
+    #[test]
+    fn set_interval_should_be_visible_through_interval() {
+        let handle = NetworkHealthHandle::new();
+        handle.set_interval(Duration::from_secs(120));
+        assert_eq!(handle.interval(), Duration::from_secs(120));
+    }
+
+    /// The handle clamps exactly like the setting parser does.
+    #[test]
+    fn set_interval_should_clamp_out_of_range_values() {
+        let handle = NetworkHealthHandle::new();
+
+        handle.set_interval(Duration::from_secs(0));
+        assert_eq!(handle.interval(), Duration::from_secs(MIN_INTERVAL_SECS));
+
+        handle.set_interval(Duration::from_secs(99999));
+        assert_eq!(handle.interval(), Duration::from_secs(MAX_INTERVAL_SECS));
+    }
+
+    // ── Scenario: cambio del setting se aplica en caliente ──
+
+    /// Saving `canary_interval_secs` must reach the running canary through
+    /// `set_interval`, with no restart: the task re-arms its ticker and probes
+    /// again. Driven by tokio's paused clock, so it is deterministic and
+    /// instant instead of waiting for a real 5 s setting-minimum period.
+    #[tokio::test(start_paused = true)]
+    async fn adopting_a_new_interval_does_not_require_a_restart() {
+        let probes = Arc::new(CountingProbes {
+            calls: AtomicUsize::new(0),
+        });
+
+        // A canary whose period is so long that only the immediate first tick
+        // ever fires: anything counted afterwards proves a hot reload.
+        let handle = spawn_canary(
+            Duration::from_secs(3600),
+            canary_boxed(Box::new(Arc::clone(&probes))),
+        );
+
+        // Let the spawned task run its immediate first tick. Only `yield_now`
+        // is used while waiting: it never parks the runtime, so the paused clock
+        // cannot auto-advance to the far-away second tick behind our back.
+        let mut before = 0;
+        for _ in 0..100 {
+            before = probes.calls.load(Ordering::SeqCst);
+            if before > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(before > 0, "the first cycle ran no probe at all");
+
+        // Shorten the period through the handle: this is the setting path.
+        handle.set_interval(Duration::from_secs(5));
+
+        // Let the task observe the watch change and re-arm its ticker at
+        // `now + 5s`...
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+
+        // ...then move the virtual clock past the adopted period.
+        tokio::time::advance(Duration::from_secs(5)).await;
+
+        let mut adopted = false;
+        for _ in 0..100 {
+            if probes.calls.load(Ordering::SeqCst) > before {
+                adopted = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            adopted,
+            "the canary did not adopt the new interval without a restart"
         );
     }
 }

@@ -1062,3 +1062,12 @@ async fn test_heartbeat_pulse_records_check_without_error_kind() {
     assert_eq!(latest.status, "up");
     assert_eq!(latest.error_kind, None, "a heartbeat has no failure cause");
 }
+
+/// Scenario: el periodo del canario se persiste como setting (issue #69).
+#[tokio::test]
+async fn test_canary_interval_setting_roundtrip() {
+    let (db, _dir) = setup_db().await;
+    db.set_setting("canary_interval_secs", "60").await.unwrap();
+    let got = db.get_setting("canary_interval_secs").await.unwrap();
+    assert_eq!(got.as_deref(), Some("60"));
+}
