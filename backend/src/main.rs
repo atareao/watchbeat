@@ -15,6 +15,11 @@ use watchbeat::scheduler::SchedulerManager;
 async fn main() {
     dotenvy::dotenv().ok();
 
+    // ───── rustls CryptoProvider ─────
+    // `reqwest` pulls in `aws-lc-rs` while we depend on `ring`; without an explicit
+    // process-level default, `rustls::ClientConfig::builder()` panics. Install `ring`.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let config = Config::load();
 
     // ───── DNS resolver ─────
