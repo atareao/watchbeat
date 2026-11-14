@@ -360,6 +360,11 @@ pub async fn resolve(host: &str) -> Result<IpAddr, DnsError> {
     resolver().resolve(host).await
 }
 
+/// Resolve every address of `host` with the process-wide resolver.
+pub async fn resolve_all(host: &str) -> Result<Vec<IpAddr>, DnsError> {
+    resolver().resolve_all(host).await
+}
+
 /// Remove duplicate addresses while preserving the upstream's order.
 fn dedupe(ips: Vec<IpAddr>) -> Vec<IpAddr> {
     let mut unique = Vec::with_capacity(ips.len());
