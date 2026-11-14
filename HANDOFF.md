@@ -1,41 +1,46 @@
-# Handoff — watchbeat — 2026-11-14 (sesión #75)
+# Handoff — watchbeat — 2026-11-14 (sesión #77)
 
 ## Objetivo
-Cerrar los follow-ups del Robust Check Engine (#62) uno por sesión, con SDD+TDD, dejando cada feature en un PR a `development`.
+Cerrar los follow-ups de a11y del timeline (#86) con SDD+TDD y PR a `development`.
 
 ## Estado
-- Hecho en esta sesión:
-  - **#63** (♿ a11y del timeline + test SNI real) — PR #80 **mergeado** a `development` (`3b10976d`).
-  - Change `timeline-a11y-sni-test` **archivado** → `openspec/changes/archive/2026-11-14-timeline-a11y-sni-test/`.
-    Nuevas specs: `frontend-timeline-a11y` (3 req, nueva), `checker` (6 req, +1 SNI), `testing` (2 req, +1).
-  - `plans/PLAN-016.md` → `plans/PLAN-016-ARCHIVED.md`.
-  - Frontend: token `statusStyles.ts` (color+pattern+borderTop+label+icon), timeline accesible sin color + teclado, leyenda de patrones.
-  - Backend: test SNI determinista (`rcgen` dev-dep), refactor `attempt_with` compartido.
-  - Suite: **381 tests backend** verdes; `fmt`/`clippy` limpios; `tsc`+`build` verdes.
-- **#62 y todos sus follow-ups (#69–#72, #63) cerrados** — 0 issues abiertos en el repo.
-  (Ojo: los PRs a `development` NO auto-cierran issues; hay que cerrarlos a mano.)
-- Rama actual: `development` (limpia). Sin PRs abiertos.
+- **#86 completado y mergeado**: PR #87 (`feature/timeline-a11y-followups`) → `development` (`21ede7c5`).
+  - Change `timeline-a11y-followups` **archivado** (PR #88, `fe37866f`) → `openspec/changes/archive/2026-11-14-timeline-a11y-followups/`.
+  - Specs: `frontend-timeline-a11y` (modificada: roving tabindex), `frontend-status-contrast` (nueva).
+  - `plans/PLAN-017.md` → `plans/PLAN-017-ARCHIVED.md`.
+- **Entregado**:
+  - Contraste AA del `Tag` de `MonitorCard`: `variant="solid"` + `tagBg`/`tagText` del token (≥4.5:1 en claro y oscuro).
+  - Roving tabindex en `HeartbeatChart`/`HealthLatencyChart`: 1 parada de `Tab` por gráfico; ←/→/Home/End; reset al cambiar rango; clamp si la serie se acorta.
+  - `statusStyles.ts` → `statusStyles.tsx` (JSX; sin `createElement`/`decorativeIcon`).
+- Verificación: `tsc --noEmit` + `npm run build` verdes; `openspec validate` OK para las specs tocadas.
+- **Issues abiertos: 0** · PRs abiertos: 0. Rama `development` limpia.
+- Producción: **v0.16.0** (release previa). Esta feature aún **no** está en `main` (pendiente de próxima release).
+
+## Hallazgo importante (aprendido en esta sesión)
+- **antd 6**: un `color` custom no-preset en un `Tag` cae en `variant:'filled'` → antd usa el hex como
+  **color del texto** y pinta un **tinte claro** de fondo (`hsl.l=0.95`). Para que el fondo sea el hex
+  del estado hay que usar **`variant="solid"`**. Verificado por SSR del `Tag` real.
+- **Los PRs a `development` NO auto-cierran issues** (`Closes` solo dispara en la rama por defecto `main`): cerrarlos a mano.
 
 ## Pendiente
-1. Follow-ups de #63 (no bloqueantes): contraste AA de los `Tag` de `MonitorCard`; roving tabindex en el timeline; migrar `statusStyles.ts` a `.tsx`.
-2. Nº de plan libre: **PLAN-017**.
+1. Nº de plan libre: **PLAN-018**.
+2. (Opcional) Próxima release incluirá #86 (`feat`) → bump minor (v0.17.0) si no hay más cambios.
 
 ## Verificación
 ```bash
-cd backend && cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test
 cd frontend && npx tsc --noEmit && npm run build
+cd backend && cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test
 ```
 
 ## Metodología / reglas
 - SDD+TDD: change OpenSpec aprobado por el usuario ANTES de escribir código; luego RED→GREEN→REFACTOR verificado por CLI.
-- Gitflow: `feature/*` desde `development`; **PR a `development`**; nunca commits directos a `main`/`development`.
+- Gitflow: `feature/*` desde `development`; **PR a `development`**; release `release/*` → **PR a `main`**; nunca commits directos a `main`/`development`.
 - Commits con gitmoji + conventional commits.
-- Planes en `plans/PLAN-<NNN>.md` (siguiente libre: PLAN-017); al cerrar → renombrar a `-ARCHIVED.md`.
+- Planes en `plans/PLAN-<NNN>.md` (siguiente libre: PLAN-018); al cerrar → renombrar a `-ARCHIVED.md`.
 - Docs por feature en `docs/<feature>.md`. El **issue es el punto de entrada** (crear/asignar a `atareao`).
-- Header del delta OpenSpec debe copiar EXACTO el de la spec destino (o `archive` falla).
+- Header del delta OpenSpec debe copiar EXACTO el de la spec destino (o `archive` falla). Un bloque MODIFIED reemplaza el requirement completo → conservar TODOS sus escenarios originales.
 
 ## Riesgos y notas
-- Sin migraciones.
-- El test SNI usa `rcgen` como dev-dependency (no entra en el binario).
-- `npm run lint` no existe en el repo (sin eslint).
-- Producción: **v0.15.3** (`ghcr.io/atareao/watchbeat:latest`).
+- Sin migraciones. Sin backend tocado en esta feature.
+- `npm run lint` no existe en el repo (sin eslint). No hay vitest.
+- `openspec validate --all --strict` reporta 8 specs pre-existentes con `Purpose` placeholder (no relacionadas; mismo recuento antes/después de esta sesión).

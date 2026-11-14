@@ -160,7 +160,11 @@ export default function MonitorCard({ item, onEdit, onDelete, onRefresh, breaker
               <Typography.Text strong style={{ fontSize: 16 }}>{item.name}</Typography.Text>
             </Space>
             <div style={{ marginTop: 4 }}>
-              <Tag color={cfg.color}>{statusLabel}</Tag>
+              {/* `variant="solid"` is required: it makes antd paint `tagBg` as the
+                  real background (a custom colour in the default `filled` variant
+                  becomes the *text* colour on a light tint). The pair keeps
+                  >= 4.5:1 contrast (WCAG AA) in both themes. */}
+              <Tag variant="solid" color={cfg.tagBg} style={{ color: cfg.tagText }}>{statusLabel}</Tag>
               {breakerOpen && (
                 <Tooltip title="Notificaciones suprimidas por tormenta">
                   <Tag

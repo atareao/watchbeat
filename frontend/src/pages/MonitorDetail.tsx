@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useParams, useNavigate } from "react-router";
 import {
   Card,
@@ -452,6 +453,60 @@ function MonitorStats({
   );
 }
 
+/**
+ * Roving tabindex for a horizontal bar chart (D2). A chart is a single Tab stop:
+ * only the active bar has `tabIndex={0}`, every other bar has `-1`. ←/→ move the
+ * active bar, Home/End jump to the first/last one, and focus follows the active
+ * bar so the `Tooltip` (trigger `focus`) reveals its detail without a mouse.
+ *
+ * `resetKey` identifies the current range/filter: when it changes the whole bar
+ * set is replaced, so the active stop resets to the first bar. The index is also
+ * clamped to `barCount` so it can never point outside the rendered bars.
+ */
+function useRovingBarFocus(barCount: number, resetKey: string | number) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const barRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  // Range/filter changed: back to the first bar. No `.focus()` on purpose — the
+  // user is normally still on the range selector, and stealing focus from it
+  // would break that interaction. The tab stop is repositioned, not the focus.
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [resetKey]);
+
+  // Same range, refreshed data: the series may get shorter, so clamp the index
+  // instead of resetting, keeping the active bar as close as possible.
+  useEffect(() => {
+    setActiveIndex((prev) =>
+      barCount === 0 ? 0 : Math.min(prev, barCount - 1),
+    );
+  }, [barCount]);
+
+  const focusBar = useCallback((index: number) => {
+    setActiveIndex(index);
+    barRefs.current[index]?.focus();
+  }, []);
+
+  const handleKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (barCount === 0) return;
+      const last = barCount - 1;
+      let next: number | null = null;
+      if (e.key === "ArrowRight") next = Math.min(activeIndex + 1, last);
+      else if (e.key === "ArrowLeft") next = Math.max(activeIndex - 1, 0);
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = last;
+      if (next === null) return;
+      // Arrow/Home/End are handled by the chart, not the page.
+      e.preventDefault();
+      focusBar(next);
+    },
+    [activeIndex, barCount, focusBar],
+  );
+
+  return { activeIndex, barRefs, handleKeyDown };
+}
+
 // ── Shared legend: decodes the non-chromatic channel (hatch + top edge) so the
 // timeline stays readable without colour perception (R1). ──
 function StatusPatternLegend() {
@@ -504,18 +559,25 @@ function HeartbeatChart({
   const pulses = buckets.filter((b) => b.count > 0);
   const totalPulses = pulses.reduce((sum, b) => sum + b.count, 0);
 
+  const MAX_BARS = 150;
+  const visibleBars = Math.min(buckets.length, MAX_BARS);
+  const { activeIndex, barRefs, handleKeyDown } = useRovingBarFocus(
+    visibleBars,
+    range.bucketSeconds,
+  );
+
   if (buckets.length === 0)
     return (
       <Text type="secondary">Sin datos en {range.labelLong.toLowerCase()}</Text>
     );
 
-  const MAX_BARS = 150;
   const bars = buckets.length > MAX_BARS ? buckets.slice(-MAX_BARS) : buckets;
   const labelInterval = Math.max(1, Math.floor(bars.length / 6));
 
   return (
     <div>
       <div
+        onKeyDown={handleKeyDown}
         style={{ display: "flex", gap: 1, alignItems: "flex-end", height: 60 }}
       >
         {bars.map((b, i) => {
@@ -531,9 +593,12 @@ function HeartbeatChart({
               trigger={["hover", "focus"]}
             >
               <div
+                ref={(el) => {
+                  barRefs.current[i] = el;
+                }}
                 className="timeline-bar"
                 role="img"
-                tabIndex={0}
+                tabIndex={i === activeIndex ? 0 : -1}
                 aria-label={tooltipTitle}
                 style={{
                   flex: "1 1 0",
@@ -649,19 +714,26 @@ function HealthLatencyChart({
         ) / 100
       : null;
 
+  const MAX_BARS = 150;
+  const visibleBars = Math.min(buckets.length, MAX_BARS);
+  const { activeIndex, barRefs, handleKeyDown } = useRovingBarFocus(
+    visibleBars,
+    range.bucketSeconds,
+  );
+
   if (buckets.length === 0)
     return (
       <Text type="secondary">Sin datos en {range.labelLong.toLowerCase()}</Text>
     );
 
   const maxRt = Math.max(...buckets.map((b) => b.avg_response_time_ms), 1);
-  const MAX_BARS = 150;
   const bars = buckets.length > MAX_BARS ? buckets.slice(-MAX_BARS) : buckets;
   const labelInterval = Math.max(1, Math.floor(bars.length / 6));
 
   return (
     <div>
       <div
+        onKeyDown={handleKeyDown}
         style={{ display: "flex", gap: 1, alignItems: "flex-end", height: 120 }}
       >
         {bars.map((b, i) => {
@@ -686,9 +758,12 @@ function HealthLatencyChart({
               trigger={["hover", "focus"]}
             >
               <div
+                ref={(el) => {
+                  barRefs.current[i] = el;
+                }}
                 className="timeline-bar"
                 role="img"
-                tabIndex={0}
+                tabIndex={i === activeIndex ? 0 : -1}
                 aria-label={tooltipTitle}
                 style={{
                   flex: "1 1 0",
