@@ -100,6 +100,11 @@ const copyText = async (text: string): Promise<boolean> => {
   } catch { return false; }
 };
 
+// ─── Red canary (network canary) ───
+
+const CANARY_MIN = 5;
+const CANARY_MAX = 3600;
+
 export default function Settings() {
   // ── General state ──
   const [retentionDays, setRetentionDays] = useState(30);
@@ -115,6 +120,10 @@ export default function Settings() {
   const [stormMinMonitors, setStormMinMonitors] = useState(3);
   const [stormTemplate, setStormTemplate] = useState('');
   const [savingStorm, setSavingStorm] = useState(false);
+
+  // ── Red (canario) state ──
+  const [canaryInterval, setCanaryInterval] = useState<number | null>(30);
+  const [savingCanary, setSavingCanary] = useState(false);
 
   // ── Notifier state ──
   const [notifiers, setNotifiers] = useState<Notifier[]>([]);
@@ -186,6 +195,19 @@ export default function Settings() {
     });
   }, []);
 
+  // ── Init: red canary settings ──
+  useEffect(() => {
+    fetchSetting('canary_interval_secs')
+      .then(d => {
+        if (!mountedRef.current) return;
+        const parsed = d?.value ? parseInt(d.value, 10) : NaN;
+        setCanaryInterval(Number.isFinite(parsed) && parsed >= CANARY_MIN && parsed <= CANARY_MAX ? parsed : 30);
+      })
+      .catch(() => {
+        if (mountedRef.current) message.error('No se pudo cargar el intervalo del canario');
+      });
+  }, []);
+
   // Guard against setState after unmount
   useEffect(() => {
     mountedRef.current = true;
@@ -237,6 +259,15 @@ export default function Settings() {
       ]);
       message.success('Configuración del breaker guardada');
     } catch (e: any) { message.error(e.message); } finally { setSavingStorm(false); }
+  };
+
+  // ── Handlers: red canary ──
+  const saveCanaryInterval = async () => {
+    setSavingCanary(true);
+    try {
+      await saveSetting('canary_interval_secs', String(canaryInterval));
+      message.success('Intervalo del canario guardado');
+    } catch (e: any) { message.error(e.message); } finally { setSavingCanary(false); }
   };
 
   // ── Handlers: notifiers ──
@@ -511,6 +542,29 @@ export default function Settings() {
               <Input.TextArea rows={3} value={stormTemplate} onChange={(e) => setStormTemplate(e.target.value)} placeholder="🚨 Tormenta: {{ count }} monitores caídos en {{ window_seconds }}s — {{ monitors_list }}" disabled={!stormEnabled} aria-label="Plantilla de la alerta agregada" />
             </div>
             <Button type="primary" icon={<SaveOutlined />} onClick={saveStormBreaker} loading={savingStorm}>Guardar</Button>
+          </Space>
+        </Card>
+      ),
+    },
+    {
+      key: 'network',
+      label: 'Red',
+      children: (
+        <Card>
+          <Paragraph>
+            El <Text strong>canario de red</Text> comprueba periódicamente si la conectividad general funciona,
+            para distinguir una caída propia de un problema de red o infraestructura. Aquí ajustas cada cuánto
+            se hace ese sondeo, en segundos (por defecto <Text strong>30</Text>).
+          </Paragraph>
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <div>
+              <Tooltip title={`Intervalo entre sondeos del canario de red. Valores bajos detectan antes los cortes pero generan más tráfico; valores altos son más suaves. Rango permitido: ${CANARY_MIN} a ${CANARY_MAX} segundos.`}>
+                <Text strong>Intervalo del canario de red</Text>
+              </Tooltip>
+              <br />
+              <InputNumber min={CANARY_MIN} max={CANARY_MAX} step={5} value={canaryInterval} onChange={(v) => setCanaryInterval(v ?? null)} placeholder="30" style={{ width: 160 }} addonAfter="s" aria-label="Intervalo del canario de red (s)" />
+            </div>
+            <Button type="primary" icon={<SaveOutlined />} onClick={saveCanaryInterval} loading={savingCanary} disabled={canaryInterval === null || canaryInterval < CANARY_MIN || canaryInterval > CANARY_MAX}>Guardar</Button>
           </Space>
         </Card>
       ),

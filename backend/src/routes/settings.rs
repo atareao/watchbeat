@@ -37,6 +37,13 @@ pub async fn set_setting(
         state.scheduler_mgr.reload_breaker().await;
     }
 
+    // The canary period is applied in hot reload too: the running task adopts
+    // the new period on the spot (issue #69).
+    if body.key == crate::netcheck::SETTING_CANARY_INTERVAL_SECS {
+        let interval = crate::netcheck::interval_from_setting(Some(body.value.as_str()));
+        state.netcheck.set_interval(interval);
+    }
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
