@@ -81,6 +81,9 @@ subtle = "2"
 
 dotenvy = "0.15"
 async-trait = "0.1"
+
+# Randomness for the scheduler tick jitter (Fase 4)
+rand = "0.10"
 serde_urlencoded = "0.7"
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio"] }
 thiserror = "2"

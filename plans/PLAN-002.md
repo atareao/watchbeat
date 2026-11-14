@@ -162,13 +162,13 @@ Issue paraguas [#34](https://github.com/atareao/watchbeat/issues/34): se cierra 
 - [x] PR a `development` (`Closes #37`) + archive.
 
 ### Fase 4 · Jitter — [#38](https://github.com/atareao/watchbeat/issues/38)
-- [ ] `openspec new change scheduler-jitter`
-- [ ] Spec: distribución del jitter (±10 % del intervalo) y desincronización del primer tick.
-- [ ] RED: test estadístico de que los ticks no colisionan / rango correcto (RNG inyectable).
-- [ ] GREEN: aplicar jitter en `monitor_task`/`SchedulerManager`.
-- [ ] REFACTOR: clippy/fmt.
-- [ ] Docs: `docs/scheduler-jitter.md`.
-- [ ] PR a `development` (`Closes #38`) + archive.
+- [x] `openspec new change scheduler-jitter`
+- [x] Spec: distribución del jitter (±10 % del intervalo) y desincronización del primer tick.
+- [x] RED: test estadístico de que los ticks no colisionan / rango correcto (RNG inyectable).
+- [x] GREEN: aplicar jitter en `monitor_task`/`SchedulerManager`.
+- [x] REFACTOR: clippy/fmt.
+- [x] Docs: `docs/scheduler-jitter.md`.
+- [x] PR a `development` (`Closes #38`) + archive.
 
 ### Fase 5 · Breaker / anti-tormenta — [#39](https://github.com/atareao/watchbeat/issues/39)
 - [ ] `openspec new change alert-storm-breaker`

@@ -5,6 +5,7 @@ pub mod config;
 pub mod db;
 pub mod dns;
 pub mod embed;
+pub mod jitter;
 pub mod models;
 pub mod netcheck;
 pub mod notifier;
