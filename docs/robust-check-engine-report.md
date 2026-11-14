@@ -64,9 +64,8 @@ estuviera caído, y una caída en cascada genera **una** alerta en lugar de N.
 
 ## Riesgos residuales y follow-ups
 
-- **Issue #41** (rustls `CryptoProvider` ambiguo): bug preexistente, **fuera del alcance**
-  de este plan; los monitores TLS pueden paniquear en producción. Requiere fijar el
-  proveedor criptográfico explícitamente.
+- **Issue #41** ✅ **resuelto** (hotfix PR #48): se instala `ring` como `CryptoProvider`
+  por defecto al arrancar, evitando el panic de los monitores TLS.
 - Intervalo del canario de red fijo a 30 s (configurable en el futuro).
 - Estado del breaker no expuesto en la API/dashboard (observabilidad futura).
 - Sin deduplicación de consultas DNS en vuelo (trade-off conocido).
