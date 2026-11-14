@@ -2,7 +2,7 @@
 
 **Issue:** [#63](https://github.com/atareao/watchbeat/issues/63) (sub-issue `f` de #62)
 **Change OpenSpec:** `openspec/changes/timeline-a11y-sni-test/`
-**Estado:** EN CURSO — pendiente de aprobación de la spec (Fase 1 SDD)
+**Estado:** COMPLETADO — PR #80 mergeado en `development` (`3b10976d`). Change archivado.
 
 ## Objetivo
 
