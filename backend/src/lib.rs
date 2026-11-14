@@ -1,5 +1,6 @@
 pub mod attribution;
 pub mod auth;
+pub mod breaker;
 pub mod checker;
 pub mod config;
 pub mod db;

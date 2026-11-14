@@ -73,6 +73,25 @@ impl TemplateContext {
         Value::from_serialize(&ctx)
     }
 
+    /// Context for the aggregated *storm* alert (Fase 5, D7). Unlike the other
+    /// notifications it is not about a single monitor: it reports how many
+    /// monitors went down inside the detection window and which ones.
+    pub fn for_storm(
+        count: usize,
+        monitors: &[String],
+        window_seconds: u64,
+        threshold_percent: u8,
+    ) -> Value {
+        let ctx = json!({
+            "count": count,
+            "monitors": monitors,
+            "monitors_list": monitors.join(", "),
+            "window_seconds": window_seconds,
+            "threshold_percent": threshold_percent,
+        });
+        Value::from_serialize(&ctx)
+    }
+
     fn build_ctx(
         monitor: &Monitor,
         check: &CheckResult,
@@ -119,4 +138,5 @@ pub mod defaults {
     pub const LATENCY: &str = "🟡 {{ monitor_name }} — {{ target }}\nHigh latency: {{ response_time_ms }}ms (threshold: {{ latency_threshold_ms }}ms, exceeded by {{ latency_exceeded_by_ms }}ms)";
     pub const UP: &str = "🟢 {{ monitor_name }} — {{ target }}\nRecovered — Status: {{ status }}\nResponse: {{ response_time_ms }}ms";
     pub const EXPIRY: &str = "🟡 {{ monitor_name }} — {{ target }}\nCertificate expires in {{ days_left }} days (threshold: {{ expiry_threshold_days }} days)";
+    pub const STORM: &str = "🟠 Monitorización degradada\n{{ count }} monitores caídos en {{ window_seconds }}s (umbral {{ threshold_percent }}%)\nAfectados: {{ monitors_list }}";
 }

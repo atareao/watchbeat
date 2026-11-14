@@ -171,13 +171,13 @@ Issue paraguas [#34](https://github.com/atareao/watchbeat/issues/34): se cierra 
 - [x] PR a `development` (`Closes #38`) + archive.
 
 ### Fase 5 · Breaker / anti-tormenta — [#39](https://github.com/atareao/watchbeat/issues/39)
-- [ ] `openspec new change alert-storm-breaker`
-- [ ] Spec: detección de tormenta (X %, Y s), alerta agregada, dedupe/ventana, estados.
-- [ ] RED: tests del breaker (muchos monitores fallan a la vez → 1 alerta).
-- [ ] GREEN: lógica de agregación en el despacho de notificadores + settings + UI de config.
-- [ ] REFACTOR: clippy/tsc/build.
-- [ ] Docs: `docs/alert-storm-breaker.md`.
-- [ ] PR a `development` (`Closes #39`) + archive.
+- [x] `openspec new change alert-storm-breaker`
+- [x] Spec: detección de tormenta (X %, Y s), alerta agregada, dedupe/ventana, estados.
+- [x] RED: tests del breaker (muchos monitores fallan a la vez → 1 alerta).
+- [x] GREEN: lógica de agregación en el despacho de notificadores + settings + UI de config.
+- [x] REFACTOR: clippy/tsc/build.
+- [x] Docs: `docs/alert-storm-breaker.md`.
+- [x] PR a `development` (`Closes #39`) + archive.
 
 ### Fase 6 · Documentación integral y cierre — [#40](https://github.com/atareao/watchbeat/issues/40)
 - [ ] `openspec new change robust-check-engine-docs`

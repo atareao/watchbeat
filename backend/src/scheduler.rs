@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::future::FutureExt;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
 use async_trait::async_trait;
 
+use crate::breaker::{self, BreakerConfig, BreakerDecision, StormBreaker};
 use crate::checker;
 use crate::checker::Checker;
 use crate::db::Database;
@@ -58,6 +59,8 @@ pub enum SchedulerCommand {
     Update(Monitor),
     Remove(String),
     ReloadNotifiers,
+    /// Re-read the storm-breaker configuration from the settings (Fase 5, D6).
+    ReloadBreaker,
     Shutdown,
 }
 
@@ -116,6 +119,11 @@ impl SchedulerManager {
     pub async fn reload_notifiers(&self) {
         self.send(SchedulerCommand::ReloadNotifiers).await;
     }
+
+    /// Re-read the storm-breaker configuration and apply it in place (Fase 5).
+    pub async fn reload_breaker(&self) {
+        self.send(SchedulerCommand::ReloadBreaker).await;
+    }
 }
 
 // ──── Background manager loop ─────
@@ -139,6 +147,14 @@ async fn manager_loop(
         }
     }
 
+    // Fase 5 (D6–D8): one breaker shared by every monitor task. The threshold is a
+    // percentage of the *enabled* monitors, so the count is tracked next to it and
+    // refreshed after every command that changes the running task set.
+    let breaker: Arc<Mutex<StormBreaker>> = Arc::new(Mutex::new(StormBreaker::new(
+        BreakerConfig::load(&db).await,
+    )));
+    let enabled_monitors = Arc::new(AtomicU64::new(0));
+
     let mut task_map: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
     // Spawn tasks for existing enabled monitors
@@ -150,6 +166,8 @@ async fn manager_loop(
                     db.clone(),
                     m,
                     notifier_cache.clone(),
+                    breaker.clone(),
+                    enabled_monitors.clone(),
                     event_tx.clone(),
                     last_check_at.clone(),
                     health.clone(),
@@ -160,6 +178,7 @@ async fn manager_loop(
     }
 
     active_tasks.store(task_map.len() as u64, Ordering::Relaxed);
+    enabled_monitors.store(task_map.len() as u64, Ordering::Relaxed);
 
     // Command loop
     while let Some(cmd) = rx.recv().await {
@@ -176,6 +195,8 @@ async fn manager_loop(
                         db.clone(),
                         monitor,
                         notifier_cache.clone(),
+                        breaker.clone(),
+                        enabled_monitors.clone(),
                         event_tx.clone(),
                         last_check_at.clone(),
                         health.clone(),
@@ -197,6 +218,12 @@ async fn manager_loop(
                     }
                 }
             }
+            SchedulerCommand::ReloadBreaker => {
+                // Re-read the settings and reconfigure in place (D6). The lock is
+                // held only for the synchronous `configure` call.
+                let cfg = BreakerConfig::load(&db).await;
+                breaker.lock().await.configure(cfg);
+            }
             SchedulerCommand::Shutdown => {
                 for (_, handle) in task_map.drain() {
                     handle.abort();
@@ -205,15 +232,23 @@ async fn manager_loop(
             }
         }
         active_tasks.store(task_map.len() as u64, Ordering::Relaxed);
+        enabled_monitors.store(task_map.len() as u64, Ordering::Relaxed);
     }
 }
 
 // ──── Per-monitor task (with panic recovery) ─────
 
+/// Spawns the per-monitor task with panic recovery.
+///
+/// Same wiring as [`monitor_task_inner`], plus the shared handles (notifier
+/// cache, storm breaker, enabled-monitor count) the manager loop keeps per task.
+#[allow(clippy::too_many_arguments)]
 fn monitor_task(
     db: Database,
     monitor: Monitor,
     notifier_cache: Arc<RwLock<HashMap<String, Notifier>>>,
+    breaker: Arc<Mutex<StormBreaker>>,
+    enabled_monitors: Arc<AtomicU64>,
     event_tx: broadcast::Sender<String>,
     last_check_at: Arc<AtomicI64>,
     health: NetworkHealthHandle,
@@ -225,6 +260,8 @@ fn monitor_task(
                 db.clone(),
                 monitor.clone(),
                 notifier_cache.clone(),
+                breaker.clone(),
+                enabled_monitors.clone(),
                 event_tx.clone(),
                 last_check_at.clone(),
                 health.clone(),
@@ -258,10 +295,13 @@ fn monitor_task(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn monitor_task_inner(
     db: Database,
     monitor: Monitor,
     notifier_cache: Arc<RwLock<HashMap<String, Notifier>>>,
+    breaker: Arc<Mutex<StormBreaker>>,
+    enabled_monitors: Arc<AtomicU64>,
     event_tx: broadcast::Sender<String>,
     last_check_at: Arc<AtomicI64>,
     health: NetworkHealthHandle,
@@ -280,6 +320,8 @@ async fn monitor_task_inner(
         db: &db,
         monitor: &monitor,
         notifier_cache: &notifier_cache,
+        breaker: &breaker,
+        enabled_monitors: &enabled_monitors,
         event_tx: &event_tx,
         last_check_at: &last_check_at,
         checker: checker.as_deref(),
@@ -315,6 +357,10 @@ struct MonitorCycle<'a> {
     db: &'a Database,
     monitor: &'a Monitor,
     notifier_cache: &'a Arc<RwLock<HashMap<String, Notifier>>>,
+    /// Storm breaker shared by every monitor task (Fase 5, D8).
+    breaker: &'a Arc<Mutex<StormBreaker>>,
+    /// Number of enabled monitors, kept up to date by the manager loop.
+    enabled_monitors: &'a Arc<AtomicU64>,
     event_tx: &'a broadcast::Sender<String>,
     last_check_at: &'a Arc<AtomicI64>,
     checker: Option<&'a dyn Checker>,
@@ -346,6 +392,8 @@ impl jitter::Cycle for MonitorCycle<'_> {
             &mut self.last_write_at,
             &mut self.observed,
             self.interval_secs,
+            self.enabled_monitors.load(Ordering::Relaxed) as usize,
+            self.breaker,
         )
         .await;
     }
@@ -353,6 +401,59 @@ impl jitter::Cycle for MonitorCycle<'_> {
 
 // ──── The actual check (moved from main.rs) ─────
 
+/// Append `id` unless it is already collected, preserving the insertion order.
+fn push_unique(ids: &mut Vec<String>, id: &str) {
+    if !ids.iter().any(|known| known == id) {
+        ids.push(id.to_string());
+    }
+}
+
+/// Union of the notifiers linked to every monitor caught by the storm (MAYOR-2).
+///
+/// The aggregated alert replaces *all* the individual notifications of the
+/// episode, so it must reach the notifiers of every affected monitor — not only
+/// those of the monitor that happens to open the storm. The opener's cached list
+/// is reused as-is (no extra query for it) and the rest is read from the DB.
+async fn storm_notifier_ids(
+    db: &Database,
+    opener_ids: &[String],
+    opener_fallback: Option<&str>,
+    affected_ids: &[String],
+) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+
+    for id in opener_ids {
+        push_unique(&mut ids, id);
+    }
+    if let Some(id) = opener_fallback {
+        push_unique(&mut ids, id);
+    }
+
+    for monitor_id in affected_ids {
+        match db.get_monitor_notifier_ids(monitor_id).await {
+            Ok(linked) => {
+                for id in linked {
+                    push_unique(&mut ids, &id);
+                }
+            }
+            Err(e) => tracing::warn!(
+                "Scheduler: cannot read the notifiers of monitor '{}': {}",
+                monitor_id,
+                e
+            ),
+        }
+    }
+
+    ids
+}
+
+/// Run one check for a monitor and dispatch whatever notification it deserves.
+///
+/// `enabled_monitors` is the number of enabled monitors (heartbeats excluded) and
+/// is the base of the storm breaker's percentage threshold. `breaker` is the
+/// shared storm breaker (Fase 5): the decision for a `down`/`up` transition is
+/// taken here, before dispatching, and its lock is always released before any
+/// `await`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_monitor_check(
     db: &Database,
@@ -367,6 +468,8 @@ pub(crate) async fn run_monitor_check(
     last_write_at: &mut i64,
     observed: &mut ObservedStatus,
     interval_secs: u64,
+    enabled_monitors: usize,
+    breaker: &Arc<Mutex<StormBreaker>>,
 ) -> bool {
     let now = chrono::Utc::now();
     let now_str = now.to_rfc3339();
@@ -556,14 +659,93 @@ pub(crate) async fn run_monitor_check(
         }
     };
 
-    // Send notification (using cached notifier_ids)
-    if let Some((notif_type, message)) = notification_type {
-        let mut ids = notifier_ids.to_vec();
-        if ids.is_empty() {
-            if let Some(ref nid) = monitor.notifier_id {
-                ids.push(nid.clone());
+    // ── Fase 5 (D7–D8): the storm breaker rules on this transition before anything
+    // is dispatched. Only `down`/`up` take part in a storm; `latency`/`expiry`
+    // always pass. The lock is taken, the decision computed (synchronous work) and
+    // released — never held across an `await`.
+    let (decision, threshold_percent) = {
+        let mut guard = breaker.lock().await;
+        let decision = match notification_type.as_ref().map(|(kind, _)| *kind) {
+            Some("down") => {
+                guard.on_down(Instant::now(), &monitor.id, &monitor.name, enabled_monitors)
+            }
+            Some("up") => guard.on_up(Instant::now()),
+            _ => BreakerDecision::Pass,
+        };
+        (decision, guard.config().threshold_percent)
+    };
+
+    let mut storm_ids: Option<Vec<String>> = None;
+    let notification_type: Option<(&str, String)> = match decision {
+        BreakerDecision::Pass => notification_type,
+        // A storm is already being reported: this individual alert is dropped.
+        BreakerDecision::Suppress => None,
+        BreakerDecision::OpenAggregate(alert) => {
+            // MAYOR-2: the aggregate replaces every individual notification of the
+            // episode, so it goes to the *union* of the affected monitors'
+            // notifiers. Using only the opener's would silence the whole storm when
+            // the opener happens to have none.
+            let ids = storm_notifier_ids(
+                db,
+                notifier_ids,
+                monitor.notifier_id.as_deref(),
+                &alert.monitor_ids,
+            )
+            .await;
+
+            if ids.is_empty() {
+                // A storm with no destination: a warning is better than N silent
+                // individual alerts. The breaker deliberately stays `Open`, so the
+                // episode is still deduped instead of re-alerting on every down.
+                tracing::warn!(
+                    "Scheduler: storm of {} monitors has no notifier to report to",
+                    alert.count
+                );
+                None
+            } else {
+                // D7: render `default_template_storm` (settings), falling back to
+                // the built-in template. Exactly one aggregated message per storm.
+                // A failed read is logged (not swallowed) and falls back too.
+                let configured = match db.get_setting(breaker::SETTING_TEMPLATE_STORM).await {
+                    Ok(value) => value,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Scheduler: cannot read '{}': {}",
+                            breaker::SETTING_TEMPLATE_STORM,
+                            e
+                        );
+                        None
+                    }
+                };
+                let template = configured.unwrap_or_else(|| template::defaults::STORM.to_string());
+                let ctx = TemplateContext::for_storm(
+                    alert.count,
+                    &alert.monitors,
+                    alert.window_seconds,
+                    threshold_percent,
+                );
+                storm_ids = Some(ids);
+                Some(("down", template::render_template(&template, &ctx)))
             }
         }
+    };
+
+    // Send notification (using cached notifier_ids)
+    if let Some((notif_type, message)) = notification_type {
+        // The aggregated alert brings its own (union) target list (MAYOR-2); every
+        // other notification goes to this monitor's cached notifiers.
+        let ids = match storm_ids {
+            Some(ids) => ids,
+            None => {
+                let mut ids = notifier_ids.to_vec();
+                if ids.is_empty() {
+                    if let Some(ref nid) = monitor.notifier_id {
+                        ids.push(nid.clone());
+                    }
+                }
+                ids
+            }
+        };
 
         let cache = notifier_cache.read().await;
         for nid in &ids {
@@ -864,6 +1046,16 @@ mod tests {
         NetworkHealthHandle::new()
     }
 
+    /// No enabled monitors: the breaker's percentage threshold is unreachable, so
+    /// the characterization tests keep observing the classic
+    /// one-alert-por-monitor behaviour (Fase 5 keeps them untouched).
+    const TEST_ENABLED_MONITORS: usize = 0;
+
+    /// A breaker that can never declare a storm. See [`TEST_ENABLED_MONITORS`].
+    fn test_breaker() -> Arc<Mutex<StormBreaker>> {
+        Arc::new(Mutex::new(StormBreaker::new(BreakerConfig::default())))
+    }
+
     /// Characterizes current sampling: with a stable status only the time-based
     /// write happens, i.e. at most one row per interval (N6).
     #[tokio::test]
@@ -899,6 +1091,8 @@ mod tests {
                 &mut last_write_at,
                 &mut observed,
                 interval_secs,
+                TEST_ENABLED_MONITORS,
+                &test_breaker(),
             )
             .await;
         }
@@ -948,6 +1142,8 @@ mod tests {
                 &mut last_write_at,
                 &mut observed,
                 interval_secs,
+                TEST_ENABLED_MONITORS,
+                &test_breaker(),
             )
             .await;
         }
@@ -966,6 +1162,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -1014,6 +1212,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -1057,6 +1257,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -1074,6 +1276,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -1117,6 +1321,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -1134,6 +1340,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -1213,6 +1421,8 @@ mod tests {
                 &mut last_write_at,
                 &mut observed,
                 interval_secs,
+                TEST_ENABLED_MONITORS,
+                &test_breaker(),
             )
             .await;
         }
@@ -1260,6 +1470,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
         // Check 2: UP again (stable — must NOT emit)
@@ -1276,6 +1488,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
         // Check 3: DOWN (status change → must emit)
@@ -1292,6 +1506,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -1336,6 +1552,8 @@ mod tests {
                 &mut last_write_at,
                 &mut observed,
                 interval_secs,
+                TEST_ENABLED_MONITORS,
+                &test_breaker(),
             )
             .await;
         }
@@ -1422,6 +1640,541 @@ mod tests {
         (Arc::new(RwLock::new(cache)), rx)
     }
 
+    /// Read one *full* HTTP request (headers plus `Content-Length` body) so the
+    /// notification text itself can be asserted on.
+    async fn read_full_request(stream: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+
+        let mut buf = vec![0u8; 16384];
+        let mut total = 0usize;
+        while let Ok(n) = stream.read(&mut buf[total..]).await {
+            if n == 0 {
+                break;
+            }
+            total += n;
+            if let Ok(s) = std::str::from_utf8(&buf[..total]) {
+                if let Some(pos) = s.find("\r\n\r\n") {
+                    let content_length = s[..pos]
+                        .lines()
+                        .find_map(|line| {
+                            if line.to_lowercase().starts_with("content-length:") {
+                                line.split(':').nth(1)?.trim().parse::<usize>().ok()
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0);
+                    if total >= pos + 4 + content_length {
+                        break;
+                    }
+                }
+            }
+        }
+        String::from_utf8_lossy(&buf[..total]).to_string()
+    }
+
+    /// A webhook listener serving `expected` requests (the single-shot helper
+    /// above cannot serve a storm). Every body is reported through the channel.
+    async fn webhook_notifier_multi(
+        expected: usize,
+    ) -> (
+        Arc<RwLock<HashMap<String, Notifier>>>,
+        tokio::sync::mpsc::Receiver<String>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(expected.max(1));
+
+        tokio::spawn(async move {
+            for _ in 0..expected {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let request = read_full_request(&mut stream).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                    .await;
+                if tx.send(request).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let notifier = Notifier {
+            id: "n-hook".into(),
+            name: "test webhook".into(),
+            notifier_type: "webhook".into(),
+            config_json: serde_json::json!({ "url": format!("http://{addr}/hook") }),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let mut cache = HashMap::new();
+        cache.insert(notifier.id.clone(), notifier);
+        (Arc::new(RwLock::new(cache)), rx)
+    }
+
+    /// Fase 5 (D7–D8): when the storm opens, exactly one aggregated alert is
+    /// dispatched to the opening monitor's notifiers, and the downs that follow
+    /// while the breaker stays `Open` are suppressed.
+    #[tokio::test]
+    async fn a_storm_dispatches_one_aggregate_and_suppresses_what_follows() {
+        let (db, _dir) = setup_db().await;
+        // Five slots: the fifth is only ever used if the suppressed down *does*
+        // notify, which is exactly what the final assertion rules out.
+        let (notifier_cache, mut request_rx) = webhook_notifier_multi(5).await;
+        let checker = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let (event_tx, _) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let notifier_ids = vec!["n-hook".to_string()];
+
+        // 4 enabled monitors and a 100 % threshold: all four must fall.
+        let breaker = Arc::new(Mutex::new(StormBreaker::new(BreakerConfig {
+            threshold_percent: 100,
+            ..BreakerConfig::default()
+        })));
+        let enabled_monitors = 4usize;
+        let last_check_at = Arc::new(AtomicI64::new(0));
+
+        // The three downs before the threshold pass individually.
+        for i in 0..3 {
+            let monitor = sample_monitor(&format!("m-storm-{i}"));
+            db.create_monitor(&monitor).await.unwrap();
+            let mut last_write_at: i64 = 0;
+            let mut observed = ObservedStatus::Unknown;
+            run_monitor_check(
+                &db,
+                &monitor,
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&checker),
+                &health,
+                true,
+                &notifier_ids,
+                &mut last_write_at,
+                &mut observed,
+                60,
+                enabled_monitors,
+                &breaker,
+            )
+            .await;
+
+            let request = tokio::time::timeout(Duration::from_secs(5), request_rx.recv())
+                .await
+                .expect("individual down notification was not dispatched in time")
+                .expect("notification channel closed");
+            assert!(
+                !request.contains("degradada"),
+                "the pre-storm downs are notified individually: {request}"
+            );
+        }
+
+        // The fourth down opens the storm: one single aggregated alert.
+        let opener = sample_monitor("m-storm-3");
+        db.create_monitor(&opener).await.unwrap();
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &opener,
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            enabled_monitors,
+            &breaker,
+        )
+        .await;
+
+        let aggregate = tokio::time::timeout(Duration::from_secs(5), request_rx.recv())
+            .await
+            .expect("aggregated alert was not dispatched in time")
+            .expect("notification channel closed");
+        assert!(
+            aggregate.contains("degradada"),
+            "the storm opens with the aggregated template: {aggregate}"
+        );
+        assert!(
+            aggregate.contains("4 monitores caídos"),
+            "the aggregate carries the count: {aggregate}"
+        );
+        assert!(
+            aggregate.contains("Monitor m-storm-0"),
+            "the aggregate lists the affected monitors: {aggregate}"
+        );
+
+        // A fifth down while `Open` is suppressed: nothing else is sent.
+        let suppressed = sample_monitor("m-storm-4");
+        db.create_monitor(&suppressed).await.unwrap();
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &suppressed,
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &notifier_ids,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            enabled_monitors,
+            &breaker,
+        )
+        .await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), request_rx.recv())
+                .await
+                .is_err(),
+            "a down inside the storm must not be notified (the listener is still \
+             waiting for a further request)"
+        );
+    }
+
+    /// Next notification body, or a panic if none arrives in time.
+    async fn next_request(rx: &mut tokio::sync::mpsc::Receiver<String>, what: &str) -> String {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{what}: no notification was dispatched in time"))
+            .unwrap_or_else(|| panic!("{what}: the notification channel was closed"))
+    }
+
+    /// MENOR-4: an `up` during the storm is suppressed and notifies again once the
+    /// breaker re-arms.
+    ///
+    /// The breaker's clock is injected by design (D1), so the re-arm is produced by
+    /// feeding it an instant past the window — no real sleep in the test.
+    #[tokio::test]
+    async fn an_up_is_suppressed_during_the_storm_and_notifies_after_rearm() {
+        let (db, _dir) = setup_db().await;
+        // Slot 1: the aggregated alert. Slot 2: the recovery after the re-arm.
+        let (notifier_cache, mut request_rx) = webhook_notifier_multi(2).await;
+        let down = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let up = AlwaysUpChecker;
+        let (event_tx, _) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+        let linked = vec!["n-hook".to_string()];
+        let unlinked: Vec<String> = vec![];
+
+        // 3 monitors at 100 % → all three must fall. Only the opener carries a
+        // notifier, so the storm produces exactly one request.
+        let breaker = Arc::new(Mutex::new(StormBreaker::new(BreakerConfig {
+            threshold_percent: 100,
+            ..BreakerConfig::default()
+        })));
+        let monitors: Vec<Monitor> = ["m-up-a", "m-up-b", "m-up-c"]
+            .iter()
+            .map(|id| sample_monitor(id))
+            .collect();
+        for monitor in &monitors {
+            db.create_monitor(monitor).await.unwrap();
+        }
+
+        for (monitor, ids) in monitors
+            .iter()
+            .zip([&unlinked, &unlinked, &linked])
+            .map(|(m, ids)| (m, ids.as_slice()))
+        {
+            let mut last_write_at: i64 = 0;
+            let mut observed = ObservedStatus::Unknown;
+            run_monitor_check(
+                &db,
+                monitor,
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&down),
+                &health,
+                true,
+                ids,
+                &mut last_write_at,
+                &mut observed,
+                60,
+                3,
+                &breaker,
+            )
+            .await;
+        }
+
+        let aggregate = next_request(&mut request_rx, "aggregated alert").await;
+        assert!(aggregate.contains("degradada"), "{aggregate}");
+
+        // The opener recovers mid-storm: suppressed, nothing is sent.
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &monitors[2],
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&up),
+            &health,
+            false,
+            &linked,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            3,
+            &breaker,
+        )
+        .await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), request_rx.recv())
+                .await
+                .is_err(),
+            "a recovery inside the storm must not be notified"
+        );
+
+        // The window elapses without new downs: the breaker re-arms and the next
+        // recovery notifies again.
+        breaker
+            .lock()
+            .await
+            .on_up(Instant::now() + Duration::from_secs(3600));
+        assert_eq!(
+            breaker.lock().await.state(),
+            crate::breaker::BreakerState::Closed
+        );
+
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &monitors[2],
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&up),
+            &health,
+            false,
+            &linked,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            3,
+            &breaker,
+        )
+        .await;
+
+        let recovery = next_request(&mut request_rx, "recovery after the re-arm").await;
+        assert!(
+            recovery.contains("Recovered"),
+            "the recovery notifies once the breaker re-armed: {recovery}"
+        );
+    }
+
+    /// MAYOR-2 (guard): a storm whose monitors have no notifier at all sends
+    /// nothing — a warning instead of N silent individual alerts — and the breaker
+    /// stays `Open`, so the episode is still deduped instead of re-alerting.
+    #[tokio::test]
+    async fn a_storm_with_no_notifiers_anywhere_sends_nothing_and_stays_open() {
+        let (db, _dir) = setup_db().await;
+        let (notifier_cache, mut request_rx) = webhook_notifier_multi(1).await;
+        let checker = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let (event_tx, _) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+
+        let breaker = Arc::new(Mutex::new(StormBreaker::new(BreakerConfig {
+            threshold_percent: 100,
+            ..BreakerConfig::default()
+        })));
+        let monitors: Vec<Monitor> = ["m-none-a", "m-none-b", "m-none-c"]
+            .iter()
+            .map(|id| sample_monitor(id))
+            .collect();
+        for monitor in &monitors {
+            db.create_monitor(monitor).await.unwrap();
+        }
+
+        for monitor in &monitors {
+            let mut last_write_at: i64 = 0;
+            let mut observed = ObservedStatus::Unknown;
+            run_monitor_check(
+                &db,
+                monitor,
+                &notifier_cache,
+                &event_tx,
+                &last_check_at,
+                Some(&checker),
+                &health,
+                true,
+                &[],
+                &mut last_write_at,
+                &mut observed,
+                60,
+                3,
+                &breaker,
+            )
+            .await;
+        }
+
+        assert_eq!(
+            breaker.lock().await.state(),
+            crate::breaker::BreakerState::Open,
+            "the storm is declared even with nowhere to report it"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), request_rx.recv())
+                .await
+                .is_err(),
+            "a storm with no destination must not notify (the listener is still waiting)"
+        );
+    }
+
+    /// MAYOR-2: the aggregated alert must reach the notifiers of *every* affected
+    /// monitor, not only those of the one that opened the storm. Here the opener
+    /// has no notifiers at all and the fleet must not go silent.
+    #[tokio::test]
+    async fn the_aggregate_reaches_the_notifiers_of_every_affected_monitor() {
+        let (db, _dir) = setup_db().await;
+        // Two slots: m-b's individual down and, later, the aggregated alert.
+        let (notifier_cache, mut request_rx) = webhook_notifier_multi(2).await;
+        let checker = CauseFailureChecker {
+            status: "down",
+            cause: FailureCause::ConnectRefused,
+        };
+        let (event_tx, _) = broadcast::channel(16);
+        let health = NetworkHealthHandle::new();
+        health.publish(NetworkHealth::Healthy);
+        let last_check_at = Arc::new(AtomicI64::new(0));
+
+        // 3 monitors at 100 % → all three must fall. Only m-b is linked to a
+        // notifier, and m-b is *not* the monitor opening the storm.
+        let breaker = Arc::new(Mutex::new(StormBreaker::new(BreakerConfig {
+            threshold_percent: 100,
+            ..BreakerConfig::default()
+        })));
+        let monitors: Vec<Monitor> = ["m-a", "m-b", "m-c"]
+            .iter()
+            .map(|id| sample_monitor(id))
+            .collect();
+        for monitor in &monitors {
+            db.create_monitor(monitor).await.unwrap();
+        }
+        // The link needs the notifier to exist in the DB (FK); the delivery itself
+        // goes through the in-memory cache, which already holds it.
+        db.create_notifier(
+            "n-hook",
+            "test webhook",
+            "webhook",
+            &serde_json::json!({}),
+            true,
+        )
+        .await
+        .unwrap();
+        db.set_monitor_notifiers("m-b", &["n-hook".to_string()])
+            .await
+            .unwrap();
+
+        // m-a: no notifiers at all → the first down passes and sends nothing.
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &monitors[0],
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &[],
+            &mut last_write_at,
+            &mut observed,
+            60,
+            3,
+            &breaker,
+        )
+        .await;
+
+        // m-b: its own individual down reaches its notifier.
+        let linked = vec!["n-hook".to_string()];
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &monitors[1],
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &linked,
+            &mut last_write_at,
+            &mut observed,
+            60,
+            3,
+            &breaker,
+        )
+        .await;
+        let individual = next_request(&mut request_rx, "m-b individual down").await;
+        assert!(!individual.contains("degradada"), "{individual}");
+
+        // m-c opens the storm and has no notifiers of its own: the aggregate must
+        // still be delivered through m-b's notifier, not dropped.
+        let mut last_write_at: i64 = 0;
+        let mut observed = ObservedStatus::Unknown;
+        run_monitor_check(
+            &db,
+            &monitors[2],
+            &notifier_cache,
+            &event_tx,
+            &last_check_at,
+            Some(&checker),
+            &health,
+            true,
+            &[],
+            &mut last_write_at,
+            &mut observed,
+            60,
+            3,
+            &breaker,
+        )
+        .await;
+
+        let aggregate = next_request(&mut request_rx, "aggregated alert").await;
+        assert!(
+            aggregate.contains("degradada"),
+            "the opener has no notifiers, the aggregate must use the union: {aggregate}"
+        );
+        assert!(
+            aggregate.contains("Monitor m-b") && aggregate.contains("Monitor m-c"),
+            "the aggregate lists every affected monitor: {aggregate}"
+        );
+    }
+
     /// Scenario: caída real con red sana se registra como down (y notifica).
     #[tokio::test]
     async fn a_real_failure_with_a_healthy_network_is_recorded_as_down_and_notifies() {
@@ -1458,6 +2211,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -1513,6 +2268,8 @@ mod tests {
             &mut last_write_at,
             &mut observed,
             interval_secs,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await;
 
@@ -1568,6 +2325,8 @@ mod tests {
             last_write_at,
             observed,
             60,
+            TEST_ENABLED_MONITORS,
+            &test_breaker(),
         )
         .await
     }
