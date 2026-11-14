@@ -67,7 +67,9 @@ PR #49: `vite` → 8.3.8, `source-map-js` → 1.2.2, `rustls` → 0.23.46.
 ## Pendiente
 
 ### Issues abiertos
-- (ninguno)
+- **#61** 🧪 Tests de validación JWT + CI de seguridad (**siguiente**).
+- **#62** ✨ Follow-ups Robust Check Engine (canario, breaker, SSE, agrupación).
+- **#63** ♿ a11y del timeline + test SNI real.
 
 ### Completado recientemente
 - **#33** ✅ (PR #51): índice cubriente `idx_checks_timeline`, `ANALYZE` y tests de
@@ -99,7 +101,12 @@ PR #49: `vite` → 8.3.8, `source-map-js` → 1.2.2, `rustls` → 0.23.46.
 - CHANGELOG auto-generado desactualizado (entradas hasta 0.11.0; ahora con `[0.15.0]`).
 
 ### Pendiente inmediato
-- (ninguno bloqueante)
+- Empezar por **#61** en sesión nueva (change OpenSpec + TDD). El resto, en
+  sesiones separadas por issue.
+
+### Housekeeping
+- Ramas remotas mergeadas ya inexistentes; refs locales podadas.
+- `frontend/pnpm-lock.yaml` eliminado (el build usa npm).
 
 ## Comandos
 
