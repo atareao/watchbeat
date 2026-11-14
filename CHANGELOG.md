@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.1] - 2026-11-14
+
+### Performance
+
+- **Queries de checks (#33)**: índice cubriente único
+  `idx_checks_timeline(monitor_id, checked_at DESC, status, response_time_ms)`.
+  Elimina `idx_checks_monitor` e `idx_checks_uptime` (redundantes) y ejecuta
+  `ANALYZE` tras las migraciones. Timeline de 300k filas: 477 ms → 201 ms.
+
+### Documentation
+
+- `docs/checks-query-perf.md` y `plans/PLAN-003-ARCHIVED.md`.
+
+
 ## [0.15.0] - 2026-11-14
 
 ### Features
