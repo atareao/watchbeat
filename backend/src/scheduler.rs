@@ -71,6 +71,10 @@ pub struct SchedulerManager {
     pub active_tasks: Arc<AtomicU64>,
     pub last_check_at: Arc<AtomicI64>,
     tx: mpsc::Sender<SchedulerCommand>,
+    /// The one storm breaker shared with every monitor task. Owned by the
+    /// manager so read-only consumers (e.g. `GET /api/breaker`) observe the
+    /// **real** state the scheduler is acting on.
+    breaker: Arc<Mutex<StormBreaker>>,
 }
 
 impl SchedulerManager {
@@ -87,17 +91,42 @@ impl SchedulerManager {
         let active_tasks = Arc::new(AtomicU64::new(0));
         let last_check_at = Arc::new(AtomicI64::new(0));
 
+        // Fase 5 (D6–D8): the breaker is created here — the only place with both
+        // the `db` (settings source) and the chance to share it — and handed to
+        // the manager loop, which clones it into every monitor task.
+        let breaker: Arc<Mutex<StormBreaker>> = Arc::new(Mutex::new(StormBreaker::new(
+            BreakerConfig::load(&db).await,
+        )));
+
         let mgr = Self {
             active_tasks: active_tasks.clone(),
             last_check_at: last_check_at.clone(),
             tx: tx.clone(),
+            breaker: breaker.clone(),
         };
 
         tokio::spawn(async move {
-            manager_loop(rx, db, event_tx, active_tasks, last_check_at, health).await;
+            manager_loop(
+                rx,
+                db,
+                event_tx,
+                active_tasks,
+                last_check_at,
+                health,
+                breaker,
+            )
+            .await;
         });
 
         mgr
+    }
+
+    /// The storm breaker shared with the running monitor tasks.
+    ///
+    /// Read-only observers take the lock only for the synchronous snapshot
+    /// accessors, so they never delay a check.
+    pub fn breaker(&self) -> Arc<Mutex<StormBreaker>> {
+        self.breaker.clone()
     }
 
     pub async fn send(&self, cmd: SchedulerCommand) {
@@ -135,6 +164,11 @@ async fn manager_loop(
     active_tasks: Arc<AtomicU64>,
     last_check_at: Arc<AtomicI64>,
     health: NetworkHealthHandle,
+    // Fase 5 (D6–D8): the breaker created by [`SchedulerManager::spawn`], shared
+    // by every monitor task below. The threshold is a percentage of the *enabled*
+    // monitors, so the count is tracked next to it and refreshed after every
+    // command that changes the running task set.
+    breaker: Arc<Mutex<StormBreaker>>,
 ) {
     let notifier_cache: Arc<RwLock<HashMap<String, Notifier>>> =
         Arc::new(RwLock::new(HashMap::new()));
@@ -147,12 +181,8 @@ async fn manager_loop(
         }
     }
 
-    // Fase 5 (D6–D8): one breaker shared by every monitor task. The threshold is a
-    // percentage of the *enabled* monitors, so the count is tracked next to it and
-    // refreshed after every command that changes the running task set.
-    let breaker: Arc<Mutex<StormBreaker>> = Arc::new(Mutex::new(StormBreaker::new(
-        BreakerConfig::load(&db).await,
-    )));
+    // Fase 5 (D6–D8): one breaker shared by every monitor task (created by the
+    // manager so it can also be observed from outside via [`SchedulerManager::breaker`]).
     let enabled_monitors = Arc::new(AtomicU64::new(0));
 
     let mut task_map: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();

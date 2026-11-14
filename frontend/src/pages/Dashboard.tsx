@@ -9,10 +9,11 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router';
 import {
-  fetchMonitors, createMonitor, updateMonitor, deleteMonitor, fetchNotifiers,
-  type MonitorSummary, type UnifiedDashboardResponse, type DashboardStatus,
+  fetchMonitors, createMonitor, updateMonitor, deleteMonitor, fetchNotifiers, fetchBreaker,
+  type MonitorSummary, type UnifiedDashboardResponse, type DashboardStatus, type BreakerStatus,
 } from '../api/http';
 import MonitorCard from '../components/MonitorCard';
+import BreakerBadge from '../components/BreakerBadge';
 import { useSse } from '../hooks/useSse';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -110,6 +111,8 @@ export default function Dashboard() {
   const [scheduler, setScheduler] = useState<UnifiedDashboardResponse['scheduler']>({ last_check_at: null, active_tasks: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Storm breaker state. `undefined` = unknown (never fetched or fetch failed).
+  const [breaker, setBreaker] = useState<BreakerStatus | undefined>(undefined);
 
   // Pagination state
   const [page, setPage] = useState(1);
@@ -148,14 +151,19 @@ export default function Dashboard() {
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    fetchMonitors({
-      page,
-      perPage,
-      q: debouncedSearch || undefined,
-      type: typeFilter || undefined,
-      status: statusFilter || undefined,
-    })
-      .then(data => {
+    Promise.all([
+      fetchMonitors({
+        page,
+        perPage,
+        q: debouncedSearch || undefined,
+        type: typeFilter || undefined,
+        status: statusFilter || undefined,
+      }),
+      // One extra call per refresh. The breaker is decorative: a failure here
+      // degrades to "unknown" instead of breaking the dashboard.
+      fetchBreaker().catch(() => undefined),
+    ])
+      .then(([data, breakerState]) => {
         setStatus(data.status);
         setMonitors(data.monitors);
         setScheduler(data.scheduler);
@@ -163,6 +171,7 @@ export default function Dashboard() {
         setPage(data.page);
         setPerPage(data.per_page);
         setTotalPages(data.total_pages);
+        if (breakerState) setBreaker(breakerState);
       })
       .catch(err => {
         setError(err.message);
@@ -174,14 +183,18 @@ export default function Dashboard() {
   // ── Silent refresh (no spinner) for SSE + fallback ──
   const refresh = useCallback(() => {
     setError(null);
-    fetchMonitors({
-      page,
-      perPage,
-      q: debouncedSearch || undefined,
-      type: typeFilter || undefined,
-      status: statusFilter || undefined,
-    })
-      .then(data => {
+    Promise.all([
+      fetchMonitors({
+        page,
+        perPage,
+        q: debouncedSearch || undefined,
+        type: typeFilter || undefined,
+        status: statusFilter || undefined,
+      }),
+      // Same non-blocking degradation as `load()`: keep the last known state.
+      fetchBreaker().catch(() => undefined),
+    ])
+      .then(([data, breakerState]) => {
         setStatus(data.status);
         setMonitors(data.monitors);
         setScheduler(data.scheduler);
@@ -189,6 +202,7 @@ export default function Dashboard() {
         setPage(data.page);
         setPerPage(data.per_page);
         setTotalPages(data.total_pages);
+        if (breakerState) setBreaker(breakerState);
       })
       .catch(err => {
         setError(err.message);
@@ -231,6 +245,10 @@ export default function Dashboard() {
   // Failure not attributable to the target: neither healthy nor down. Kept as its
   // own card so Total = En línea + Con problemas + Indeterminados (no mismatch).
   const indeterminateItems = (status?.indeterminate_monitors ?? 0);
+
+  // True only when the breaker is enabled AND open: a disabled breaker never
+  // suppresses notifications, so it must not flag the cards.
+  const breakerOpen = breaker?.enabled === true && breaker.state === 'open';
 
   // ── Modal handlers ──
 
@@ -348,7 +366,10 @@ export default function Dashboard() {
     <div>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
-        <Title level={3} style={{ margin: 0 }}><DashboardOutlined /> Dashboard</Title>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Title level={3} style={{ margin: 0 }}><DashboardOutlined /> Dashboard</Title>
+          <BreakerBadge status={breaker} />
+        </div>
         <Space wrap>
           <Input
             placeholder="Buscar..."
@@ -440,6 +461,7 @@ export default function Dashboard() {
                       onEdit={handleEdit}
                       onDelete={handleDelete}
                       onRefresh={load}
+                      breakerOpen={breakerOpen}
                     />
                   </Col>
                 ))}
