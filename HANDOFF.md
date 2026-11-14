@@ -1,20 +1,22 @@
-# Handoff — watchbeat — 2026-11-14 (sesión #75)
+# Handoff — watchbeat — 2026-11-14 (sesión #76)
 
 ## Objetivo
-Cerrar los follow-ups del Robust Check Engine (#62) uno por sesión, con SDD+TDD, dejando cada feature en un PR a `development`.
+Cerrar los follow-ups del Robust Check Engine (#62) y publicar la release acumulada.
 
 ## Estado
-- Hecho en esta sesión:
-  - **#63** (♿ a11y del timeline + test SNI real) — PR #80 **mergeado** a `development` (`3b10976d`).
-  - Change `timeline-a11y-sni-test` **archivado** → `openspec/changes/archive/2026-11-14-timeline-a11y-sni-test/`.
-    Nuevas specs: `frontend-timeline-a11y` (3 req, nueva), `checker` (6 req, +1 SNI), `testing` (2 req, +1).
-  - `plans/PLAN-016.md` → `plans/PLAN-016-ARCHIVED.md`.
-  - Frontend: token `statusStyles.ts` (color+pattern+borderTop+label+icon), timeline accesible sin color + teclado, leyenda de patrones.
-  - Backend: test SNI determinista (`rcgen` dev-dep), refactor `attempt_with` compartido.
-  - Suite: **381 tests backend** verdes; `fmt`/`clippy` limpios; `tsc`+`build` verdes.
-- **#62 y todos sus follow-ups (#69–#72, #63) cerrados** — 0 issues abiertos en el repo.
-  (Ojo: los PRs a `development` NO auto-cierran issues; hay que cerrarlos a mano.)
-- Rama actual: `development` (limpia). Sin PRs abiertos.
+- **Release v0.16.0 publicada** (`main` + tag `v0.16.0` + GitHub Release).
+  - PR #84 (`release/0.16.0` → `main`) mergeado: `02009792`.
+  - Bump 0.15.3 → 0.16.0 (`vampus --minor`) + `CHANGELOG.md` curado.
+  - `development` re-sincronizado: `5bcd41a3` (1 commit por delante de `main`).
+  - Imagen `ghcr.io/atareao/watchbeat` construyéndose por el tag (workflow `docker-multiarch`).
+- **#62 y sus follow-ups (#69–#72, #63) cerrados** — 0 issues abiertos.
+- Suite: **381 tests backend** verdes; `fmt`/`clippy` limpios; `tsc`+`build` verdes.
+
+### Contenido de v0.16.0
+- feat: canario configurable (#69) · `error_kind` en SSE (#70) · estado del breaker en API/dashboard (#71) · agrupación latency/expiry (#72) · timeline accesible + test SNI (#63).
+- perf: dedupe DNS single-flight.
+- fix: resolución JWKS sin recursión (#67).
+- ci: workflow `security` (cargo/npm audit).
 
 ## Pendiente
 1. Follow-ups de #63 (no bloqueantes): contraste AA de los `Tag` de `MonitorCard`; roving tabindex en el timeline; migrar `statusStyles.ts` a `.tsx`.
@@ -28,14 +30,14 @@ cd frontend && npx tsc --noEmit && npm run build
 
 ## Metodología / reglas
 - SDD+TDD: change OpenSpec aprobado por el usuario ANTES de escribir código; luego RED→GREEN→REFACTOR verificado por CLI.
-- Gitflow: `feature/*` desde `development`; **PR a `development`**; nunca commits directos a `main`/`development`.
+- Gitflow: `feature/*` desde `development`; **PR a `development`**; release `release/*` → **PR a `main`**; nunca commits directos a `main`/`development`.
 - Commits con gitmoji + conventional commits.
 - Planes en `plans/PLAN-<NNN>.md` (siguiente libre: PLAN-017); al cerrar → renombrar a `-ARCHIVED.md`.
 - Docs por feature en `docs/<feature>.md`. El **issue es el punto de entrada** (crear/asignar a `atareao`).
 - Header del delta OpenSpec debe copiar EXACTO el de la spec destino (o `archive` falla).
+- **Los PRs a `development` NO auto-cierran issues** (`Closes` solo dispara en `main`): cerrarlos a mano.
 
 ## Riesgos y notas
 - Sin migraciones.
-- El test SNI usa `rcgen` como dev-dependency (no entra en el binario).
 - `npm run lint` no existe en el repo (sin eslint).
-- Producción: **v0.15.3** (`ghcr.io/atareao/watchbeat:latest`).
+- Producción: **v0.16.0** (`ghcr.io/atareao/watchbeat:latest`).
