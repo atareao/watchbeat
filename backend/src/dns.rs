@@ -970,4 +970,37 @@ mod tests {
 
         assert_eq!(response.status(), 200);
     }
+
+    /// Scenario: un upstream que responde vacío no envenena la cache.
+    #[tokio::test]
+    async fn resolve_all_should_skip_an_empty_answer_and_try_the_next_upstream() {
+        let empty = Arc::new(FakeUpstream::answer_many(vec![], 60));
+        let healthy = Arc::new(FakeUpstream::answer_many(vec![ip(203, 0, 113, 50)], 60));
+        let resolver = resolver_with(vec![Arc::clone(&empty), Arc::clone(&healthy)], 0, 300);
+
+        let resolved = resolver.resolve_all(TEST_HOST).await;
+
+        assert_eq!(resolved, Ok(vec![ip(203, 0, 113, 50)]));
+        assert_eq!(empty.calls(), 1);
+        assert_eq!(healthy.calls(), 1);
+        assert_eq!(
+            resolver.cached(TEST_HOST),
+            Some(ip(203, 0, 113, 50)),
+            "only the non-empty answer must be cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_all_should_fail_when_every_upstream_answers_empty() {
+        let first = Arc::new(FakeUpstream::answer_many(vec![], 60));
+        let second = Arc::new(FakeUpstream::answer_many(vec![], 60));
+        let resolver = resolver_with(vec![first, second], 0, 300);
+
+        let resolved = resolver.resolve_all(TEST_HOST).await;
+
+        assert!(
+            matches!(resolved, Err(DnsError::Other(ref message)) if message.contains("no address")),
+            "an empty answer must not become Ok(vec![]), got: {resolved:?}"
+        );
+    }
 }

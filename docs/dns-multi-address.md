@@ -77,7 +77,7 @@ Tests deterministas (sin red externa):
 - **`resolve` se mantiene**: la sonda de clasificación solo necesita saber si el
   nombre resuelve; devolver la primera IP evita cambiar firmas en checkers y
   `netcheck`.
-- **Orden IPv4 primero**: lo fija `LookupIpStrategy::Ipv4thenIpv6` de hickory.
+- **Orden IPv4 primero**: lo fija `LookupIpStrategy::Ipv4AndIpv6` de hickory.
 
 ## Follow-ups
 
