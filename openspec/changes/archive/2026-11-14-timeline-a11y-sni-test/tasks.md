@@ -29,5 +29,5 @@
 
 - [x] 4.1 `docs/timeline-a11y-sni-test.md`.
 - [x] 4.2 `@rust-reviewer` y `@react-reviewer` sobre el diff.
-- [ ] 4.3 PR a `development` con `Closes #63`.
-- [ ] 4.4 Archivar change y renombrar `plans/PLAN-016.md` → `-ARCHIVED.md`.
+- [x] 4.3 PR a `development` con `Closes #63`.
+- [x] 4.4 Archivar change y renombrar `plans/PLAN-016.md` → `-ARCHIVED.md`.
