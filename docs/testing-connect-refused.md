@@ -1,7 +1,7 @@
 # Tests de conexión rechazada deterministas (#55)
 
 - **Issue**: [#55](https://github.com/atareao/watchbeat/issues/55)
-- **Plan**: `plans/PLAN-006.md`
+- **Plan**: `plans/PLAN-006-ARCHIVED.md`
 - **Change OpenSpec**: `openspec/changes/archive/…-flaky-connect-refused-tests/`
 
 ## Qué es
