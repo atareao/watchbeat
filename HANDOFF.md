@@ -47,6 +47,8 @@ PR #49: `vite` → 8.3.8, `source-map-js` → 1.2.2, `rustls` → 0.23.46.
 - **#33** ✅ (PR #51): índice cubriente `idx_checks_timeline`, `ANALYZE` y tests de
   plan de ejecución. Plan archivado en `plans/PLAN-003-ARCHIVED.md`; doc en
   `docs/checks-query-perf.md`.
+- **#52** ✅ (PR #53): DNS multi-dirección con fallback en hyper. Plan archivado
+  en `plans/PLAN-005-ARCHIVED.md`; doc en `docs/dns-multi-address.md`.
 
 ### Follow-ups técnicos
 - Canario de red configurable (hoy fijo a 30 s).

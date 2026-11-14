@@ -1,7 +1,7 @@
 # DNS multi-dirección con fallback (#52)
 
 - **Issue**: [#52](https://github.com/atareao/watchbeat/issues/52)
-- **Plan**: `plans/PLAN-005.md`
+- **Plan**: `plans/PLAN-005-ARCHIVED.md`
 - **Change OpenSpec**: `openspec/changes/archive/…-dns-multi-address-fallback/`
 
 ## Qué es
