@@ -2,9 +2,9 @@
 
 ## Estado (14 Nov 2026)
 
-- **Release v0.15.2 publicada** (tag `v0.15.2`, merge a `main` + sync `development`).
-  Incluye el **Robust Check Engine** (v0.15.0), la optimización de queries (#33,
-  v0.15.1), el DNS multi-dirección (#52) y el diagnóstico/permisos de ping (#31).
+- **Release v0.15.3 publicada y desplegada** (tag `v0.15.3`, `main` + sync
+  `development`). Incluye v0.15.2 (Robust Check Engine, queries #33, DNS #52,
+  ping #31) más #55 (flaky), #57 (TCP/TLS multi-IP) y #59 (deps de seguridad).
 - `main` y `development` sincronizados. Tests: **266** lib + 9 + 45 + 8 + 3 verdes.
 - **#59** ✅ (PR #60): deps de seguridad actualizadas. `jsonwebtoken` 12
   (rsa 0.10, crypto-bigint 0.7, ctutils 0.4.8), rustls-webpki 0.103.17,
@@ -18,8 +18,12 @@
   `docs/tcp-tls-multi-address.md`, PLAN-007 archivado. Auditado 2 veces (APROBADO).
 - Ramas de feature/hotfix/release limpiadas (locales y remotas).
 
-### Producción (co1) — DESPLEGADO v0.15.2
-- Imagen `ghcr.io/atareao/watchbeat:latest` (workflow Docker OK).
+### Producción (co1) — DESPLEGADO v0.15.3
+- Imagen `ghcr.io/atareao/watchbeat:latest`, revision `147a7bcf` (v0.15.3).
+- `healthy`, `/health` OK; 7 monitores `up` tras el despliegue; `ping` OK.
+- `ping` funciona sin `cap_add` porque Docker permite ICMP por
+  `net.ipv4.ping_group_range`; el compose del repo mantiene `NET_RAW` como
+  defensa. El compose de Dockge no lo necesita.
 - Contenedor recreado con `docker run` preservando env, red `proxy` y volumen
   `watchbeat_watchbeat_data`; añadidos `--cap-add NET_RAW` y healthcheck.
 - Verificado: `healthy`, `CAP_NET_RAW` activo, `ping` como usuario `app` OK,
@@ -95,10 +99,7 @@ PR #49: `vite` → 8.3.8, `source-map-js` → 1.2.2, `rustls` → 0.23.46.
 - CHANGELOG auto-generado desactualizado (entradas hasta 0.11.0; ahora con `[0.15.0]`).
 
 ### Pendiente inmediato
-- Release **v0.15.3** con #55, #57 y #59 (están en `development`, no en `main`;
-  `main` aún tiene jsonwebtoken 11 / rsa 0.9 vulnerable).
-- Decidir si el monitor `ping-validacion-31` de producción se elimina o queda
-  como canario permanente.
+- (ninguno bloqueante)
 
 ## Comandos
 
