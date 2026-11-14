@@ -1,7 +1,7 @@
 # Checker de ping: diagnóstico y permisos (#31)
 
 - **Issue**: [#31](https://github.com/atareao/watchbeat/issues/31)
-- **Plan**: `plans/PLAN-004.md`
+- **Plan**: `plans/PLAN-004-ARCHIVED.md`
 - **Change OpenSpec**: `openspec/changes/archive/…-ping-checker-diagnostics/`
 
 ## Qué es
