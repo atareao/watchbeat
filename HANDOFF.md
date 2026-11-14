@@ -8,6 +8,17 @@
 - `main` y `development` sincronizados. Tests: **254** lib + 9 + 45 + 8 + 3 verdes.
 - Ramas de feature/hotfix/release limpiadas (locales y remotas).
 
+### Producción (co1) — DESPLEGADO v0.15.2
+- Imagen `ghcr.io/atareao/watchbeat:latest` (workflow Docker OK).
+- Contenedor recreado con `docker run` preservando env, red `proxy` y volumen
+  `watchbeat_watchbeat_data`; añadidos `--cap-add NET_RAW` y healthcheck.
+- Verificado: `healthy`, `CAP_NET_RAW` activo, `ping` como usuario `app` OK,
+  `/health` → `{"status":"ok"}`. Monitores sin `down`/`error` desde el fix
+  (todo `up`; `laeradelasdistros` estable).
+- **Caveat**: el compose de producción `/opt/stacks/watchbeat/compose.yaml`
+  (referenciado por labels) ya no existe en el host. Recreaciones futuras
+  deben hacerse con `docker run` o restaurando ese compose.
+
 ## Robust Check Engine (PLAN-002) — COMPLETADO
 
 Plan archivado en `plans/PLAN-002-ARCHIVED.md`. Issues #34–#40 cerrados.
