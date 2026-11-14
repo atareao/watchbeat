@@ -18,7 +18,7 @@ SHALL existir en la base de datos tras la migración. El índice SHALL ser
 `idx_checks_monitor` e `idx_checks_uptime`, que SHALL eliminarse.
 
 #### Scenario: get_timeline usa el nuevo índice DESC
-Given el mismo monitor con 100k checks
+Given un monitor con 100k checks
 When se ejecuta `get_timeline(monitor_id, since)` con ORDER BY ASC
 Then la query puede usar idx_checks_timeline en orden inverso sin sort
 
