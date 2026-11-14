@@ -35,7 +35,7 @@ las alertas de Dependabot dejen de ser reales.
 ## Verificación
 
 ```bash
-cd backend && cargo audit      # solo queda RUSTSEC-2026-0459 (ver abajo)
+cd backend && cargo audit      # solo RUSTSEC-2026-0459; +2 warnings unsound (ver abajo)
 cd backend && cargo test       # 266 + 9 + 45 + 8 + 3 verdes
 cd frontend && npm audit       # 0 vulnerabilidades
 cd frontend && npx tsc --noEmit && npm run build
@@ -57,6 +57,21 @@ Opciones evaluadas:
 
 Impacto actual: bajo. SQLite es local, el archivo no lo controla un atacante
 remoto y la superficie es la API propia autenticada.
+
+## Warnings `unsound` (no son vulnerabilidades)
+
+`cargo audit` también emite dos avisos informativos preexistentes:
+
+- `rustix` 1.1.5 · RUSTSEC-2026-0486 (`xattr` con buffer de longitud cero).
+- `tokio` 1.53.2 · RUSTSEC-2026-0386 (`AsyncFd::new` e I/O safety).
+
+No introducen vulnerabilidades explotables en WatchBeat y no rompen el build.
+Se revisarán en las próximas actualizaciones de dependencias.
+
+## MSRV
+
+`jsonwebtoken` 12 requiere Rust ≥1.88. La imagen `rust:alpine3.23` del Dockerfile
+está muy por encima (local: 1.97.0), así que no hay acción.
 
 ## Seguimiento
 
