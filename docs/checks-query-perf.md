@@ -1,7 +1,7 @@
 # Perf de queries de checks (#33)
 
 - **Issue**: [#33](https://github.com/atareao/watchbeat/issues/33)
-- **Plan**: `plans/PLAN-003.md`
+- **Plan**: `plans/PLAN-003-ARCHIVED.md`
 - **Change OpenSpec**: `openspec/changes/archive/…-checks-query-perf/`
 
 ## Qué es

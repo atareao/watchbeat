@@ -41,7 +41,11 @@ PR #49: `vite` → 8.3.8, `source-map-js` → 1.2.2, `rustls` → 0.23.46.
 
 ### Issues abiertos
 - **#31** — Error en la sonda tipo ping (bug funcional, sin diagnosticar).
-- **#33** — Perf queries checks: falta índice DESC / keyset pagination (el bucketing SQL ya se hizo).
+
+### Completado recientemente
+- **#33** ✅ (PR #51): índice cubriente `idx_checks_timeline`, `ANALYZE` y tests de
+  plan de ejecución. Plan archivado en `plans/PLAN-003-ARCHIVED.md`; doc en
+  `docs/checks-query-perf.md`.
 
 ### Follow-ups técnicos
 - Canario de red configurable (hoy fijo a 30 s).
