@@ -68,7 +68,19 @@ impl JwtValidator {
     }
 
     pub async fn fetch_jwks(&self, issuer: &str) -> Result<(), String> {
-        let jwks_url = format!("{}/.well-known/jwks.json", issuer.trim_end_matches('/'));
+        // Use the jwks_uri advertised by the provider's discovery document
+        // instead of assuming a fixed path (Authentik uses /jwks/).
+        let discovery_url = format!(
+            "{}/.well-known/openid-configuration",
+            issuer.trim_end_matches('/')
+        );
+        let metadata: OidcMetadata = reqwest::get(&discovery_url)
+            .await
+            .map_err(|e| format!("failed to fetch OIDC discovery: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("failed to parse OIDC discovery: {e}"))?;
+        let jwks_url = metadata.jwks_uri;
         let resp: serde_json::Value = reqwest::get(&jwks_url)
             .await
             .map_err(|e| format!("failed to fetch JWKS: {e}"))?
