@@ -102,7 +102,10 @@ async fn main() {
     };
 
     // ───── JWKS (como populates) ─────
-    let jwt_validator = JwtValidator::new(&config.oidc_issuer_url, &config.oidc_client_id);
+    // Validate against the issuer exactly as published in the discovery
+    // document: Authentik's issuer ends with a slash, and the `iss` claim of
+    // its ID tokens matches that value.
+    let jwt_validator = JwtValidator::new(&oidc_metadata.issuer, &config.oidc_client_id);
     if let Err(e) = jwt_validator.fetch_jwks(&config.oidc_issuer_url).await {
         tracing::error!("❌ JWKS fetch failed: {}. OIDC will not work.", e);
         std::process::exit(1);

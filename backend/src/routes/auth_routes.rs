@@ -50,9 +50,18 @@ pub async fn login(
             .and_modify(|(s, _)| *s = format!("{}:{}", s, redirect_uri));
     }
 
+    // Use the authorization endpoint advertised by the provider's discovery
+    // document instead of assuming it lives at `{issuer}/authorize`
+    // (Authentik exposes /application/o/authorize/).
+    let authorization_endpoint = state
+        .oidc_metadata
+        .as_ref()
+        .map(|metadata| metadata.authorization_endpoint.clone())
+        .unwrap_or_else(|| format!("{}/authorize", issuer.trim_end_matches('/')));
+
     let auth_url = format!(
-        "{}/authorize?response_type=code&client_id={}&redirect_uri={}&scope=openid+profile+email&state={}",
-        issuer.trim_end_matches('/'),
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope=openid+profile+email&state={}",
+        authorization_endpoint,
         url_encode(&state.config.oidc_client_id),
         url_encode(&state.config.oidc_redirect_url),
         state_value,
@@ -105,10 +114,16 @@ pub async fn callback(
         }
     }
 
-    let issuer = &state.config.oidc_issuer_url;
-
-    // ── Token exchange (PocketID uses /api/oidc/token) ──
-    let token_url = format!("{}/api/oidc/token", issuer.trim_end_matches('/'));
+    // ── Token exchange ──
+    // Endpoints come from the OIDC discovery document: providers such as
+    // Authentik and PocketID do not serve them under `{issuer}`.
+    let (token_url, userinfo_url) = match state.oidc_metadata.as_ref() {
+        Some(metadata) => (
+            metadata.token_endpoint.clone(),
+            metadata.userinfo_endpoint.clone(),
+        ),
+        None => return error_html("OIDC metadata not available"),
+    };
     let token_params = [
         ("grant_type", "authorization_code"),
         ("code", &code),
@@ -158,8 +173,7 @@ pub async fn callback(
         .unwrap_or(&access_token)
         .to_string();
 
-    // ── UserInfo (PocketID uses /api/oidc/userinfo) ──
-    let userinfo_url = format!("{}/api/oidc/userinfo", issuer.trim_end_matches('/'));
+    // ── UserInfo ──
     let user_info: Option<serde_json::Value> = match client
         .get(&userinfo_url)
         .header("Authorization", format!("Bearer {access_token}"))
